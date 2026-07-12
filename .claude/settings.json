@@ -1,0 +1,62 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(docs/architecture/**)",
+      "Write(docs/architecture/**)"
+    ],
+    "ask": [
+      "Bash(git push*)"
+    ],
+    "allow": [
+      "Bash(cargo fmt*)",
+      "Bash(cargo clippy*)",
+      "Bash(cargo check*)",
+      "Bash(cargo build*)",
+      "Bash(cargo test*)",
+      "Bash(cargo tree*)",
+      "Bash(cargo metadata*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(ls*)",
+      "Bash(rg*)",
+      "Bash(wc*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-architecture.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-context.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-plan-guard.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
