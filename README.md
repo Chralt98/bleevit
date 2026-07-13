@@ -1,5 +1,8 @@
 # Bleavit
 
+Futarchy was invented by Prof. Robin Hanson — thank you for your work; this project
+exists to build one.
+
 A **futarchy-governed Polkadot parachain**: token holders vote on *values* (what the
 chain should optimize), while conditional prediction markets decide *beliefs* (which
 proposals actually get executed). All consensus-critical logic is native Rust FRAME
@@ -66,3 +69,7 @@ Pins must be re-verified before implementation begins — tracked as V-1 in
 ## License
 
 [GPL-3.0](LICENSE)
+
+---
+
+You theorized it, we are cooking it. Bon appétit, Prof. Hanson.
