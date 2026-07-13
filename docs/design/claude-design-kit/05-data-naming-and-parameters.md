@@ -17,7 +17,7 @@ Block-time basis for human-time conversions: **6 s/block, 14,400 blocks/day** (1
 | Address format | SS58 prefix **7777**, checksummed, with identicons |
 | paraId | assigned at onboarding; test fixtures use 4242 |
 | **USDC** (trading/treasury asset) | bridged USDC; **6 decimals**; `min_balance = 10^4` base units ("1 cent"); lives in `ForeignAssets` keyed by an XCM Location ([VERIFY asset index 1337]) |
-| **WIT** (native governance token) | **12 decimals**; total supply 10^9; existential deposit 0.01 WIT |
+| **VIT** (native governance token) | **12 decimals**; total supply 10^9; existential deposit 0.01 VIT |
 | Prices / scores | fixed-point, **1e9 scale** at every API/event boundary; quote clamp [0.001, 0.999]; `p_S = 1 − p_L`; gate books map YES ↦ LONG |
 | Time | all deadlines are block numbers (`decide_at`, `maturity`, `grace_end`, `challenge_deadline`, `next_boundary`) — the UI computes countdowns from them |
 | Contract version | `INTEGRATION_CONTRACT_VERSION = 1`, a runtime constant, echoed in `release.json` |
@@ -66,7 +66,7 @@ exactly as the decision engine would read it.
 `Baseline { epoch, side }`; `PositionKind` = `BranchUsdc, Long, Short, GateYes(GateType),
 GateNo(GateType)`; `Branch` = `Accept | Reject`; `GateType` = `Survival | Security`.
 Vault states (drive redeemability badges): **`Open`, `Resolved(Branch)`,
-`ScalarSettled { winner, s }`, `Voided`**. Balances: `System.Account` (WIT) and
+`ScalarSettled { winner, s }`, `Voided`**. Balances: `System.Account` (VIT) and
 `ForeignAssets.Account(USDC_LOCATION, who)` (USDC).
 
 **Execution queue** — `execution_queue()` → up to 32 `QueuedExecutionView`: `pid`, `class`,
@@ -176,7 +176,7 @@ expert detail + documented recovery per code; no free-text errors.
 6. `DescriptorLeadTime` (72 h) drives upgrade banners.
 7. On contract regression: fall back to the chain-served layer-1 surface — "reduced depth,
    full correctness; never a trusted third-party service".
-8. Fee-currency selector (WIT or USDC) reads `fee.wit_usdc_rate` live.
+8. Fee-currency selector (VIT or USDC) reads `fee.vit_usdc_rate` live.
 9. Trading enablement + sudo banner bind to `PhaseFlags`; dead-man and ledger-freeze states
    come from `EpochStatusView`.
 
@@ -258,8 +258,8 @@ live. For mock data these are the correct realistic values.
 | `StaleEpochBound` | 7 days ⇒ force-reject in-flight | explains `StaleQueue` |
 | Dead-man switch | no finalized block ~8 h or snapshot > 4 d overdue ⇒ freeze | `dead_man_armed` banner |
 | PB-LEDGER-FREEZE | ≤ 14 days, one renewal | `ledger_frozen` banner |
-| Attestation | 25k WIT bond; ≥ 3 attestors; 2-of-N quorum; 72 h challenge window | "2 of 3 attested" progress |
-| `grd.bond` / `grd.review_deadline` | 50k WIT / 2 epochs | guardian roster, review countdown |
+| Attestation | 25k VIT bond; ≥ 3 attestors; 2-of-N quorum; 72 h challenge window | "2 of 3 attested" progress |
+| `grd.bond` / `grd.review_deadline` | 50k VIT / 2 epochs | guardian roster, review countdown |
 
 ### B6. Treasury & economics (13 §1, §3.4–§3.5)
 
@@ -269,7 +269,7 @@ live. For mock data these are the correct realistic values.
 | `trs.cap_30d` / `trs.cap_180d` | 10% / 30% of NAV | treasury spend meters (gauges) |
 | `trs.stream_threshold` | 1% of NAV — larger payouts stream | "paid as stream" badge |
 | `iss.inflation_cap` | 2%/yr, down-only | tokenomics page |
-| `fee.wit_usdc_rate` | 1.0 × ref (placeholder 0.05 USDC/WIT [VERIFY]; bounds 0.1×–10×) | fee-currency selector |
+| `fee.vit_usdc_rate` | 1.0 × ref (placeholder 0.05 USDC/VIT [VERIFY]; bounds 0.1×–10×) | fee-currency selector |
 | USDC treasury target | ≥ 25M USDC before Phase 5 | treasury progress |
 | `keeper.budget_epoch` / `keeper.rebate` | 12,000 USDC/epoch / ≈ 3× fee cost | keeper dashboard |
 | `phase3.tvl_cap` / `phase3.deposit_cap` | 2,000,000 / 20,000 USDC (sim-gated [VERIFY]) | deposit caps banner + form limit |
@@ -305,5 +305,5 @@ live. For mock data these are the correct realistic values.
 | `ExecutionRecords` | ring of 256 | execution history range |
 
 **Unset-by-spec ([VERIFY], sim-/ops-gated — never invent values):** `sec.prize.*`,
-`sec.flow_cap`, `collator.bond_req_wit`, `ops.*` budget lines, `pol.b_baseline` calibration,
-`fee.wit_usdc_rate_ref` at TGE, `phase3.*` caps before Phase-3 arming.
+`sec.flow_cap`, `collator.bond_req_vit`, `ops.*` budget lines, `pol.b_baseline` calibration,
+`fee.vit_usdc_rate_ref` at TGE, `phase3.*` caps before Phase-3 arming.

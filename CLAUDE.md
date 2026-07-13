@@ -25,17 +25,17 @@ Everything above (imported from AGENTS.md) is binding. Below is the Claude-Code-
 
 - **SessionStart** injects git state + PLAN.md focus/milestones/last log rows. Trust it
   for orientation, but still read PLAN.md before implementing.
-- **PreToolUse guard** denies any write/edit/mutating-bash touching `docs/architecture/`
-  (rule R-1). If it fires unexpectedly on a read-only command, rephrase the command
-  rather than looking for a bypass. Change control uses
-  `.claude/architecture-amendment.flag` — only ever create it on explicit user
-  instruction (AGENTS.md · Amending the architecture).
 - **Stop guard** blocks ending a session when the tree changed but PLAN.md wasn't
-  updated, or when the amendment flag is still present. Comply (update PLAN.md /
-  finish change control) instead of retrying.
+  updated. Comply (update PLAN.md) instead of retrying.
+- **Stop guard (`guard-readme.sh`)** blocks ending a session if README.md's pinned
+  opening (thank-you to Prof. Robin Hanson) or closing (Bon appétit) line has been
+  altered (rule R-11, AGENTS.md). Restore the exact wording instead of retrying.
 
-Permissions: `Edit`/`Write` into `docs/architecture/**` are deny-listed; common
-read-only git and cargo commands are pre-allowed; `git push` always asks.
+> There is no longer any write guard on `docs/architecture/`. The spec is editable;
+> change it deliberately per rule R-1 (AGENTS.md · *Changing the specification*).
+
+Permissions: common read-only git and cargo commands are pre-allowed; `git push`
+always asks.
 
 ## Memory notes
 

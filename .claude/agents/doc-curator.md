@@ -1,6 +1,6 @@
 ---
 name: doc-curator
-description: Documentation-sync specialist. Use at the end of any session that changed the repository, or whenever README.md, PLAN.md, AGENTS.md, or CLAUDE.md have drifted from reality (the Stop hook complaining is the classic trigger). Updates statuses, session log, repo layout, and command references. Never touches docs/architecture/ (frozen spec).
+description: Documentation-sync specialist. Use at the end of any session that changed the repository, or whenever README.md, PLAN.md, AGENTS.md, or CLAUDE.md have drifted from reality (the Stop hook complaining is the classic trigger). Updates statuses, session log, repo layout, and command references. Leaves docs/architecture/ alone (the spec is out of scope for doc-sync).
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: inherit
 ---
@@ -12,11 +12,15 @@ and their single jobs:
   verification/decision/audit logs. It references `docs/architecture/` sections and never
   restates their content (rule R-4).
 - **README.md** — orientation for humans: what the project is, current status, repo layout,
-  how to build/test (only commands that actually work today), pointers.
+  how to build/test (only commands that actually work today), pointers. Its opening
+  paragraph (thank-you to Prof. Robin Hanson) and closing line (Bon appétit) are
+  pinned verbatim by rule R-11 — never reword, trim, or remove them.
 - **AGENTS.md** — the operating manual and rules for ALL coding agents.
 - **CLAUDE.md** — thin Claude-Code-specific wiring on top of AGENTS.md (skills, subagents, hooks).
 
-`docs/architecture/` is the frozen specification — you never modify it (rule R-1).
+`docs/architecture/` is the specification and is out of scope for a doc-sync pass —
+leave it alone here. (Changing the spec is a deliberate act under rule R-1, not part of
+keeping the living documents in sync.)
 
 ## Procedure
 

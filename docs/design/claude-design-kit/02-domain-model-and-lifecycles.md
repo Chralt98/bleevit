@@ -8,7 +8,7 @@
 
 ## 1. The money system (03)
 
-- **USDC** is the collateral: all trading, bonds and payouts. **WIT** is for values voting and
+- **USDC** is the collateral: all trading, bonds and payouts. **VIT** is for values voting and
   operator bonds.
 - `ledger.split` turns `a` USDC into `a` **AcceptUsdc** + `a` **RejectUsdc** (**branch-USDC**):
   conditional USDC that exists "in the ACCEPT world" / "in the REJECT world". A complete pair
@@ -132,11 +132,11 @@ Outcome: `Adopt` / `Extend` (once) / `Reject(reason)` — all 16 `RejectReason`s
 
 Standard conviction voting (1×–6×, locks up to 32 weeks). Tracks (deposit / prepare /
 decision / confirm / approval / support / enactment):
-`metric` (10k WIT, 2d/14d/2d, 60%→50% / 10%→2%, 14 d) · `constitution` (25k, 2d/21d/3d,
+`metric` (10k VIT, 2d/14d/2d, 60%→50% / 10%→2%, 14 d) · `constitution` (25k, 2d/21d/3d,
 67% / 15%→5%, 28 d) · `entrenched` (50k, 7d/28d/7d, 80% / 20%→10%, 4 epochs) · `guardian`
 (5k, 1d/7d/1d, 55% / 5%, 2 d) · `ratify` (1k, 1d/7d/1d, 50% / 5%, immediate — the only
 deadline is at `execute()`) · `oracle` (5k, 0/7d/1d, 60% / 10%→3%, immediate).
-The `oracle` track tally uses a **pre-cohort conviction snapshot**: WIT locked after the
+The `oracle` track tally uses a **pre-cohort conviction snapshot**: VIT locked after the
 disputed cohort began has zero weight — the UI shows each voter's snapshot-eligible power.
 
 **Ratification** (CODE/META): a `ratify` referendum can be submitted any time after the
@@ -146,7 +146,7 @@ artifact hash is committed, runs concurrently with trading/timelock, and is chec
 
 ## 7. Guardians, playbooks, attestors (06 §5–§7)
 
-- **Guardians**: 7 elected accounts, 50k WIT bond each, **5-of-7** approvals dispatch
+- **Guardians**: 7 elected accounts, 50k VIT bond each, **5-of-7** approvals dispatch
   atomically; pending actions expire after 3 days. Powers with allowances: `pause_intake`
   (≤ 14 d, 1 per 4 epochs), `delay_once` (one queued proposal, once ever), `force_rerun`
   (1/epoch), `activate_playbook` (only while its on-chain trigger is verifiably active),
@@ -158,7 +158,7 @@ artifact hash is committed, runs concurrently with trading/timelock, and is chec
   `PB-RESERVE` (halt split inflows only; merge/redeem/exit stay open), `PB-LEDGER-FREEZE`
   (all ledger + market calls error `Frozen`; ≤ 14 d + one renewal). Active playbooks show
   trigger + expiry countdown.
-- **Attestors**: ≥ 3 bonded members (25k WIT); CODE/META upgrades need a 2-of-N signed
+- **Attestors**: ≥ 3 bonded members (25k VIT); CODE/META upgrades need a 2-of-N signed
   attestation (reproducible build + kernel invariants preserved), challengeable for 72 h.
   UI: "2 of 3 attested" progress on upgrade proposals.
 
@@ -182,7 +182,7 @@ resolves deterministic disputes mechanically. Evidence is content-addressed
 
 ## 9. Treasury (08)
 
-- **NAV** = liquid USDC + stream remainders owed in − obligations; WIT holdings and in-flight
+- **NAV** = liquid USDC + stream remainders owed in − obligations; VIT holdings and in-flight
   XCM marked 0 (conservative). `nav()` exposes `nav`, `spendable_nav`, `reserve_impaired`,
   `meter_utilization` + per-class floors (distance-to-floor rendering; arming below floor
   fails loudly with `NavFloorUnmet`).
@@ -191,7 +191,7 @@ resolves deterministic disputes mechanically. Evidence is content-addressed
   keepers, evidence hosting, monitoring, Arweave, collators, coretime).
 - **Streams**: linear vesting grants, recipient-claimable (`claim_stream`); mandatory for
   grants > 1% NAV; cancellable by a later TREASURY decision.
-- **Meters** (gauges in the UI): per-proposal ≤ 5% NAV; 30-day ≤ 10%; 180-day ≤ 30%; WIT
+- **Meters** (gauges in the UI): per-proposal ≤ 5% NAV; 30-day ≤ 10%; 180-day ≤ 30%; VIT
   issuance ≤ 2%/yr. `SlotsShrunk` (slate reduced to fit the POL budget) must appear on the
   epoch dashboard.
 - **Reserve health**: daily XCM probe of USDC transferability; 2 consecutive fails ⇒

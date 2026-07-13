@@ -24,10 +24,13 @@ milestone). Never start a second milestone in the same session.
 - Read every `docs/architecture/` section cited in the milestone's **Spec** column,
   plus the standing slices: `02` for any frozen names/types you'll touch, `13` for any
   numeric value, `15` for the milestone's verification obligations.
-- The spec is frozen (rule R-1). If it is ambiguous, contradictory, or silent on
-  something you need: record it in PLAN.md · **Spec questions** (cite doc §), pick the
-  most conservative reading **only if** work can proceed safely without the answer —
-  otherwise mark the milestone ⛔ and ask the user.
+- The spec is the source of truth (rule R-1). If it is ambiguous, contradictory, or
+  silent on something you need: record it in PLAN.md · **Spec questions** (cite doc §),
+  pick the most conservative reading **only if** work can proceed safely without the
+  answer — otherwise mark the milestone ⛔ and ask the user. The spec is editable, so a
+  genuine defect can be corrected directly under R-1 (consistently across the doc set,
+  logged in the Decision log) — but confirm non-obvious semantic changes with the user
+  first rather than coding around or silently rewriting the spec.
 
 ## 3. Declare scope
 

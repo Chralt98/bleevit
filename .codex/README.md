@@ -1,7 +1,7 @@
 # .codex/ — Codex CLI playbooks for this repository
 
 Codex reads the root [`AGENTS.md`](../AGENTS.md) automatically — the rules there
-(frozen architecture, spec-first, living documents, quality gates) bind Codex
+(spec as source of truth, spec-first, living documents, quality gates) bind Codex
 sessions exactly as they bind Claude Code sessions.
 
 This directory adds **session playbooks**: self-contained prompts that mirror the
@@ -32,6 +32,7 @@ codex exec "$(cat .codex/prompts/spec-audit.md) Scope: ledger"
 
 These playbooks and the `.claude/skills/` procedures must stay equivalent; whoever
 changes one updates the other (`/sync-docs` checks this). Codex has no equivalent of
-the Claude hooks, so the playbooks restate the two hook-enforced rules explicitly:
-never modify `docs/architecture/`, and never end a session that changed the repo
-without updating `PLAN.md`.
+the Claude hooks, so the playbooks restate the hook-enforced rules explicitly: never
+modify `docs/architecture/`, never end a session that changed the repo without
+updating `PLAN.md`, and never alter README.md's pinned opening (thank-you to Prof.
+Robin Hanson) or closing (Bon appétit) line (rule R-11, AGENTS.md).

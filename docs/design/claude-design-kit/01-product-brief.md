@@ -29,7 +29,7 @@ values, bet on beliefs.*
   against reality for weeks, and finally settled — with several epoch cohorts in flight at once. (05)
 
 Money: **USDC** (a USDC-backed stable asset, 6 decimals) is the sole market collateral, bond
-currency and settlement unit. **WIT** (native token, 12 decimals) is for values voting,
+currency and settlement unit. **VIT** (native token, 12 decimals) is for values voting,
 guardian/collator bonds, and fees (fees payable in either currency). Blocks every 6 seconds. (01 §4, 02)
 
 ## 2. What this frontend is
@@ -60,7 +60,7 @@ The **canonical client is itself decentralized** (10, 11, 12):
 | **Observer / citizen** | Watches governance: epoch clock, proposals, welfare dashboard, settlements | S1, S2, S7, S8 |
 | **Trader** | Bets on ACCEPT/REJECT welfare outcomes; splits USDC into conditional positions, trades LMSR books, redeems after settlement | S3, S4, S20 |
 | **Proposer** | Submits a proposal batch with bond + preimage; tracks it through the lifecycle | S5, S2 |
-| **WIT voter / delegate** | Votes on six referenda tracks with conviction locks; delegates; ratifies CODE/META outcomes; votes terminal oracle disputes | S9–S11 |
+| **VIT voter / delegate** | Votes on six referenda tracks with conviction locks; delegates; ratifies CODE/META outcomes; votes terminal oracle disputes | S9–S11 |
 | **Funder** | Moves USDC from Polkadot Asset Hub in/out of the chain (guided two-leg XCM flow) | S12, S13, S20 |
 | **Oracle reporter / watchtower** | Bonded professionals: report metric values, challenge lies, escalate disputes, file evidence | S14, S19 |
 | **Guardian** (7 elected) | 5-of-7 approval console for emergency playbooks; every action retro-ratified | S15 |
@@ -103,7 +103,7 @@ denser information, no simplified summaries (11 §11.2).
 - Scale bounds (max sustained): ≤ 32 live proposals, ≤ 196 live books, 64 positions per
   account, 21-day cycles settling for weeks — a busy but bounded system; no infinite feeds. (13, 02)
 - Addresses render as checksummed SS58 (prefix 7777) with identicons. USDC has 6 decimals,
-  WIT 12. (02, 11 §11.3)
+  VIT 12. (02, 11 §11.3)
 
 ## 6. Current status
 

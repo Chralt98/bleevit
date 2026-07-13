@@ -11,14 +11,15 @@ Read this file first. Then read `PLAN.md`. Then work.
 
 ## Ground truth
 
-- **`docs/architecture/` (00–15) is the single source of truth and it is FROZEN** —
-  see rule R-1. Doc 00 is the decision record (D-1…D-18); 01 the system overview;
-  02 the frozen chain↔frontend integration contract; 03–09 the protocol components;
+- **`docs/architecture/` (00–15) is the single source of truth** for what to build
+  (see rule R-1). Doc 00 is the decision record (D-1…D-18); 01 the system overview;
+  02 the chain↔frontend integration contract (a versioned surface — see 02 §13);
+  03–09 the protocol components;
   10–12 the frontend and operations; 13 the only home of parameter values;
   14 the threat model; 15 the invariants and the normative testing regime.
   Reading order for newcomers: 01 → 02 → 03 → 04 → 05, then as needed
   (`docs/architecture/README.md`).
-- Constants and parameters have exactly two homes: `02` (chain identity, frozen
+- Constants and parameters have exactly two homes: `02` (chain identity, the
   contract surface) and `13` (everything else). Any other file that needs a value
   references them — including code (kernel constants from `futarchy-primitives`,
   tunables from `pallet-constitution::Params`; the frontend reads chain
@@ -29,12 +30,17 @@ Read this file first. Then read `PLAN.md`. Then work.
 
 ## Rules
 
-- **R-1 — The architecture is frozen.** Never modify, delete, rename, or add anything
-  under `docs/architecture/`. Implementation conforms to the spec, never the reverse.
-  Found a defect, ambiguity, or contradiction? Record it in PLAN.md · *Spec questions*
-  with a precise citation and ask the user. Amendments happen only through the
-  change-control procedure below. (Enforced by permission rules and hooks; do not
-  work around them.)
+- **R-1 — The specification is the source of truth for behavior.** Every observable
+  behavior traces to `docs/architecture/` (00–15); implementation follows the spec.
+  The spec is editable — when it is genuinely wrong, ambiguous, or contradictory you
+  may correct it directly rather than coding around it. Do it deliberately: keep the
+  change internally consistent across the doc set (owning doc + every referencing doc
+  + 00's decision record if a D-n is affected; bump `INTEGRATION_CONTRACT_VERSION` per
+  02 §13 when 02 changes; changes to `02` or the INV-FE texts need the joint
+  backend+frontend sign-off those docs mandate — the user speaks for both sides or
+  names who does), and record substantive changes in PLAN.md · *Decision log*. When a
+  semantic change is non-obvious or you are unsure, log it in PLAN.md · *Spec
+  questions* and ask the user before diverging.
 - **R-2 — Spec-first implementation.** Before writing code, read the owning
   architecture sections for the milestone (its *Spec* column), plus the relevant
   slices of 02, 13, and 15. Every observable behavior must be traceable to spec text.
@@ -74,6 +80,19 @@ Read this file first. Then read `PLAN.md`. Then work.
 - **R-10 — Honest reporting.** Report what happened: gates that failed, spec
   questions found, work left open. The next session inherits your PLAN.md state —
   optimistic status lines are technical debt with interest.
+- **R-11 — README's pinned lines are fixed.** `README.md` always opens, as the first
+  paragraph right after the `# Bleavit` heading, with:
+  > Futarchy was invented by Prof. Robin Hanson — thank you for your work; this
+  > project exists to build one.
+
+  and always ends, as the last line of the file, with:
+  > You theorized it, we are cooking it. Bon appétit, Prof. Hanson.
+
+  Both are verbatim and permanent — no rewording, trimming, or removal by any
+  doc-sync pass, refactor, or rewrite. Set by explicit user instruction
+  (2026-07-13). Enforced in Claude Code by a Stop hook (`guard-readme.sh`); Codex
+  has no hook equivalent, so its playbooks restate this rule explicitly
+  (`.codex/README.md`).
 
 ## Session protocol
 
@@ -102,14 +121,14 @@ per milestone):
 | Runtime crates | `try-state` green in test envs; benchmarks compile; no new `unwrap`/`expect`/`panic!`/`unsafe` in runtime code |
 | Reference model | its pytest suite; CI-regenerated vectors match committed vectors (04 §5) |
 | Frontend (once scaffolded) | lint · typecheck · unit tests · build; dependency-cruiser firewall clean |
-| Docs | every relative link in living documents resolves; `docs/architecture/` untouched (`git status`) |
+| Docs | every relative link in living documents resolves |
 
 ## Repository layout
 
 | Path | Status | What it is |
 |---|---|---|
-| `docs/architecture/` | frozen | The specification (00–15 + README) |
-| `docs/design/` | derived | Non-normative design-context pack (`claude-design-kit/`: spec distillations + Claude Design prompt); spec wins on conflict; regenerate after any amendment |
+| `docs/architecture/` | spec | The specification (00–15 + README) |
+| `docs/design/` | derived | Non-normative design-context pack (`claude-design-kit/`: spec distillations + Claude Design prompt); spec wins on conflict; regenerate after any spec change |
 | `PLAN.md` | living | Implementation roadmap, status, session log |
 | `README.md` | living | Human orientation |
 | `AGENTS.md` / `CLAUDE.md` | living | This manual / Claude Code wiring |
@@ -123,22 +142,17 @@ per milestone):
 | `zombienet/`, `chopsticks/` | planned (B7) | Test-environment definitions (release artifacts, 15 §4.7) |
 | `deploy/runbooks/` | planned (Track O) | Runbooks-as-code (12 §6) |
 
-## Amending the architecture (change control)
+## Changing the specification
 
-Almost never the right move — the set disposed of a 101-finding review. When the user
-explicitly decides an amendment:
-
-1. The user states the change and authorizes it in this session (quote it in PLAN.md ·
-   *Decision log*). Changes to `02` or to the INV-FE texts additionally require the
-   joint backend+frontend sign-off that those documents themselves mandate (02 §13,
-   15 §2.1) — the user speaks for both sides or names who does.
-2. Create `.claude/architecture-amendment.flag` (empty file). This stands the write
-   guard down; the Stop hook will refuse to end the session while it exists.
-3. Make the amendment consistently across the doc set (owning doc + every referencing
-   doc + 00's decision record if a D-n is affected; bump `INTEGRATION_CONTRACT_VERSION`
-   per 02 §13 when 02 changes).
-4. Record in PLAN.md · *Decision log*: what changed, why, the user's authorization,
-   affected docs. Then **delete the flag** and finish the session normally.
+The spec is complete and the product of a 101-finding review, so changes should be
+rare and deliberate — but `docs/architecture/` is editable, not guarded. When a change
+is warranted, follow **R-1**: make it consistent across the whole doc set (owning doc +
+every referencing doc + 00's decision record if a D-n is affected), bump
+`INTEGRATION_CONTRACT_VERSION` per 02 §13 when 02 changes, honor the joint
+backend+frontend sign-off that 02 §13 and 15 §2.1 mandate for `02`/INV-FE edits, and
+record what changed (and why, and who authorized it) in PLAN.md · *Decision log*. If a
+semantic change is non-obvious, raise it in PLAN.md · *Spec questions* and confirm with
+the user first.
 
 ## Where things live
 

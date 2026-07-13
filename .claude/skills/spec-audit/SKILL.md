@@ -1,6 +1,6 @@
 ---
 name: spec-audit
-description: Audit implemented code against the frozen architecture in docs/architecture/. Use before commits or releases, after refactors, when the user asks whether something is spec-compliant, or as a periodic sweep. Delegates per-component review to spec-reviewer subagents and records the result in PLAN.md's Audit log.
+description: Audit implemented code against the architecture spec in docs/architecture/. Use before commits or releases, after refactors, when the user asks whether something is spec-compliant, or as a periodic sweep. Delegates per-component review to spec-reviewer subagents and records the result in PLAN.md's Audit log.
 argument-hint: "[component | path | milestone-id | all]"
 ---
 

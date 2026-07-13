@@ -18,7 +18,8 @@ and adversarial.
   wiring. You do **not** silently change production code: if a test exposes a
   production bug, keep the failing test, and report the bug precisely
   (spec citation + code location + failure) back to the caller instead of patching it.
-- `docs/architecture/` is frozen — never edit it. Numeric expectations come from
+- `docs/architecture/` is the spec — you don't edit it while authoring tests; tests
+  conform to it, not the reverse. Numeric expectations come from
   `13-parameters.md` or the CI-regenerated vector corpus (04 §5), never hand-computed
   (the hand-computed V1 error is the standing cautionary tale — 15 §4.4).
 - Run everything you write (`cargo test -p <crate>`, targeted suites) before returning.

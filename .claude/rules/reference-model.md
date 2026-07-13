@@ -18,9 +18,10 @@ The Python reference model exists to catch bugs in the Rust implementation by
 3. **Determinism.** Fixed seeds, no wall-clock, no environment-dependent behavior;
    byte-identical JSON output for identical inputs (stable key order, explicit precision).
    MPFR reference math runs at 256-bit precision.
-4. **Shared corpus schema is contract-owned.** The JSON vector schema is frozen by
+4. **Shared corpus schema is contract-owned.** The JSON vector schema is defined by
    `02-integration-contract.md` §11 — the same artifacts feed the backend differential
-   suites and the frontend's TypeScript port. Schema changes follow 02's change control.
+   suites and the frontend's TypeScript port. Changing the schema is a change to doc 02
+   (rule R-1): bump `INTEGRATION_CONTRACT_VERSION` and keep both consumers in step.
 5. **Scope.** The model covers LMSR cost/pricing, TWAP, the ledger operation semantics
    (incl. gate/Baseline/VOID and rounding), the welfare pipeline, and the decision rule
    with reason codes (05 §4.4 bit-identical requirement), plus the treasury arithmetic

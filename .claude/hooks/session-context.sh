@@ -33,14 +33,7 @@ else
   echo "WARNING: PLAN.md is missing. Recreate it per AGENTS.md · rule R-3 before any other work."
 fi
 
-if [ -f .claude/architecture-amendment.flag ]; then
-  echo
-  echo "WARNING: .claude/architecture-amendment.flag is PRESENT — the docs/architecture/"
-  echo "write guard is DISABLED. Finish the authorized amendment and delete the flag"
-  echo "(AGENTS.md · Amending the architecture)."
-fi
-
 echo
-echo "Protocol reminder (AGENTS.md): one milestone per session · implement only from"
-echo "docs/architecture/ (frozen) · verify per doc 15 · update PLAN.md before stopping."
+echo "Protocol reminder (AGENTS.md): one milestone per session · implement from the spec"
+echo "in docs/architecture/ · verify per doc 15 · update PLAN.md before stopping."
 exit 0

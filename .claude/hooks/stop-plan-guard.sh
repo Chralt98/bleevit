@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Stop hook — enforces rule R-3 (AGENTS.md): PLAN.md must reflect every session
-# that changed the repository, and an open architecture-amendment flag must be
-# closed before the session may end. Blocks at most once (stop_hook_active).
+# that changed the repository. Blocks at most once (stop_hook_active).
 set -euo pipefail
 
 INPUT=$(cat)
@@ -11,13 +10,7 @@ ACTIVE=$(jq -r '.stop_hook_active // false' <<<"$INPUT")
 cd "${CLAUDE_PROJECT_DIR:-$(pwd)}"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
-# 1. Never leave an amendment window open.
-if [ -f .claude/architecture-amendment.flag ]; then
-  jq -n '{decision:"block", reason:"The architecture amendment window is still open (.claude/architecture-amendment.flag exists). Finish the change-control procedure from AGENTS.md: verify the amended docs are internally consistent, record the amendment (what, why, user authorization) in PLAN.md · Decision log, then DELETE .claude/architecture-amendment.flag. Only then stop."}'
-  exit 0
-fi
-
-# 2. Repo changed but PLAN.md untouched → ask for the doc-sync pass.
+# Repo changed but PLAN.md untouched → ask for the doc-sync pass.
 CHANGES=$(git status --porcelain 2>/dev/null | grep -vE '\.claude/settings\.local\.json$' || true)
 [ -z "$CHANGES" ] && exit 0
 

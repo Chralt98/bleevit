@@ -20,24 +20,25 @@ rollout that removes `sudo` at Phase 4.
 
 ## Status
 
-**Specification complete and frozen (2026-07-12) · implementation not started.**
+**Specification complete (2026-07-12) · implementation not started.**
 
 - The authoritative spec is [`docs/architecture/`](docs/architecture/README.md) —
   16 component documents + decision record, produced by resolving all 101 findings
-  of an adversarial design review. It is **immutable** for day-to-day work
-  (change-controlled; see [AGENTS.md](AGENTS.md)).
+  of an adversarial design review. Treat changes to it as rare and deliberate — the
+  implementation follows the spec — but it is editable, not guarded; see rule R-1 in
+  [AGENTS.md](AGENTS.md).
 - Implementation progress, milestones, and the session log live in [`PLAN.md`](PLAN.md).
 
 ## Repository map
 
 | Path | What it is |
 |---|---|
-| [`docs/architecture/`](docs/architecture/README.md) | The frozen specification (00–15). Start with its README; reading order 01 → 02 → 03 → 04 → 05 |
+| [`docs/architecture/`](docs/architecture/README.md) | The specification (00–15). Start with its README; reading order 01 → 02 → 03 → 04 → 05 |
 | [`docs/design/`](docs/design/claude-design-kit/00-START-HERE.md) | Derived, non-normative design assets: `claude-design-kit/` packs the spec into ≤10 files + a ready prompt for generating frontend design prototypes with Claude Design |
 | [`PLAN.md`](PLAN.md) | Implementation roadmap, milestone status, session log — the living source of "where are we" |
 | [`AGENTS.md`](AGENTS.md) | Operating manual + rules for all coding agents (and useful for humans) |
 | [`CLAUDE.md`](CLAUDE.md) | Claude Code wiring: skills, subagents, hooks |
-| `.claude/` | Enforcement + automation: architecture write-guard hooks, session-context injection, skills, subagents, path-scoped rules |
+| `.claude/` | Automation: session-context injection, skills, subagents, path-scoped rules, and Stop-hook guards for PLAN.md freshness and README's pinned lines |
 | `.codex/` | Codex CLI session playbooks mirroring the skills |
 | `crates/`, `pallets/`, `runtime/`, `node/`, `reference-model/`, `frontend/` | Planned — created milestone by milestone per PLAN.md |
 
@@ -46,9 +47,9 @@ rollout that removes `sudo` at Phase 4.
 The project is implemented **incrementally across many agent sessions**, one PLAN.md
 milestone at a time, under three standing constraints:
 
-1. `docs/architecture/` is never modified (hook- and permission-enforced);
-2. every observable behavior traces to a spec section; parameter values come only
-   from doc 13 / the frozen contract in doc 02;
+1. every observable behavior traces to a spec section; the spec is the source of
+   truth and changes to it are rare and deliberate (rule R-1);
+2. parameter values come only from doc 13 / the contract surface in doc 02;
 3. the living documents (PLAN/README/AGENTS/CLAUDE) are updated in the same session
    as any change — enforced by a Stop hook.
 

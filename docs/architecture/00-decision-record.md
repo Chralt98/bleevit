@@ -77,7 +77,7 @@ New FE epic **FE-14 (Governance surface)**: referenda list/detail, vote/delegate
 
 - **Withdraw (exit)**: `pallet_xcm.reserve_transfer` on the futarchy chain — normal FE screen with precondition row.
 - **Deposit (on-ramp)**: a guided funding flow with a second light-client connection to **Asset Hub** and a pinned Asset Hub descriptor set (added to the descriptor pipeline). Shipped in the same release train; the flow is listed in the §26-equivalent WBS.
-- **Fees (X-14)**: `pallet-asset-tx-payment` is wired to a constitution key **`fee.wit_usdc_rate`** (typed, bounded [0.1×, 10×] around its reference, PARAM-adjustable, genesis default set from the launch reference price). USDC-only users can always pay fees in USDC. The FE fee-currency selector binds to this key.
+- **Fees (X-14)**: `pallet-asset-tx-payment` is wired to a constitution key **`fee.vit_usdc_rate`** (typed, bounded [0.1×, 10×] around its reference, PARAM-adjustable, genesis default set from the launch reference price). USDC-only users can always pay fees in USDC. The FE fee-currency selector binds to this key.
 
 ### D-13. Phase-3 insider risk contained (X-9)
 
@@ -95,7 +95,7 @@ New FE epic **FE-14 (Governance surface)**: referenda list/detail, vote/delegate
 
 ### D-15. Genesis economics specified (B-14, B-15, B-18)
 
-- **WIT**: total supply 1,000,000,000 (12 decimals). Allocation: 30% treasury reserve; 25% community distribution (vested); 20% founding team (4-year vest, 1-year cliff); 15% ecosystem/ops fund; 10% Phase 3–4 incentive programs. `iss.inflation_cap = 2%/yr`, issuance mechanism specified in `08`.
+- **VIT**: total supply 1,000,000,000 (12 decimals). Allocation: 30% treasury reserve; 25% community distribution (vested); 20% founding team (4-year vest, 1-year cliff); 15% ecosystem/ops fund; 10% Phase 3–4 incentive programs. `iss.inflation_cap = 2%/yr`, issuance mechanism specified in `08`.
 - **USDC treasury**: initial funding target **≥ 25M USDC** before Phase 5 arming; published **minimum-viable NAV per class** gates phase advancement (one CODE ⇒ NAV ≥ ~14M at floor liquidity; the gate is explicit and loud, not silent).
 - **Collator compensation**: treasury ops line, 2,000 USDC/collator/epoch initial (PARAM-adjustable).
 - **Welfare cold start (B-15)**: genesis ships `PriorBounds` (declared from Phase-2 shadow data); epochs 1–12 winsorize against `prior ∪ available` — `s` is deterministically computable from epoch 1.
@@ -115,15 +115,15 @@ New FE epic **FE-14 (Governance surface)**: referenda list/detail, vote/delegate
 | ss58 prefix | **7777** (registry submission required before Phase 2) |
 | paraId | assigned at onboarding; test fixtures use 4242 |
 | USDC | `ForeignAssets`, XCM `Location {parents: 1, X3(Parachain(1000), PalletInstance(50), GeneralIndex(1337))}` **[VERIFY asset index 1337]** — pinned in FE `ChainIdentity` |
-| USDC decimals | 6 · WIT decimals | 12 |
-| WIT existential deposit | 0.01 WIT |
+| USDC decimals | 6 · VIT decimals | 12 |
+| VIT existential deposit | 0.01 VIT |
 | Phase flag | `pallet-constitution` storage `PhaseFlags` (bitset), the key the FE binds trading enablement to |
 
 ### D-18. Remaining governance/oracle hardening decisions
 
-- **Oracle adjudication track (B-19)**: raised to 60% approval / 10% support / 7-day; tally uses a **pre-cohort conviction snapshot** (WIT locked before cohort creation), excluding capital that entered after the dispute's subject cohort began.
+- **Oracle adjudication track (B-19)**: raised to 60% approval / 10% support / 7-day; tally uses a **pre-cohort conviction snapshot** (VIT locked before cohort creation), excluding capital that entered after the dispute's subject cohort began.
 - **Gate determinism (B-9)**: C is split into `C_onchain` (deterministic, same-block computable: XCM health, collator set, runtime panics, reserve health) which alone drives **daily** gate-breach flags and gate-market settlement, and `C_attested` (incidents, external prices) which enters settlement-time W only.
-- **WIT reflexivity (B-10)**: the E component values security collateral as dimensionless **coverage ratios** against WIT-denominated requirements; no WIT price enters W anywhere.
+- **VIT reflexivity (B-10)**: the E component values security collateral as dimensionless **coverage ratios** against VIT-denominated requirements; no VIT price enters W anywhere.
 - **Challenge windows (mediums)**: extended to 72h with a bonded-watchtower acknowledgment quorum (2-of-N registered watchtowers co-sign "observed", else the window extends once by 48h); TM-4 row corrected to "delay, and wrong only under watchtower + collator collusion".
 - **Kernel attestation (mediums)**: bonded attestor registry (values-elected, ≥3), 2-of-3 signed attestations with challenge window — no longer presence-only.
 - **Oracle bonds (mediums)**: challenge/report bonds scale with cohort value-at-stake: `bond = max(flat_floor, bps × cohort_escrow)`.
@@ -149,7 +149,7 @@ Every DESIGN_REVIEW.md finding, its resolution, and the owning component documen
 | X-11a–j | D-2, D-17: drift items individually fixed (ForeignAssets location, ss58/paraId/ED/phase-flag, oracle names, epoch event names, constants API, T20 `Voided` event, `DecisionOutcome`, no FE hardcodes, execute precondition row completed, phantom §18.6 refs removed) | 02 + owning docs |
 | X-12 | D-11: FE-15 operator surface | 11 |
 | X-13 | D-16: owners + funding + permabuy | 12 |
-| X-14 | D-12: `fee.wit_usdc_rate` | 08 |
+| X-14 | D-12: `fee.vit_usdc_rate` | 08 |
 | X-15 | D-2: published test artifacts | 02, 15 |
 | B-1 | D-1 | 03 |
 | B-2 | Gate instruments representable: `PositionKind` gains `GateYes(gate)`, `GateNo(gate)` per branch; `VaultInfo` gains per-branch gate-set supplies; `settle_gate(pid, gate, outcome)` call; conservation identity extended per-branch over the enlarged set | 03 |
@@ -251,7 +251,7 @@ Every DESIGN_REVIEW.md finding, its resolution, and the owning component documen
 - Scalar redemption: LONG `floor(a·s)`; unpaired SHORT `floor(a·(1−s))`; paired via `redeem_scalar_pair` = exactly `a`.
 - `DescriptorLeadTime = 43,200` blocks (72h). PB-LEDGER-FREEZE ≤ 14 days + one renewal.
 - Keeper metered budget 12,000 USDC/epoch. Collator comp 2,000 USDC/collator/epoch. Intake: ≤4 entries/epoch/account; 10% bond slash (to INSURANCE — burning USDC would strand backing reserve) on non-decision-grade/preimage-missing outcomes.
-- Chain identity per D-17. WIT supply 10⁹ (12 dec); USDC 6 dec; treasury target ≥ 25M USDC; min-viable NAV per class per 08.
+- Chain identity per D-17. VIT supply 10⁹ (12 dec); USDC 6 dec; treasury target ≥ 25M USDC; min-viable NAV per class per 08.
 - Oracle adjudication track: 60% / 10% support / 7-day / pre-cohort snapshot.
 - Bootnodes: ≥8 WSS, ≥4 operators, ≥2 on :443; operator served-state window 30 days.
 

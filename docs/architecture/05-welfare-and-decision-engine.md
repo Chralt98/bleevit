@@ -1,6 +1,6 @@
 # 05 — Welfare Function, State Machines and Decision Engine
 
-**Status: normative component specification. Supersedes the corresponding sections of BACKEND_PLAN.md/FRONTEND_PLAN.md** (BE §8, §9, §12, §13-veto-tests, §14; the welfare/decision rows of §5.2.3–5.2.4, §21, §23). Normative language: RFC 2119. Decisions implemented here: D-4, D-7, D-15 (cold start, collator-D cap), D-18 (gate split, WIT reflexivity), and the B-9/B-10/B-12/B-15 + medium-finding dispositions of [`00-decision-record.md`](./00-decision-record.md).
+**Status: normative component specification. Supersedes the corresponding sections of BACKEND_PLAN.md/FRONTEND_PLAN.md** (BE §8, §9, §12, §13-veto-tests, §14; the welfare/decision rows of §5.2.3–5.2.4, §21, §23). Normative language: RFC 2119. Decisions implemented here: D-4, D-7, D-15 (cold start, collator-D cap), D-18 (gate split, VIT reflexivity), and the B-9/B-10/B-12/B-15 + medium-finding dispositions of [`00-decision-record.md`](./00-decision-record.md).
 
 **Boundary.** This document owns: the proposal state machine, the epoch and cohort machines, the welfare function W and its aggregation/normalization discipline, the gate-veto tests, the settlement score `s`, and the decision engine `decide()`. It references but does not own: ledger mechanics and vault states ([`03-conditional-ledger.md`](./03-conditional-ledger.md)), LMSR/TWAP/Baseline market mechanics ([`04-markets-and-pricing.md`](./04-markets-and-pricing.md)), ratification, guardians and playbooks ([`06-governance-and-guardians.md`](./06-governance-and-guardians.md)), oracle rounds, registries and watchtowers ([`07-oracle-and-disputes.md`](./07-oracle-and-disputes.md)), security-sizing economics and defaults ([`08-treasury-and-economics.md`](./08-treasury-and-economics.md)), execution-guard dispatch checks ([`09-execution-upgrades-and-rollout.md`](./09-execution-upgrades-and-rollout.md)), parameter values ([`13-parameters.md`](./13-parameters.md)), and the canonical shared types ([`02-integration-contract.md`](./02-integration-contract.md)). Values quoted here for readability are *(normative value: §13)* unless marked kernel (K).
 
@@ -201,7 +201,7 @@ All pillar values, gates and W in `FixedU64` (1e9) on [0,1]. Floors θ⁻ are ke
 
 **Settlement score:** `s = GeoMean(W_{e+1}, W_{e+2})` over the cohort's k = 2 horizon — already in [0,1]; no anchor-ratio mapping (ADR-6). Computation discipline in §4.6; consumption in §7.
 
-**Reflexivity exclusions (kernel):** no input may be a price from the protocol's own markets; **WIT price appears nowhere in W** — including, after the §4.3 E-component fix, in the C pillar (B-10 closed). Raw tx count, unadjusted TVL, and WIT price remain excluded from binding W.
+**Reflexivity exclusions (kernel):** no input may be a price from the protocol's own markets; **VIT price appears nowhere in W** — including, after the §4.3 E-component fix, in the C pillar (B-10 closed). Raw tx count, unadjusted TVL, and VIT price remain excluded from binding W.
 
 ### 4.2 The C split: `C_onchain` vs `C_attested` (B-9, D-18)
 
@@ -234,20 +234,20 @@ Changes vs. the superseded §12.3: XCM health `X` moves from S into `C_onchain` 
 | | Runtime performance (0.30) | benchmarked weight-per-op regression index, full-epoch continuous sampling | attested reproducible harness | carry | benchmark-day gaming — continuous sampling |
 | | Ecosystem integrations (0.30) | qualified independent integrations passing a 30-day on-chain fee-paying usage bar | attested registry | 0 | shells — usage bar on-chain-verifiable |
 
-#### 4.3.1 `E` — coverage ratios, no WIT price anywhere (B-10, D-18)
+#### 4.3.1 `E` — coverage ratios, no VIT price anywhere (B-10, D-18)
 
-The superseded `E` valued WIT-denominated bonds through an attested WIT price — precisely the WIT → C → W → settlement reflexivity loop the kernel forbids, plus a 30-day-median pump vector into gate flags. Normative replacement:
+The superseded `E` valued VIT-denominated bonds through an attested VIT price — precisely the VIT → C → W → settlement reflexivity loop the kernel forbids, plus a 30-day-median pump vector into gate flags. Normative replacement:
 
 ```
 E = Π_j max(cov_j, ε_C)^{v_j},    Σ v_j = 1,   ε_C = 0.01
 cov_j = clamp(held_j / required_j, 0, 1)        // same-asset ratio, dimensionless
-j ∈ { collator: Σ collator bonds held (WIT) / (collator.bond_req_wit · n_target),
-      guardian: Σ guardian bonds held (WIT) / (grd.bond · 7),
+j ∈ { collator: Σ collator bonds held (VIT) / (collator.bond_req_vit · n_target),
+      guardian: Σ guardian bonds held (VIT) / (grd.bond · 7),
       oracle:   Σ reporter stakes held (USDC) / (orc.reporter_stake · orc.n_min) }
 Default v = (0.4, 0.3, 0.3)   (normative values incl. *_req keys: §13)
 ```
 
-Every ratio divides a held amount by a **requirement denominated in the same asset** (WIT requirements in WIT, USDC requirements in USDC — requirements are constitution keys). No conversion rate, no external price, no oracle input exists in `E`; it is deterministic and same-block computable, hence lives in `C_onchain`. Raising security by raising requirements is a values/META decision on the `*_req` keys, not a market observable.
+Every ratio divides a held amount by a **requirement denominated in the same asset** (VIT requirements in VIT, USDC requirements in USDC — requirements are constitution keys). No conversion rate, no external price, no oracle input exists in `E`; it is deterministic and same-block computable, hence lives in `C_onchain`. Raising security by raising requirements is a values/META decision on the `*_req` keys, not a market observable.
 
 ### 4.4 Intra-pillar aggregation — fully specified (B-med: C/P/A aggregation; G-7)
 
@@ -550,7 +550,7 @@ No other pallet, origin, playbook, or values track can invoke any settlement cal
 |---|---|
 | B-8 (engine side) | §5.4 step 9 + §5.6: `InCapPrize ≤ AttackCost̂/3` computed from measured depth at decide time, `RejectReason::SecuritySizing`; conservative rounding; economics and Ask-scaled secondary mechanism in [doc 08](./08-treasury-and-economics.md) (D-4) |
 | B-9 | §4.2/§4.4/§4.7: C split into `C_onchain` (X, R, E, H, Π, K — deterministic, same-block) driving daily flags and gate settlement, and `C_attested` entering settlement-time W only (D-18) |
-| B-10 | §4.3.1: E is dimensionless same-asset coverage ratios against constitution-key requirements; no WIT price (or any price) anywhere in W |
+| B-10 | §4.3.1: E is dimensionless same-asset coverage ratios against constitution-key requirements; no VIT price (or any price) anywhere in W |
 | B-12 | §2.1/§2.2: T21 `Rejected/Expired → Measuring`, T22 `FailedExecuted → Measuring`, T23 `FailedExecuted → Executed`; T13 restructured so reruns re-enter `Extended` for 3 days and decide via T9/T10, satisfying `decide()`'s precondition; table re-verified edge-for-edge against the diagram |
 | B-15 | §4.6: genesis `PriorBounds` (12 pseudo-observations/component from Phase-2 shadow data); epochs 1–12 winsorize against the trailing-12 of prior ∪ available; `s` deterministic from epoch 1 (D-15) |
 | D-7 | §1.1: `Emergency` deleted from class enum, classifier, and every state-machine/parameter row; guardian playbooks ([doc 06](./06-governance-and-guardians.md)) own emergencies; ADR-3 completeness satisfiable |

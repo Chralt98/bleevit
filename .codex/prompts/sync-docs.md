@@ -1,7 +1,7 @@
 Bring this repository's living documents back in line with reality (AGENTS.md is
 binding). Scope: README.md, PLAN.md, AGENTS.md, CLAUDE.md, .claude/ assets, .codex/
-playbooks. docs/architecture/ is the frozen spec — NEVER modify it; it is not part
-of this task.
+playbooks. docs/architecture/ is the spec and is out of scope here — leave it alone;
+syncing the living documents is never the place to change the spec.
 
 1. GROUND TRUTH first — never write from memory:
    git status --porcelain; git diff --stat HEAD; git log --oneline -10; the actual
@@ -15,6 +15,8 @@ of this task.
      PLAN.md stays reference-only — milestone rows cite docs/architecture/ sections,
      never restate spec content.
    - README.md: status, repository map, and commands are currently true; links resolve.
+     The opening paragraph (thank-you to Prof. Robin Hanson) and the closing line
+     (Bon appétit) are pinned verbatim by rule R-11 — never reword, trim, or remove.
    - AGENTS.md: rules, session protocol, quality gates, layout table match how the
      repo works now.
    - CLAUDE.md: skills/subagents/hooks tables match the files under .claude/.

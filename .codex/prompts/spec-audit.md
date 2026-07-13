@@ -1,4 +1,4 @@
-Audit this repository's implementation against the frozen specification in
+Audit this repository's implementation against the specification in
 docs/architecture/ (AGENTS.md is binding). REPORT-ONLY: do not fix anything, and
 never modify docs/architecture/.
 

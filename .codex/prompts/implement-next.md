@@ -6,13 +6,15 @@ Run ONE spec-driven implementation increment for this repository, following AGEN
    otherwise the 🔨 in-progress milestone; otherwise the first ⬜ milestone whose
    Depends column is all ✅. Confirm the scope in one sentence before coding.
 
-2. READ THE SPEC FIRST. docs/architecture/ is the frozen, authoritative specification
-   — you MUST NOT modify, rename, delete, or add anything under it, under any
-   circumstances. Read every section in the milestone's Spec column, plus the relevant
-   parts of 02-integration-contract.md (frozen names/types), 13-parameters.md (the only
-   source of numeric values), and 15-invariants-and-testing.md (verification duties).
-   If the spec is ambiguous or contradictory: record it in PLAN.md · Spec questions
-   with a precise citation; proceed only if a conservative reading is safe, else mark
+2. READ THE SPEC FIRST. docs/architecture/ is the authoritative specification and the
+   source of truth for behavior — implementation follows it. It is editable, but treat
+   changes as rare and deliberate under AGENTS.md rule R-1 (consistent across the doc
+   set, version-bumped when 02 changes, logged in PLAN.md · Decision log); do not casually
+   rewrite it to fit the code. Read every section in the milestone's Spec column, plus the
+   relevant parts of 02-integration-contract.md (contract names/types), 13-parameters.md
+   (the only source of numeric values), and 15-invariants-and-testing.md (verification
+   duties). If the spec is ambiguous or contradictory: record it in PLAN.md · Spec
+   questions with a precise citation; proceed only if a conservative reading is safe, else mark
    the milestone ⛔ and stop.
 
 3. IMPLEMENT. One milestone only. Non-negotiables: no floats / no wall-clock phase

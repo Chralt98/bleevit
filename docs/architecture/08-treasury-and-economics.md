@@ -2,7 +2,7 @@
 
 **Status: normative component specification. Supersedes the corresponding sections of BACKEND_PLAN.md/FRONTEND_PLAN.md** (BE §17, §21 economics rows, §27.1–27.4 economics, ADR-14 sizing rule; FE §17.4 fee mechanics).
 
-**Boundary.** This document owns: `pallet-futarchy-treasury` (accounts, NAV, outflow controls, streams, budget lines), genesis economics (WIT supply/allocation/vesting/issuance, initial USDC funding), the minimum-viable-NAV phase gates, the economic-security sizing regime (AttackCost̂ estimator, decide-time cap, Ask-scaled liquidity), transaction-fee economics (`fee.wit_usdc_rate`), keeper economics, intake/bond economics, and the POL seeding flow's economics. It references: ledger mechanics ([03](03-conditional-ledger.md)), book mechanics and `headroom` ([04](04-markets-and-pricing.md)), the decision engine that hosts the `SecuritySizing` step ([05](05-welfare-and-decision-engine.md)), intake/bond lifecycle ([06](06-governance-and-guardians.md)), the reserve-health trigger ([07](07-oracle-and-disputes.md)), rollout phase gates ([09](09-execution-upgrades-and-rollout.md)), and operations funding execution ([12](12-release-and-operations.md)). All parameter values quoted here are normative in [13](13-parameters.md); the arithmetic below is normative in *this* document.
+**Boundary.** This document owns: `pallet-futarchy-treasury` (accounts, NAV, outflow controls, streams, budget lines), genesis economics (VIT supply/allocation/vesting/issuance, initial USDC funding), the minimum-viable-NAV phase gates, the economic-security sizing regime (AttackCost̂ estimator, decide-time cap, Ask-scaled liquidity), transaction-fee economics (`fee.vit_usdc_rate`), keeper economics, intake/bond economics, and the POL seeding flow's economics. It references: ledger mechanics ([03](03-conditional-ledger.md)), book mechanics and `headroom` ([04](04-markets-and-pricing.md)), the decision engine that hosts the `SecuritySizing` step ([05](05-welfare-and-decision-engine.md)), intake/bond lifecycle ([06](06-governance-and-guardians.md)), the reserve-health trigger ([07](07-oracle-and-disputes.md)), rollout phase gates ([09](09-execution-upgrades-and-rollout.md)), and operations funding execution ([12](12-release-and-operations.md)). All parameter values quoted here are normative in [13](13-parameters.md); the arithmetic below is normative in *this* document.
 
 Normative language: RFC 2119. USDC amounts in whole units (6 decimals); `ln 2 = 0.693147…`; all worked arithmetic is shown and MUST be reproduced by the Phase-0 reference model.
 
@@ -40,7 +40,7 @@ NAV = liquid USDC at par
     + undisbursed stream remainders owed *to* the treasury (cancellation reversions)
     − outstanding obligations (open stream remainders owed *from* the treasury,
       queued in-cap proposal outflows, POL commitments of live books §8.2)
-WIT holdings: marked 0. In-flight XCM: marked 0 until arrival (conservative).
+VIT holdings: marked 0. In-flight XCM: marked 0 until arrival (conservative).
 ```
 
 **Reserve-health haircut (new; B-med “USDC freeze”).** [07](07-oracle-and-disputes.md) defines the deterministic reserve-health sub-metric `R` in `C_onchain`. While the `R` flag is set:
@@ -61,15 +61,15 @@ WIT holdings: marked 0. In-flight XCM: marked 0 until arrival (conservative).
 
 ### 1.4 Calls (delta over BE §5.2.7)
 
-`spend(line, dest, amount)`, `open_stream(recipient, total, start, duration)`, `cancel_stream(id)`, `claim_stream(id)` (Signed recipient), `fund_budget_line(line, amount)`, `recover_foreign(asset, dest)` — all as before, line-scoped. New: `issue_wit(amount, line)` (§2.3, `FutarchyTreasury` origin, issuance-metered); vesting-schedule storage (§2.2). Events: `StreamOpened/Claimed/Cancelled`, `BudgetLineFunded`, `WitIssued`, `NavHaircutFlagged`, `KeeperBudgetLow`, `KeeperBudgetExhausted`, `SlotsShrunk` (§4.4), `NavFloorUnmet` (§4.4).
+`spend(line, dest, amount)`, `open_stream(recipient, total, start, duration)`, `cancel_stream(id)`, `claim_stream(id)` (Signed recipient), `fund_budget_line(line, amount)`, `recover_foreign(asset, dest)` — all as before, line-scoped. New: `issue_vit(amount, line)` (§2.3, `FutarchyTreasury` origin, issuance-metered); vesting-schedule storage (§2.2). Events: `StreamOpened/Claimed/Cancelled`, `BudgetLineFunded`, `VitIssued`, `NavHaircutFlagged`, `KeeperBudgetLow`, `KeeperBudgetExhausted`, `SlotsShrunk` (§4.4), `NavFloorUnmet` (§4.4).
 
 ---
 
 ## 2. Genesis economics (B-14, D-15)
 
-### 2.1 WIT supply and allocation
+### 2.1 VIT supply and allocation
 
-Total supply **1,000,000,000 WIT, 12 decimals**, fixed at genesis; existential deposit 0.01 WIT *(identity constants: [02](02-integration-contract.md), values frozen in [13](13-parameters.md))*.
+Total supply **1,000,000,000 VIT, 12 decimals**, fixed at genesis; existential deposit 0.01 VIT *(identity constants: [02](02-integration-contract.md), values frozen in [13](13-parameters.md))*.
 
 | Allocation | Share | Amount | Vesting / control |
 |---|---|---|---|
@@ -79,17 +79,17 @@ Total supply **1,000,000,000 WIT, 12 decimals**, fixed at genesis; existential d
 | Ecosystem / ops fund | 15% | 150,000,000 | Feeds the `ops.*` lines; per-epoch budgets; Phase ≤ 4 administered by the ops multisig under the D-13 exposure caps, Phase ≥ 5 TREASURY-class |
 | Phase 3–4 incentive programs | 10% | 100,000,000 | Trading/keeper/reporter bootstrap incentives; backstops the reporter loans of §2.5 |
 
-Vesting is enforced on-chain via genesis-configured linear lock schedules on WIT (balances freezes administered by `pallet-futarchy-treasury` vesting records). **[VERIFY at implementation whether SDK `pallet-vesting` on stable2603 is preferable to the in-pallet schedule store; semantics above are normative either way.]**
+Vesting is enforced on-chain via genesis-configured linear lock schedules on VIT (balances freezes administered by `pallet-futarchy-treasury` vesting records). **[VERIFY at implementation whether SDK `pallet-vesting` on stable2603 is preferable to the in-pallet schedule store; semantics above are normative either way.]**
 
-### 2.2 Why 30% reserve is consistent with “WIT marked 0 in NAV”
+### 2.2 Why 30% reserve is consistent with “VIT marked 0 in NAV”
 
-The reserve exists for values-layer continuity (guardian bonds, conviction depth, future issuance-free grants), not solvency; NAV — the solvency and sizing base — remains USDC-only. No WIT price ever enters NAV, W, or any sizing formula (D-18 reflexivity rule, [05](05-welfare-and-decision-engine.md)).
+The reserve exists for values-layer continuity (guardian bonds, conviction depth, future issuance-free grants), not solvency; NAV — the solvency and sizing base — remains USDC-only. No VIT price ever enters NAV, W, or any sizing formula (D-18 reflexivity rule, [05](05-welfare-and-decision-engine.md)).
 
 ### 2.3 Issuance mechanism (`iss.inflation_cap`)
 
-- Default issuance schedule: **zero**. WIT is minted only by `issue_wit(amount, line)`, dispatched by a TREASURY-class decision, credited only to `REWARDS` or `ops.*` lines (never to arbitrary accounts).
+- Default issuance schedule: **zero**. VIT is minted only by `issue_vit(amount, line)`, dispatched by a TREASURY-class decision, credited only to `REWARDS` or `ops.*` lines (never to arbitrary accounts).
 - Rolling 365-day issuance meter (I-7, monotone): Σ minted ≤ `iss.inflation_cap` × supply-at-window-start; `iss.inflation_cap` = **2%/yr, amendable down only** (kernel bound).
-- Every mint emits `WitIssued { amount, line, meter_after }`.
+- Every mint emits `VitIssued { amount, line, meter_after }`.
 
 ### 2.4 Collator compensation
 
@@ -244,7 +244,7 @@ Concurrently trading books = 5 slots × 6 + 1 Baseline = **31** (forecast tradin
 
 ### 6.2 Budget sizing
 
-`keeper.budget_epoch` = **12,000 USDC** (raised from 3,000; *normative value: [13](13-parameters.md)*). Derivation: assumed crank fee ≈ 0.03 USDC **[VERIFY against benchmarked weights + `fee.wit_usdc_rate` at launch]**, `keeper.rebate` ≈ 3× fee ⇒ 133,920 × 0.09 ≈ **12,053 USDC** — the budget covers the full decision-critical load at the 3× profitability multiple (keeper gross margin ≈ 8,000 USDC/epoch over fees paid). The old 3,000 budget covered <25% of decision-critical volume — rational keepers would have stopped mid-window and every decision would have rejected `NotDecisionGrade`.
+`keeper.budget_epoch` = **12,000 USDC** (raised from 3,000; *normative value: [13](13-parameters.md)*). Derivation: assumed crank fee ≈ 0.03 USDC **[VERIFY against benchmarked weights + `fee.vit_usdc_rate` at launch]**, `keeper.rebate` ≈ 3× fee ⇒ 133,920 × 0.09 ≈ **12,053 USDC** — the budget covers the full decision-critical load at the 3× profitability multiple (keeper gross margin ≈ 8,000 USDC/epoch over fees paid). The old 3,000 budget covered <25% of decision-critical volume — rational keepers would have stopped mid-window and every decision would have rejected `NotDecisionGrade`.
 
 ### 6.3 Meter structure and exhaustion behavior
 
@@ -295,10 +295,10 @@ Consistent with the [03](03-conditional-ledger.md) per-branch walk (B-4 fix):
 
 ## 9. Transaction fees (X-14, D-12)
 
-- `pallet-transaction-payment` computes the fee in WIT; `pallet-asset-tx-payment` charges USDC-electing users `fee_usdc = ceil(fee_gov × fee.wit_usdc_rate)`, minimum 1 base unit.
-- **`fee.wit_usdc_rate`** (USDC per WIT) is a typed constitution key: bounds **[0.1×, 10×] of the genesis reference** `fee.wit_usdc_rate_ref` (a kernel constant fixed at genesis from the launch reference price — **[VERIFY at TGE pricing; placeholder reference 0.05 USDC/WIT]**), PARAM-adjustable, max Δ ×2, cooldown 1 epoch (*normative row: [13](13-parameters.md)*).
-- **USDC-only users are always viable, end-to-end**: the inbound reserve transfer's execution on this chain is paid via the XCM `WeightTrader` selling execution for USDC or DOT; every subsequent local extrinsic — including the outbound `reserve_transfer` exit — is payable in USDC via the rate above. No WIT balance is ever a precondition for any user workflow. The FE fee-currency selector binds to this key ([11](11-frontend-workflows.md)); the guided funding flow is [11](11-frontend-workflows.md)'s D-12 surface.
-- Rate-staleness failure mode: if the rate drifts outside honesty (WIT repricing faster than PARAM cadence), the bounded [0.1×, 10×] envelope caps the damage to a 10× fee mispricing in either direction — annoying, never disabling; guardian playbooks are not needed for fee drift.
+- `pallet-transaction-payment` computes the fee in VIT; `pallet-asset-tx-payment` charges USDC-electing users `fee_usdc = ceil(fee_gov × fee.vit_usdc_rate)`, minimum 1 base unit.
+- **`fee.vit_usdc_rate`** (USDC per VIT) is a typed constitution key: bounds **[0.1×, 10×] of the genesis reference** `fee.vit_usdc_rate_ref` (a kernel constant fixed at genesis from the launch reference price — **[VERIFY at TGE pricing; placeholder reference 0.05 USDC/VIT]**), PARAM-adjustable, max Δ ×2, cooldown 1 epoch (*normative row: [13](13-parameters.md)*).
+- **USDC-only users are always viable, end-to-end**: the inbound reserve transfer's execution on this chain is paid via the XCM `WeightTrader` selling execution for USDC or DOT; every subsequent local extrinsic — including the outbound `reserve_transfer` exit — is payable in USDC via the rate above. No VIT balance is ever a precondition for any user workflow. The FE fee-currency selector binds to this key ([11](11-frontend-workflows.md)); the guided funding flow is [11](11-frontend-workflows.md)'s D-12 surface.
+- Rate-staleness failure mode: if the rate drifts outside honesty (VIT repricing faster than PARAM cadence), the bounded [0.1×, 10×] envelope caps the damage to a 10× fee mispricing in either direction — annoying, never disabling; guardian playbooks are not needed for fee drift.
 
 ---
 
@@ -308,9 +308,9 @@ Consistent with the [03](03-conditional-ledger.md) per-branch walk (B-4 fix):
 |---|---|
 | B-8 (with [05](05-welfare-and-decision-engine.md)) | §5: decide-time `InCapPrize ≤ AttackCost̂/3` cap from measured depth + Ask-scaled `v_min`/`pol.b`/δ with the `v_min = 2P` identity; worked arithmetic shows the 27–290× shortfall closed at defaults |
 | B-13 economic side (with [06](06-governance-and-guardians.md)) | §7: 10% slashes (to INSURANCE) + per-account rate limit priced out — griefing now costs five figures/epoch forfeited vs ~$314 time-value |
-| B-14 / D-15 | §2: WIT 1B/12-dec allocation + vesting + zero-default 2%-capped issuance; ≥ 25M USDC target with adequacy arithmetic; collator comp 2,000; reporter bootstrap loans (recallable, skin-first slashing) |
+| B-14 / D-15 | §2: VIT 1B/12-dec allocation + vesting + zero-default 2%-capped issuance; ≥ 25M USDC target with adequacy arithmetic; collator comp 2,000; reporter bootstrap loans (recallable, skin-first slashing) |
 | B-18 / D-15 | §3–§4: recomputed commitments (13,863 / 34,657 / 55,452 / 103,972 / 159,424 / 17,329), per-class NAV floors, loud `NavFloorUnmet` arming gate, `SlotsShrunk` event + FE surface, Baseline funded off-budget |
-| X-14 / D-12 | §9: `fee.wit_usdc_rate` key, bounds, USDC-only viability incl. the on-ramp |
+| X-14 / D-12 | §9: `fee.vit_usdc_rate` key, bounds, USDC-only viability incl. the on-ramp |
 | B-med keeper budget | §6: ≥ 134k/580k crank recomputation, 12,000 USDC budget derivation, tranches, exhaustion alarms, A-1 restated |
 | B-med USDC freeze (with [07](07-oracle-and-disputes.md), [10](10-frontend-architecture.md)) | §1.2: reserve-health haircut flag in `nav()`, spendable-NAV = 0 fail-static, PB-RESERVE hook, FE surfacing |
 | X-13 partial / D-16 (with [12](12-release-and-operations.md)) | §1.1: named, funded `ops.*` budget lines incl. 30-day operator window, beyond-meter keeper subsidy, ArNS permabuy, coretime line (dead-man exempt per D-9) |

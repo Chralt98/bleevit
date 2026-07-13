@@ -4,7 +4,7 @@
 
 **Boundary.** This document is the **single source of truth for every tunable parameter, kernel constant, storage bound and frozen protocol constant**. Other component documents reference these values and MUST NOT restate different ones (quoting for readability is permitted when marked *(normative value: §13)*). Chain-identity constants and the integration surface are jointly owned with [02](02-integration-contract.md) (D-17); where both documents state a value they are byte-identical by construction of the D-2 freeze.
 
-Normative language: RFC 2119. Blocks at 6 s (14,400/day); USDC 6 decimals, WIT 12 decimals; `Fixed` = `FixedU64` (1e9 scale) at API boundaries.
+Normative language: RFC 2119. Blocks at 6 s (14,400/day); USDC 6 decimals, VIT 12 decimals; `Fixed` = `FixedU64` (1e9 scale) at API boundaries.
 
 **Reading rules (X-11e/X-11h — no hardcoding, anywhere):**
 
@@ -57,7 +57,7 @@ Per-class value lists are ordered **PARAM / TREASURY / CODE / META** unless stat
 | `trs.stream_threshold` | Percent | NAV | 1% | 0.5% | 5% | — | 2 | META | [08](08-treasury-and-economics.md) |
 | `trs.proposer_reward` | Balance | USDC | PARAM 500; TREASURY/CODE min(0.05%·Ask, 25k); META 25k | ×0.1 | ×10 | ×2 | 2 | META | [08](08-treasury-and-economics.md) |
 | `iss.inflation_cap` | Percent | /yr | 2% | — | amendable **down only** (K) | — | — | CONST | [08](08-treasury-and-economics.md) §2.3 |
-| `fee.wit_usdc_rate` | Fixed | USDC/WIT | 1.0 × `fee.wit_usdc_rate_ref` (ref is K, set at genesis from launch price — **[VERIFY at TGE; placeholder ref 0.05 USDC/WIT]**) | **0.1 × ref (K)** | **10 × ref (K)** | ×2 | 1 | PARAM | [08](08-treasury-and-economics.md) §9 |
+| `fee.vit_usdc_rate` | Fixed | USDC/VIT | 1.0 × `fee.vit_usdc_rate_ref` (ref is K, set at genesis from launch price — **[VERIFY at TGE; placeholder ref 0.05 USDC/VIT]**) | **0.1 × ref (K)** | **10 × ref (K)** | ×2 | 1 | PARAM | [08](08-treasury-and-economics.md) §9 |
 | `code.spacing` | u32 | blocks | 30 d | **14 d K floor** | — | — | 2 | META | [09](09-execution-upgrades-and-rollout.md) |
 | `orc.bond_floor` (round-1 floor) | Balance | USDC | 10k | 2.5k | 100k | — | 2 | META | [07](07-oracle-and-disputes.md) §6 |
 | `orc.bond_bps` (value scaling: `B_1 = max(orc.bond_floor, orc.bond_bps × StakeAtRisk)`; `B_r = B_1·2^(r−1)` — [07](07-oracle-and-disputes.md) §6.1) | Perbill | bps | **250** | **150** (hard min — keeps the §6.3 coverage rule ≥ 10.5%) | 1,000 | ×2 | 2 | META | [07](07-oracle-and-disputes.md) §6 |
@@ -72,18 +72,18 @@ Per-class value lists are ordered **PARAM / TREASURY / CODE / META** unless stat
 | `res.probe_interval` / `res.probe_timeout` | u32 | blocks | 14,400 / 600 | — | — | — | 1 | PARAM | [07](07-oracle-and-disputes.md) §8 |
 | `res.probe_amount` | Balance | USDC | 0.10 (10 USDC-cents) | — | — | — | 1 | PARAM | [07](07-oracle-and-disputes.md) §8 |
 | `res.fail_threshold` / `res.recover_threshold` | u8 | consecutive probes | 2 / 3 | — | — | — | 2 | META | [07](07-oracle-and-disputes.md) §8 |
-| `grd.bond` / allowances | — | — | 50k WIT / [06](06-governance-and-guardians.md) table | — | scope K | — | — | entrenched | [06](06-governance-and-guardians.md) |
+| `grd.bond` / allowances | — | — | 50k VIT / [06](06-governance-and-guardians.md) table | — | scope K | — | — | entrenched | [06](06-governance-and-guardians.md) |
 | `keeper.rebate` | Balance | USDC | ≈3× fee cost per sanctioned crank **[VERIFY fee basis at benchmark time]** | 1× | 10× | — | 1 | PARAM | [08](08-treasury-and-economics.md) §6 |
 | `keeper.budget_epoch` | Balance | USDC | **12,000** (raised per keeper-medium; derivation [08](08-treasury-and-economics.md) §6.2) | 6,000 (floor covers decision-critical load — see §3 note) | 60,000 | ×2 | 1 | PARAM | [08](08-treasury-and-economics.md) |
 | `collator.comp_epoch` | Balance | USDC/collator | **2,000** (frozen default, D-15) | 500 | 10,000 | ×2 | 1 | PARAM | [08](08-treasury-and-economics.md) §2.4 |
 | `collator.n_min` (K component of `C_onchain`) | u8 | — | 4 | 3 | 12 | 1 | 2 | META | [05](05-welfare-and-decision-engine.md) §4.3 |
-| `collator.bond_req_wit` (E-coverage requirement, per collator) | Balance | WIT | **[VERIFY — set with the collator program before Phase-3 arming; sim-gated]** | — | — | ×2 | 2 | META | [05](05-welfare-and-decision-engine.md) §4.3.1 |
+| `collator.bond_req_vit` (E-coverage requirement, per collator) | Balance | VIT | **[VERIFY — set with the collator program before Phase-3 arming; sim-gated]** | — | — | ×2 | 2 | META | [05](05-welfare-and-decision-engine.md) §4.3.1 |
 | `collator.n_target` (E-coverage denominator) | u8 | — | 5 at launch, phase-scheduled upward **[VERIFY schedule at phase gates]** | 4 | 12 | 1 | 2 | META | [05](05-welfare-and-decision-engine.md) §4.3.1 |
 | `sec.prize.param` / `sec.prize.code` / `sec.prize.meta` (InCapPrize capability-envelope proxies; an undefined proxy ⇒ the proposal MUST NOT pass sizing) | Balance | USDC | **[VERIFY — derived from the class capability envelopes in Phase-0 calibration; sim-gated]** (CODE/META effective prize additionally floored at `trs.cap_proposal`·NAV for upgrade payloads, [08](08-treasury-and-economics.md) §5.2) | — | — | ×2 | 2 | META | [05](05-welfare-and-decision-engine.md) §5.6, [08](08-treasury-and-economics.md) §5 |
 | `sec.flow_cap` (wash-trade ceiling on measured contest flow in `C_hold` of the `ManipFloor̂` diagnostic — diagnostic-only in v1, never gates) | Fixed | × of `(b_acc + b_rej)` | **[VERIFY — Phase-0 calibration; sim-gated]** | — | — | ×2 | 2 | META | [05](05-welfare-and-decision-engine.md) §5.6, [14](14-threat-model.md) |
 | `ops.*` budget lines (`ops.bootnodes`, `ops.rpc_archive`, `ops.collators`, `ops.keepers`, `ops.oracle_evidence`, `ops.monitoring`, `ops.arweave`, `ops.watchtowers`, `ops.coretime`) | Balance | USDC/epoch | **[VERIFY — sized in Phase-2/3 ops planning; ops-gated]** (`ops.collators` = `collator.comp_epoch` × collator count; `ops.keepers` per [08](08-treasury-and-economics.md) §6.3) | — | — | — | 1 | TREASURY | [08](08-treasury-and-economics.md) §1.1, [12](12-release-and-operations.md) §6.1 |
 | `grd.review_deadline` (guardian retro-ratification deadline) | u32 | epochs | 2 | 1 | 4 | 1 | 2 | META | [06](06-governance-and-guardians.md) §5.4 |
-| `att.bond` (attestor bond) | Balance | WIT | 25,000 | ×0.5 | ×10 | ×2 | 2 | entrenched | [06](06-governance-and-guardians.md) §7 |
+| `att.bond` (attestor bond) | Balance | VIT | 25,000 | ×0.5 | ×10 | ×2 | 2 | entrenched | [06](06-governance-and-guardians.md) §7 |
 | `att.challenge_window` | u32 | blocks | 43,200 (72 h) | 43,200 | 72,000 | — | 2 | META | [06](06-governance-and-guardians.md) §7, [09](09-execution-upgrades-and-rollout.md) §2.4 |
 | `ledger.min_split` (= MinTransfer) | Balance | USDC | 0.01 (10⁴ base units) | 0.01 (K floor) | 1 | — | 2 | META | [03](03-conditional-ledger.md) |
 | `ledger.archive_delay` | u32 | blocks | 1 yr | 90 d | — | — | 2 | META | [03](03-conditional-ledger.md) |
@@ -168,7 +168,7 @@ On-chain results MUST match within the §2 error bound plus one base unit of rou
 
 - Challenge window **72 h (43,200 blocks)** with watchtower quorum (`wt.quorum` = 2-of-N registered, bonded; one +48 h extension); components not challenge-closed by `OracleSettleDeadline` (d20) settle neutrally ([07](07-oracle-and-disputes.md) §11).
 - Oracle latency budget: report 2 d + rounds + 7-day terminal track — reconciled table in [07](07-oracle-and-disputes.md).
-- **Oracle adjudication track: 60% approval / 10% support / 7-day decision**, tally on a **pre-cohort conviction snapshot** (WIT locked before the subject cohort's creation) — raised from 50%/3%/5-day (B-19/D-18).
+- **Oracle adjudication track: 60% approval / 10% support / 7-day decision**, tally on a **pre-cohort conviction snapshot** (VIT locked before the subject cohort's creation) — raised from 50%/3%/5-day (B-19/D-18).
 - **Expedited `ratify` schedule** (admissible only while PB-LEDGER-FREEZE is active, for the expedited-CODE-lane referendum only): prepare 0 / decision 3 d / confirm 12 h ([06](06-governance-and-guardians.md) §2.1). `frn.window` (force-rerun Extended window) = `dec.extension` = 43,200 blocks (shared K, [06](06-governance-and-guardians.md) §9).
 - Slashing split 40% challenger / 60% INSURANCE; reporter-stake slash 50% on second adjudicated-false report, ejection on third.
 - Intake: ≤ 4 entries/epoch/account; 10% bond slash **to INSURANCE** (never burned — USDC is bridged USDC) on non-decision-grade and preimage-missing outcomes (§1 keys; economics [08](08-treasury-and-economics.md) §7).
@@ -181,7 +181,7 @@ On-chain results MUST match within the §2 error bound plus one base unit of rou
 | ss58 prefix | 7777 (registry submission before Phase 2) |
 | paraId | assigned at onboarding; test fixtures 4242 |
 | USDC | `ForeignAssets`, Location `{parents: 1, X3(Parachain(1000), PalletInstance(50), GeneralIndex(1337))}` **[VERIFY asset index 1337]**; 6 decimals; `min_balance` 10⁴ |
-| WIT | native; **total supply 10⁹, 12 decimals**; existential deposit 0.01 WIT |
+| VIT | native; **total supply 10⁹, 12 decimals**; existential deposit 0.01 VIT |
 | USDC treasury target | ≥ 25M USDC before Phase-5 arming; per-class min-viable NAV floors per [08](08-treasury-and-economics.md) §4 |
 | Phase flag | `pallet-constitution::PhaseFlags` (bitset) — the FE trading-enablement key |
 | `ReleaseChannel` | fixed-layout raw storage key in `pallet-constitution`, SCALE layout frozen forever (D-14) |
@@ -238,6 +238,6 @@ On-chain results MUST match within the §2 error bound plus one base unit of rou
 | B-low drift batch | §3.1 Trade = d5–d18 with fractional offsets; §3.1 maturity B+288,000; §3.2 κ per 10-block interval (ADR-11 corrected), maker-loss ≈ 180 USDC; §3.4 latency reconciliation pointer |
 | B-med epoch.length | §3.1: offsets as fractions, next-epoch effectivity, creation-time schedule for in-flight cohorts, 14-day floor |
 | B-med Positions map (owned by [03](03-conditional-ledger.md)) | §4: key order `(PositionId, AccountId)`, 0.1 USDC deposit, 64-cap + protocol exemption recorded as the single normative values |
-| B-med keeper budget / D-15 / D-16 values | §1: `keeper.budget_epoch` 12,000 (floor 6,000 kernel-justified), `collator.comp_epoch` 2,000, `intake.*`, `fee.wit_usdc_rate`, `pol.b_baseline`, `orc.bond_bps`, `orc.window` 72 h, watchtower/attestor constants — all keys named with owning docs |
+| B-med keeper budget / D-15 / D-16 values | §1: `keeper.budget_epoch` 12,000 (floor 6,000 kernel-justified), `collator.comp_epoch` 2,000, `intake.*`, `fee.vit_usdc_rate`, `pol.b_baseline`, `orc.bond_bps`, `orc.window` 72 h, watchtower/attestor constants — all keys named with owning docs |
 | D-7 | Reading rule 5: no EMERGENCY parameter rows exist |
 | D-17 / X-11a/b (with [02](02-integration-contract.md)) | §3.5: identity constants frozen once, jointly owned |

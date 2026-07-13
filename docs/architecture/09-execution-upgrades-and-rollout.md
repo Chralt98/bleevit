@@ -234,7 +234,7 @@ Both keys are **raised only by phase gates** (§7): they are not PARAM/META-adju
 | Barrier | paid-execution allowlist + known query responses; **`Transact` refused from all locations**; no superuser origin conversion; `UnpaidExecution` refused |
 | Asset mappings | USDC (Asset Hub location ↔ local `ForeignAssets` id, pinned per D-17: `{parents: 1, X3(Parachain(1000), PalletInstance(50), GeneralIndex(1337))}` **[VERIFY asset index 1337]**) and DOT (parent) only; unknown assets refused |
 | Reserve model | Asset Hub is reserve for USDC; relay/AH for DOT; **teleports disabled** |
-| Fees/weight | `WeightTrader` selling execution for DOT or USDC at governed rates; USDC is a sufficient asset, so a USDC-only account can pay inbound execution fees ([08](./08-treasury-and-economics.md) owns `fee.wit_usdc_rate` for the tx-payment side) |
+| Fees/weight | `WeightTrader` selling execution for DOT or USDC at governed rates; USDC is a sufficient asset, so a USDC-only account can pay inbound execution fees ([08](./08-treasury-and-economics.md) owns `fee.vit_usdc_rate` for the tx-payment side) |
 | Failure handling | protocol-initiated transfers (coretime funding §4, treasury recovery) are keeper-monitored with bounded retry and idempotency keys; user transfers follow standard XCM error semantics; **no XCM outcome participates in any decision or settlement path** (I-24) — an XCM failure can therefore never default to adoption |
 | Trapped assets | recovery via a TREASURY-class `claim_assets` call only |
 | Disabled instructions | `Transact`, HRMP channel-request handling beyond system defaults, any instruction not needed for reserve transfer + fee payment — default-deny posture |
@@ -251,7 +251,7 @@ External oracle-parachain feeds via XCM remain analyzed and excluded as settleme
 The guided deposit flow ([11](./11-frontend-workflows.md)) runs a second light-client connection to Asset Hub. This chain's obligations, so that flow can exist:
 
 1. **Pinned identity**: the USDC `Location`, local `ForeignAssets` id, paraId and ss58 prefix frozen in [02](./02-integration-contract.md) (D-17) — the FE `ChainIdentity` pins them; nothing is discovered at runtime.
-2. **Sufficiency + fee viability**: USDC registered sufficient at genesis; inbound reserve transfers deliver to accounts holding zero WIT and the delivered USDC can pay subsequent local fees.
+2. **Sufficiency + fee viability**: USDC registered sufficient at genesis; inbound reserve transfers deliver to accounts holding zero VIT and the delivered USDC can pay subsequent local fees.
 3. **HRMP channels**: opened during Phase 2 on Paseo, Phase 3 on Polkadot **[VERIFY current channel-establishment procedure]**; channel liveness is a rollout gate (§7).
 4. **Asset Hub descriptor set**: added to the descriptor pipeline and shipped in the same release train ([12](./12-release-and-operations.md)); pipeline liveness incl. Asset Hub descriptors is a Phase-3 gate (§7).
 5. **Test artifacts**: the [02](./02-integration-contract.md) published test-artifact feed includes a Chopsticks/Zombienet Asset Hub ⇄ parachain reserve-transfer environment (E21, §8) so the FE can regression-test the funding flow per release.

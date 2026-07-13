@@ -29,7 +29,7 @@ Disposition of FE §30: P-1…P-4, P-6, P-8…P-11 amend the topology, repositor
 
 ## 2. Shared SCALE primitives (`futarchy-primitives`)
 
-All types live in the `no_std` crate `futarchy-primitives`, SCALE-encoded, versioned via a `#[codec(index)]`-stable discipline: **enum variants and struct fields are append-only after genesis**; removals require a new type + storage migration + contract version bump. All collections `BoundedVec`/`BoundedBTreeMap`. Numeric conventions: balances `u128` (USDC 6 decimals, WIT 12 decimals); prices/scores `FixedU64` semantics (1e9 scale) at every API and event boundary; internal LMSR math in 64.64.
+All types live in the `no_std` crate `futarchy-primitives`, SCALE-encoded, versioned via a `#[codec(index)]`-stable discipline: **enum variants and struct fields are append-only after genesis**; removals require a new type + storage migration + contract version bump. All collections `BoundedVec`/`BoundedBTreeMap`. Numeric conventions: balances `u128` (USDC 6 decimals, VIT 12 decimals); prices/scores `FixedU64` semantics (1e9 scale) at every API and event boundary; internal LMSR math in 64.64.
 
 The pre-genesis repairs below (relative to the superseded BE §7) are FINAL as of contract v1; `ProposalClass::Emergency` is deleted *before* genesis, so append-only discipline is not violated.
 
@@ -113,7 +113,7 @@ pub enum TradeSide { BuyLong, BuyShort, SellLong, SellShort }
 
 `Proposal` gains the fields the decision engine reads (`ask: Balance`, `decide_at: BlockNumber` — B-med, semantics in [05](05-welfare-and-decision-engine.md)); `ExecutionRecord.result` is typed `DispatchOutcomeCode` as above. The full `Proposal`/`ExecutionRecord` structs and their ≤ 512 B / bound arguments are owned by [05](05-welfare-and-decision-engine.md)/[09](09-execution-upgrades-and-rollout.md); their SCALE layouts are part of this contract by inclusion in `futarchy-primitives`.
 
-The crate re-exports `INTEGRATION_CONTRACT_VERSION: u32 = 1`, exposed as a `pallet-constitution` runtime constant (metadata-readable, §9).
+The crate re-exports `INTEGRATION_CONTRACT_VERSION: u32 = 2`, exposed as a `pallet-constitution` runtime constant (metadata-readable, §9).
 
 ---
 
@@ -406,10 +406,10 @@ Pinned in the frontend's `ChainIdentity` at build time and asserted at boot. The
 | paraId | Assigned at onboarding; **all test fixtures use 4242** |
 | USDC asset | `pallet-assets` instance **`ForeignAssets`**, keyed by XCM `Location { parents: 1, interior: X3(Parachain(1000), PalletInstance(50), GeneralIndex(1337)) }` **[VERIFY asset index 1337 at implementation]** |
 | USDC decimals | 6 (preserved from Asset Hub); `min_balance = 10^4` (1 cent) |
-| WIT decimals | 12 |
-| WIT existential deposit | **0.01 WIT** (= 10^10 plancks) |
+| VIT decimals | 12 |
+| VIT existential deposit | **0.01 VIT** (= 10^10 plancks) |
 | Phase flag storage | `pallet-constitution::PhaseFlags` (§7.3) — the trading-enablement key |
-| Contract version | `INTEGRATION_CONTRACT_VERSION = 1` (runtime constant) |
+| Contract version | `INTEGRATION_CONTRACT_VERSION = 2` (runtime constant) |
 
 ---
 
@@ -439,7 +439,7 @@ Enumeration of every value the frontend's precondition tables re-check (defaults
 | `exec.timelock` per class, `exec.grace` | `params()` (K floors as constants) | `execution_guard.execute` |
 | `orc.bond_floor`/`orc.rounds`/`orc.window`, `orc.bond_bps` value scaling, `orc.reporter_stake` | `params()` | `oracle.report/challenge` |
 | `trs.cap_proposal`/`cap_30d`/`cap_180d`, `trs.stream_threshold` | `params()` | treasury proposal screens |
-| `fee.wit_usdc_rate` | `params()` | fee-currency selector (D-12) |
+| `fee.vit_usdc_rate` | `params()` | fee-currency selector (D-12) |
 | `epoch.length`, `epoch.slots`, phase-offset fractions | `params()` + metadata constants | countdowns, phase headers |
 | `DescriptorLeadTime = 43,200` blocks | metadata constant | upgrade banners, execute precondition |
 | `RecentCohortSummaries` ring size = 32; books/proposal ≤ 6; `MaxLiveMarkets = 196` | metadata constants | history windows, chart bounds |
@@ -514,7 +514,7 @@ Total **168 bytes** (v1.0 baseline — the pre-freeze 78- and 92-byte drafts in 
 | X-1c | §7.1: `RecentCohortSummaries` ring (last **32** cohorts) added to `pallet-epoch` storage — the §5.2.3 storage-list edit P-5 missed — with push point, eviction and weight argument |
 | X-10 | §7.4: `BaselineMarketOf: map EpochId → MarketId` declared (in `pallet-market`, per [04 §8.3](04-markets-and-pricing.md)) as the backing storage for Baseline-market discovery, with write point and pruning rule |
 | X-11a | §7.4/§8: USDC is `ForeignAssets` keyed by the pinned XCM Location; `ChainIdentity` pins the USDC identifier; `Assets.Account(1337, …)` reads are wrong by contract |
-| X-11b | §8: ss58 7777, paraId (fixtures 4242), WIT ED 0.01, `PhaseFlags` storage location all specified |
+| X-11b | §8: ss58 7777, paraId (fixtures 4242), VIT ED 0.01, `PhaseFlags` storage location all specified |
 | X-11c | §7.2: oracle pallet storage-item names and full event set defined canonically; [07](07-oracle-and-disputes.md) uses these names |
 | X-11d | §6: four FE §15.3 epoch event names corrected to `ProposalWithdrawn`/`ProposalCancelled`/`ProposalQualified`/`ProposalDeferred`; full canonical set frozen |
 | X-11f | §6: T20 now emits `ProposalForceRejected { pid, reason }`; the ledger emits `VaultVoided`/`VoidRedeemed` — no silent terminal transitions remain |

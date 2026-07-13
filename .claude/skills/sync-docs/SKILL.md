@@ -5,7 +5,8 @@ description: Bring the living documents — README.md, PLAN.md, AGENTS.md, CLAUD
 
 # Living-document synchronization
 
-`docs/architecture/` is frozen and is NOT part of this skill's scope (rule R-1).
+`docs/architecture/` is the spec and is NOT part of this skill's scope — leave it
+alone here (changing it is a deliberate act under rule R-1, not a doc-sync).
 Everything else that documents the repo must tell the truth after this skill runs.
 
 ## 1. Gather ground truth (never write from memory)
@@ -26,6 +27,8 @@ existing; everything else is labeled planned.
   happened. PLAN.md stays reference-only: milestone rows cite doc §, never restate
   spec content (rule R-4).
 - **README.md** — status line, repo layout, and commands are currently true; links resolve.
+  The opening paragraph (thank-you to Prof. Robin Hanson) and the closing line (Bon
+  appétit) are pinned verbatim by rule R-11 — never reword, trim, or remove them.
 - **AGENTS.md** — rules, session protocol, quality gates, and layout table match how the
   repo actually works now (e.g. gates gained a new suite → list it).
 - **CLAUDE.md** — skills/subagents/hooks tables match the files under `.claude/`.
