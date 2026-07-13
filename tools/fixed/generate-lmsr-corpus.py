@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Generate a small high-precision LMSR regression corpus for futarchy-fixed.
+"""Generate high-precision fixed-crate regression corpora.
 
-This is an interim M2 fixture generator. It uses Python Decimal with 80 digits of
-precision for deterministic values covering the normative V1-V6 table and domain
-edges; the full M3 reference-model MPFR-256 >=10^7 point corpus remains the
-normative completion gate tracked in PLAN.md.
+This fixture generator uses Python Decimal with 80 digits of precision for
+deterministic LMSR and primitive-transcendental samples. The full release-scale
+MPFR-256 >=10^7 point corpus is owned by the M3 reference-model milestone.
 """
 from __future__ import annotations
 
@@ -14,7 +13,8 @@ from pathlib import Path
 
 getcontext().prec = 80
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "crates" / "futarchy-fixed" / "fixtures" / "lmsr_corpus.csv"
+LMSR_OUT = ROOT / "crates" / "futarchy-fixed" / "fixtures" / "lmsr_corpus.csv"
+TRANSCENDENTAL_OUT = ROOT / "crates" / "futarchy-fixed" / "fixtures" / "transcendental_corpus.csv"
 
 B = Decimal(10_000)
 LN2 = Decimal(2).ln()
@@ -53,9 +53,28 @@ for ql, qs in [(2500, 0), (0, 2500), (12345, 6789), (6789, 12345), (240000, 0), 
     rows.append((f"cost_{ql}_{qs}", cost(qld, qsd)))
     rows.append((f"price_{ql}_{qs}", price_long(qld, qsd)))
 
-content = (
+lmsr_content = (
     "# name,value,raw_64x64_nearest\n"
     + "".join(f"{name},{fmt(value)},{raw_64x64(value)}\n" for name, value in rows)
+)
+
+primitive_rows: list[tuple[str, str, Decimal, Decimal]] = []
+for label, value in [("0", "0"), ("0_125", "0.125"), ("0_5", "0.5"), ("1", "1"), ("1_5", "1.5"), ("8", "8"), ("48", "48")]:
+    x = Decimal(value)
+    primitive_rows.append((f"exp2_{label}", "exp2", x, (x * LN2).exp()))
+for label, value in [("1", "1"), ("1_5", "1.5"), ("2", "2"), ("8", "8"), ("48", "48")]:
+    x = Decimal(value)
+    primitive_rows.append((f"log2_{label}", "log2", x, x.ln() / LN2))
+for label, value in [("1", "1"), ("1_5", "1.5"), ("2", "2"), ("8", "8"), ("48", "48")]:
+    x = Decimal(value)
+    primitive_rows.append((f"ln_{label}", "ln", x, x.ln()))
+
+transcendental_content = (
+    "# name,function,input,value,raw_64x64_nearest\n"
+    + "".join(
+        f"{name},{function},{input_value},{fmt(value)},{raw_64x64(value)}\n"
+        for name, function, input_value, value in primitive_rows
+    )
 )
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -66,11 +85,20 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+outputs = [
+    (LMSR_OUT, lmsr_content, len(rows)),
+    (TRANSCENDENTAL_OUT, transcendental_content, len(primitive_rows)),
+]
+
 if args.check:
-    current = OUT.read_text(encoding="utf-8") if OUT.exists() else ""
-    if current != content:
-        raise SystemExit(f"{OUT.relative_to(ROOT)} is stale; regenerate with {Path(__file__).name}")
-    print(f"{OUT.relative_to(ROOT)} is up to date ({len(rows)} rows)")
+    for output, content, row_count in outputs:
+        current = output.read_text(encoding="utf-8") if output.exists() else ""
+        if current != content:
+            raise SystemExit(
+                f"{output.relative_to(ROOT)} is stale; regenerate with {Path(__file__).name}"
+            )
+        print(f"{output.relative_to(ROOT)} is up to date ({row_count} rows)")
 else:
-    OUT.write_text(content, encoding="utf-8")
-    print(f"wrote {OUT.relative_to(ROOT)} ({len(rows)} rows)")
+    for output, content, row_count in outputs:
+        output.write_text(content, encoding="utf-8")
+        print(f"wrote {output.relative_to(ROOT)} ({row_count} rows)")
