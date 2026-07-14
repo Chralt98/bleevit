@@ -11,7 +11,7 @@ use scale_info::TypeInfo;
 pub type AttestationId = u32;
 pub const MIN_MEMBERS: usize = 3;
 pub const QUORUM: usize = 2;
-pub const ATTESTOR_BOND: Balance = 25_000_000_000;
+pub const ATTESTOR_BOND: Balance = 25_000_000_000_000_000;
 pub const CHALLENGE_WINDOW_BLOCKS: BlockNumber = 43_200;
 pub const CHALLENGE_BOND: Balance = ATTESTOR_BOND / 2;
 pub const FALSE_EJECTION_THRESHOLD: u8 = 2;

@@ -11,7 +11,7 @@ use scale_info::TypeInfo;
 pub type ActionId = u32;
 pub const GUARDIAN_SEATS: usize = 7;
 pub const GUARDIAN_THRESHOLD: u8 = 5;
-pub const GUARDIAN_BOND: Balance = 50_000_000_000;
+pub const GUARDIAN_BOND: Balance = 50_000_000_000_000_000;
 pub const ACTION_EXPIRY_BLOCKS: BlockNumber = 43_200;
 pub const REVIEW_DEADLINE_EPOCHS: EpochId = 2;
 pub const REVIEW_SLASH_PERCENT: u8 = 50;
@@ -193,6 +193,7 @@ pub enum Error {
     ReviewNotFound,
     AlreadyRatified,
     RenewalNotAllowed,
+    PlaybookAlreadyActive,
     Overflow,
 }
 
@@ -246,6 +247,14 @@ impl Guardian {
             events: Vec::new(),
         })
     }
+    pub fn set_epoch(&mut self, epoch: EpochId) {
+        if epoch != self.current_epoch {
+            self.current_epoch = epoch;
+            self.delay_used_this_epoch = 0;
+            self.force_rerun_used_this_epoch = 0;
+        }
+    }
+
     pub fn set_members(
         &mut self,
         origin: GuardianOrigin,
@@ -429,7 +438,20 @@ impl Guardian {
         now: BlockNumber,
         ctx: DispatchContext,
     ) -> Result<(), Error> {
+        ensure!(self.reviews.len() < 128, Error::TooManyReviews);
         let action = self.pending[idx];
+        if let GuardianPower::ActivatePlaybook { id, .. } = action.power {
+            ensure!(
+                self.active_playbooks.len() < 6,
+                Error::TooManyActivePlaybooks
+            );
+            if matches!(id, PlaybookId::LedgerFreeze) {
+                ensure!(
+                    !self.active_playbooks.iter().any(|p| p.id == id),
+                    Error::PlaybookAlreadyActive
+                );
+            }
+        }
         self.check_and_consume(action.power, now, ctx)?;
         self.pending[idx].dispatched = true;
         let target = target_of(action.power);
@@ -454,10 +476,6 @@ impl Guardian {
             expiry,
         } = action.power
         {
-            ensure!(
-                self.active_playbooks.len() < 6,
-                Error::TooManyActivePlaybooks
-            );
             self.active_playbooks.push(ActivePlaybook {
                 id,
                 expiry,
@@ -469,7 +487,6 @@ impl Guardian {
                 expiry,
             });
         }
-        ensure!(self.reviews.len() < 128, Error::TooManyReviews);
         let (approvers, approver_count) = self.approver_snapshot(action.id);
         self.reviews.push(ReviewRecord {
             action_id: action.id,
@@ -510,7 +527,14 @@ impl Guardian {
                 self.pause_used_in_window += 1;
             }
             GuardianPower::DelayOnce { pid } => {
-                ensure!(!self.rerun_used.contains(&pid), Error::AlreadyRerun);
+                ensure!(
+                    ctx.proposal_status == ProposalStatus::Queued,
+                    Error::NotRerunnable
+                );
+                ensure!(
+                    !ctx.in_rerun && !self.rerun_used.contains(&pid),
+                    Error::AlreadyRerun
+                );
                 ensure!(
                     self.delay_used_this_epoch < DELAY_ONCE_ALLOWANCE_PER_EPOCH,
                     Error::AllowanceExhausted
@@ -746,6 +770,79 @@ mod tests {
         assert!(g.rerun_used.contains(&7));
     }
     #[test]
+    fn delay_once_requires_queued_target_and_allowances_reset_by_epoch() {
+        let mut g = Guardian::new(members()).unwrap();
+        let id = g
+            .propose_action(acct(1), GuardianPower::DelayOnce { pid: 1 }, [0; 32], 0)
+            .unwrap();
+        let bad = DispatchContext {
+            proposal_status: ProposalStatus::Trading,
+            ..ctx()
+        };
+        for n in 2..=4 {
+            g.approve_action(acct(n), id, 1, bad).unwrap();
+        }
+        assert_eq!(
+            g.approve_action(acct(5), id, 1, bad),
+            Err(Error::NotRerunnable)
+        );
+
+        for pid in 2..=3 {
+            let id = g
+                .propose_action(
+                    acct(1),
+                    GuardianPower::DelayOnce { pid },
+                    [0; 32],
+                    pid as u32,
+                )
+                .unwrap();
+            for n in 2..=5 {
+                g.approve_action(acct(n), id, pid as u32, ctx()).unwrap();
+            }
+        }
+        let id = g
+            .propose_action(acct(1), GuardianPower::DelayOnce { pid: 4 }, [0; 32], 4)
+            .unwrap();
+        for n in 2..=4 {
+            g.approve_action(acct(n), id, 4, ctx()).unwrap();
+        }
+        assert_eq!(
+            g.approve_action(acct(5), id, 4, ctx()),
+            Err(Error::AllowanceExhausted)
+        );
+        g.set_epoch(1);
+        g.approve_action(acct(5), id, 5, ctx()).unwrap();
+    }
+
+    #[test]
+    fn failed_review_capacity_does_not_mutate_dispatch_state() {
+        let mut g = Guardian::new(members()).unwrap();
+        for action_id in 0..128 {
+            g.reviews.push(ReviewRecord {
+                action_id,
+                deadline_epoch: 0,
+                ratified: false,
+                recall_scheduled: false,
+                approvers: [[0; 32]; GUARDIAN_SEATS],
+                approver_count: 0,
+            });
+        }
+        let id = g
+            .propose_action(acct(1), GuardianPower::ForceRerun { pid: 55 }, [0; 32], 0)
+            .unwrap();
+        for n in 2..=4 {
+            g.approve_action(acct(n), id, 1, ctx()).unwrap();
+        }
+        assert_eq!(
+            g.approve_action(acct(5), id, 1, ctx()),
+            Err(Error::TooManyReviews)
+        );
+        assert!(!g.pending[0].dispatched);
+        assert!(!g.rerun_used.contains(&55));
+        assert_eq!(g.force_rerun_used_this_epoch, 0);
+    }
+
+    #[test]
     fn ledger_freeze_requires_drift_and_one_renewal() {
         let mut g = Guardian::new(members()).unwrap();
         let id = g
@@ -805,6 +902,46 @@ mod tests {
             Err(Error::RenewalNotAllowed)
         );
     }
+    #[test]
+    fn duplicate_active_ledger_freeze_is_rejected() {
+        let mut g = Guardian::new(members()).unwrap();
+        let first = g
+            .propose_action(
+                acct(1),
+                GuardianPower::ActivatePlaybook {
+                    id: PlaybookId::LedgerFreeze,
+                    trigger: PlaybookTrigger::LedgerDrift,
+                    expiry: 100,
+                },
+                [1; 32],
+                0,
+            )
+            .unwrap();
+        for n in 2..=5 {
+            g.approve_action(acct(n), first, 1, ctx()).unwrap();
+        }
+        let second = g
+            .propose_action(
+                acct(1),
+                GuardianPower::ActivatePlaybook {
+                    id: PlaybookId::LedgerFreeze,
+                    trigger: PlaybookTrigger::LedgerDrift,
+                    expiry: 200,
+                },
+                [1; 32],
+                2,
+            )
+            .unwrap();
+        for n in 2..=4 {
+            g.approve_action(acct(n), second, 3, ctx()).unwrap();
+        }
+        assert_eq!(
+            g.approve_action(acct(5), second, 3, ctx()),
+            Err(Error::PlaybookAlreadyActive)
+        );
+        assert_eq!(g.active_playbooks.len(), 1);
+    }
+
     #[test]
     fn failed_dispatch_rolls_back_fifth_approval() {
         let mut g = Guardian::new(members()).unwrap();
