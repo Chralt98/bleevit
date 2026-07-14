@@ -111,6 +111,8 @@ pub struct ReviewRecord {
     pub deadline_epoch: EpochId,
     pub ratified: bool,
     pub recall_scheduled: bool,
+    pub approvers: [AccountId; GUARDIAN_SEATS],
+    pub approver_count: u8,
 }
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -310,17 +312,22 @@ impl Guardian {
         );
         self.approvals.push((id, who));
         let approvals = self.approval_count(id);
+        let dispatched = if approvals >= GUARDIAN_THRESHOLD {
+            if let Err(err) = self.dispatch(idx, now, ctx) {
+                self.approvals
+                    .retain(|(action_id, member)| !(*action_id == id && *member == who));
+                return Err(err);
+            }
+            true
+        } else {
+            false
+        };
         self.events.push(Event::ActionApproved {
             action_id: id,
             who,
             approvals,
         });
-        if approvals >= GUARDIAN_THRESHOLD {
-            self.dispatch(idx, now, ctx)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        Ok(dispatched)
     }
     pub fn ratify_action(
         &mut self,
@@ -346,8 +353,10 @@ impl Guardian {
         for review in &mut self.reviews {
             if !review.ratified && !review.recall_scheduled && epoch > review.deadline_epoch {
                 let slash = GUARDIAN_BOND.saturating_mul(REVIEW_SLASH_PERCENT as Balance) / 100;
-                for bond in &mut self.member_bonds {
-                    *bond = bond.saturating_sub(slash);
+                for approver in review.approvers.iter().take(review.approver_count as usize) {
+                    if let Some(idx) = self.members.iter().position(|member| member == approver) {
+                        self.member_bonds[idx] = self.member_bonds[idx].saturating_sub(slash);
+                    }
                 }
                 review.recall_scheduled = true;
                 self.events.push(Event::ReviewFailed {
@@ -461,11 +470,14 @@ impl Guardian {
             });
         }
         ensure!(self.reviews.len() < 128, Error::TooManyReviews);
+        let (approvers, approver_count) = self.approver_snapshot(action.id);
         self.reviews.push(ReviewRecord {
             action_id: action.id,
             deadline_epoch: self.current_epoch.saturating_add(REVIEW_DEADLINE_EPOCHS),
             ratified: false,
             recall_scheduled: false,
+            approvers,
+            approver_count,
         });
         self.events
             .push(Event::ReviewScheduled { action: action.id });
@@ -539,6 +551,22 @@ impl Guardian {
     }
     fn approval_count(&self, id: ActionId) -> u8 {
         self.approvals.iter().filter(|(a, _)| *a == id).count() as u8
+    }
+
+    fn approver_snapshot(&self, id: ActionId) -> ([AccountId; GUARDIAN_SEATS], u8) {
+        let mut approvers = [[0u8; 32]; GUARDIAN_SEATS];
+        let mut count = 0usize;
+        for (_, member) in self
+            .approvals
+            .iter()
+            .filter(|(action_id, _)| *action_id == id)
+        {
+            if count < GUARDIAN_SEATS {
+                approvers[count] = *member;
+                count += 1;
+            }
+        }
+        (approvers, count as u8)
     }
     fn ensure_member(&self, who: AccountId) -> Result<(), Error> {
         ensure!(self.members.contains(&who), Error::NotMember);
@@ -778,6 +806,28 @@ mod tests {
         );
     }
     #[test]
+    fn failed_dispatch_rolls_back_fifth_approval() {
+        let mut g = Guardian::new(members()).unwrap();
+        let id = g
+            .propose_action(acct(1), GuardianPower::ForceRerun { pid: 7 }, [0; 32], 0)
+            .unwrap();
+        let bad = DispatchContext {
+            proposal_status: ProposalStatus::Executed,
+            ..ctx()
+        };
+        for n in 2..=4 {
+            g.approve_action(acct(n), id, 1, bad).unwrap();
+        }
+        assert_eq!(
+            g.approve_action(acct(5), id, 1, bad),
+            Err(Error::NotRerunnable)
+        );
+        assert_eq!(g.approval_count(id), 4);
+        g.approve_action(acct(5), id, 2, ctx()).unwrap();
+        assert!(g.pending[0].dispatched);
+    }
+
+    #[test]
     fn review_failure_slashes_bonds_and_ratify_origin_checked() {
         let mut g = Guardian::new(members()).unwrap();
         let id = g
@@ -791,6 +841,7 @@ mod tests {
             Err(Error::BadOrigin)
         );
         g.enforce_reviews(3).unwrap();
-        assert!(g.member_bonds.iter().all(|b| *b == GUARDIAN_BOND / 2));
+        assert!(g.member_bonds[..5].iter().all(|b| *b == GUARDIAN_BOND / 2));
+        assert!(g.member_bonds[5..].iter().all(|b| *b == GUARDIAN_BOND));
     }
 }

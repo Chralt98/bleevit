@@ -27,6 +27,18 @@ pub const KEEPER_BUDGET_EPOCH: Balance = 12_000 * USDC;
 pub const COLLATOR_COMP_EPOCH: Balance = 2_000 * USDC;
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub enum TreasuryAccount {
+    Main,
+    Pol,
+    PolBaseline,
+    Insurance,
+    Keeper,
+    Oracle,
+    Rewards,
+    Ops,
+}
+
+#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum BudgetLine {
     Pol,
     PolBaseline,
@@ -45,6 +57,25 @@ pub enum BudgetLine {
 }
 
 impl BudgetLine {
+    pub const fn account(self) -> TreasuryAccount {
+        match self {
+            Self::Pol => TreasuryAccount::Pol,
+            Self::PolBaseline => TreasuryAccount::PolBaseline,
+            Self::Keeper => TreasuryAccount::Keeper,
+            Self::Oracle => TreasuryAccount::Oracle,
+            Self::Rewards => TreasuryAccount::Rewards,
+            Self::OpsBootnodes
+            | Self::OpsRpcArchive
+            | Self::OpsCollators
+            | Self::OpsKeepers
+            | Self::OpsOracleEvidence
+            | Self::OpsWatchtowers
+            | Self::OpsMonitoring
+            | Self::OpsArweave
+            | Self::OpsCoretime => TreasuryAccount::Ops,
+        }
+    }
+
     pub const fn vit_issuance_allowed(self) -> bool {
         matches!(
             self,
@@ -196,6 +227,10 @@ pub enum Event {
         nav: Balance,
         floor: Balance,
     },
+    KeeperBudgetLow {
+        remaining: Balance,
+    },
+    KeeperBudgetExhausted,
 }
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -661,19 +696,40 @@ mod tests {
         .unwrap();
     }
     #[test]
-    fn reserve_haircut_blocks_new_commitments() {
+    fn reserve_haircut_sets_spendable_zero_and_blocks_new_commitments() {
         let mut t = funded();
         t.set_reserve_impaired(7, true);
-        assert_eq!(t.nav().spendable_nav, 0);
+        let nav = t.nav();
+        assert!(nav.reserve_impaired);
+        assert_eq!(nav.spendable_nav, 0);
         assert_eq!(
             t.spend(TREASURY, 0, BudgetLine::OpsCollators, acct(1), 1)
                 .unwrap_err(),
             Error::ReserveImpaired
         );
+        assert_eq!(
+            t.ensure_nav_floor(ProposalClass::Param).unwrap_err(),
+            Error::NavFloorUnmet
+        );
     }
     #[test]
-    fn streams_claim_and_cancel() {
+    fn streams_are_mandatory_above_threshold_claimable_and_cancellable() {
         let mut t = funded();
+        assert_eq!(
+            t.open_stream(
+                TREASURY,
+                0,
+                StreamInput {
+                    line: BudgetLine::OpsCollators,
+                    recipient: acct(2),
+                    total: 10_000 * USDC,
+                    start: 0,
+                    duration: 100,
+                },
+            )
+            .unwrap_err(),
+            Error::StreamRequired
+        );
         let id = t
             .open_stream(
                 TREASURY,
@@ -687,31 +743,54 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(
+            t.claim_stream(acct(9), 60, id).unwrap_err(),
+            Error::NotRecipient
+        );
         assert_eq!(t.claim_stream(acct(2), 60, id).unwrap(), 150_000 * USDC);
         assert_eq!(t.cancel_stream(TREASURY, id).unwrap(), 150_000 * USDC);
     }
     #[test]
-    fn issuance_meter_caps() {
+    fn issuance_meter_allows_only_rewards_or_ops_and_caps_two_percent() {
         let mut t = funded();
         assert_eq!(
             t.issue_vit(TREASURY, 0, 1, BudgetLine::Pol).unwrap_err(),
             Error::IssuanceLineNotAllowed
         );
-        t.issue_vit(TREASURY, 0, 20_000_000 * VIT, BudgetLine::Rewards)
-            .unwrap();
+        let cap = 20_000_000 * VIT;
+        t.issue_vit(TREASURY, 0, cap, BudgetLine::Rewards).unwrap();
         assert_eq!(
             t.issue_vit(TREASURY, 0, 1, BudgetLine::Rewards)
                 .unwrap_err(),
             Error::IssuanceCapExceeded
         );
+        t.issue_vit(TREASURY, DAYS_365_BLOCKS, 1, BudgetLine::OpsArweave)
+            .unwrap();
     }
     #[test]
-    fn coretime_renewal_is_dedicated_call() {
+    fn coretime_renewal_is_dedicated_call_even_under_reserve_flag() {
         let mut t = funded();
+        t.set_reserve_impaired(1, true);
         t.call_coretime_renewal(TREASURY, 100_000 * USDC).unwrap();
         assert!(matches!(
             t.events.last(),
             Some(Event::CoretimeRenewalCalled { .. })
         ));
+    }
+
+    #[test]
+    fn try_state_checks_bounds() {
+        let mut t = funded();
+        t.streams.push(Stream {
+            id: 0,
+            recipient: acct(1),
+            line: BudgetLine::Rewards,
+            total: 1,
+            claimed: 2,
+            start: 0,
+            duration: 1,
+            cancelled: false,
+        });
+        assert_eq!(t.try_state().unwrap_err(), Error::Overflow);
     }
 }
