@@ -38,8 +38,16 @@ pub const TRAILING_WINDOW: BlockNumber = 14_400;
 pub const STALE_EPOCH_BOUND: BlockNumber = 100_800;
 pub const ONE: u64 = 1_000_000_000;
 pub const ONE_PP: u64 = 10_000_000;
-pub const DELTA_MAX_1E9: u64 = 20_000_000;
+/// Convergence bound `dec.delta_max` — default 0.05 (13 §2; 05 §5.2/§5.4 step 8).
+/// The spot-vs-window TWAP gap must sit within this for both decision books.
+pub const DELTA_MAX_1E9: u64 = 50_000_000;
 pub const SF: u128 = 3;
+/// Gate-veto absolute ruin cap `gate.p_max` — default 0.05 (13 §2; kernel ceiling
+/// 0.10). The ADOPT gate-book TWAP above this vetoes before any welfare upside
+/// is weighed (05 §5.1).
+pub const GATE_P_MAX_1E9: u64 = 50_000_000;
+/// Gate-veto relative margin `gate.eps` — default 0.02 (13 §2; 05 §5.1).
+pub const GATE_EPS_1E9: u64 = 20_000_000;
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum Origin {
@@ -411,6 +419,7 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
     pub fn decide(
         &mut self,
         origin: Origin,
+        ledger: &mut LedgerState<AccountId>,
         pid: ProposalId,
         now: BlockNumber,
         input: DecisionInputs,
@@ -448,7 +457,7 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
                 });
             }
             DecisionOutcome::Reject(r) => {
-                self.reject_to_measurement(pid, r)?;
+                self.reject_to_measurement(ledger, pid, r)?;
             }
         }
         Ok(out)
@@ -552,6 +561,7 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
     pub fn expire_or_stale_queue(
         &mut self,
         origin: Origin,
+        ledger: &mut LedgerState<AccountId>,
         pid: ProposalId,
         reason: Option<RejectReason>,
     ) -> Result<(), Error> {
@@ -563,12 +573,12 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         ensure!(p.state == ProposalState::Queued, Error::BadState);
         match reason {
             Some(r @ (RejectReason::StaleQueue | RejectReason::NotRatified)) => {
-                self.reject_to_measurement(pid, r)
+                self.reject_to_measurement(ledger, pid, r)
             }
             None => {
                 self.proposal_mut(pid)?.state = ProposalState::Expired;
                 self.events.push(Event::MandateExpired(pid));
-                self.reject_branch_measurement(pid)
+                self.reject_branch_measurement(ledger, pid)
             }
             _ => Err(Error::BadDecisionInput),
         }
@@ -596,27 +606,42 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         let score = welfare
             .compute_settlement(epoch, spec)
             .map_err(|_| Error::Welfare)?;
+        // 05 §4.7/§5.1/§6: the gate books settle on the daily breach flags — the
+        // Survival gate on the S floor-breach flag and the Security gate on the C
+        // floor-breach flag, set iff the flag fired on >= 1 day across the two
+        // measurement epochs e+1..e+2. Only C_onchain and S drive these; no attested
+        // value can flip a gate outcome.
+        let f1 = welfare.gate_breach(epoch.saturating_add(1));
+        let f2 = welfare.gate_breach(epoch.saturating_add(2));
+        let survival_breached = f1.s_breached || f2.s_breached;
+        let security_breached = f1.c_breached || f2.c_breached;
         for pid in self.cohorts[idx].proposals.clone() {
             if let Some(p) = self.proposals.iter_mut().find(|p| p.id == pid) {
                 ledger
                     .settle_scalar(LedgerOrigin::SettleAuthority, pid, score)
                     .map_err(|_| Error::Ledger)?;
-                ledger
-                    .settle_gate(
-                        LedgerOrigin::SettleAuthority,
-                        pid,
-                        GateType::Survival,
-                        false,
-                    )
-                    .ok();
-                ledger
-                    .settle_gate(
-                        LedgerOrigin::SettleAuthority,
-                        pid,
-                        GateType::Security,
-                        false,
-                    )
-                    .ok();
+                // Gate books exist only for gate-bearing proposals (05 §5.1:
+                // CODE | META | TREASURY > 1% NAV). Settle those on the breach
+                // flags and propagate failures rather than masking them; a
+                // gateless proposal has no gate market to settle.
+                if requires_gate(p.class, p.ask) {
+                    ledger
+                        .settle_gate(
+                            LedgerOrigin::SettleAuthority,
+                            pid,
+                            GateType::Survival,
+                            survival_breached,
+                        )
+                        .map_err(|_| Error::Ledger)?;
+                    ledger
+                        .settle_gate(
+                            LedgerOrigin::SettleAuthority,
+                            pid,
+                            GateType::Security,
+                            security_breached,
+                        )
+                        .map_err(|_| Error::Ledger)?;
+                }
                 p.state = ProposalState::Settled;
                 p.decision.get_or_insert(DecisionOutcome::Adopt);
             }
@@ -685,10 +710,13 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
                 return Ok(DecisionOutcome::Reject(RejectReason::NotDecisionGrade));
             }
             let g = i.gate_twaps.unwrap();
-            if g[0].0 > 200_000_000 || g[0].0 > g[1].0.saturating_add(10_000_000) {
+            // 05 §5.1: veto iff adopt TWAP exceeds the absolute ruin cap p_max, or
+            // exceeds the reject TWAP by more than the relative margin eps, for either
+            // gate. Ordered before welfare — no upside overrides a veto (G-4, I-14).
+            if g[0].0 > GATE_P_MAX_1E9 || g[0].0 > g[1].0.saturating_add(GATE_EPS_1E9) {
                 return Ok(DecisionOutcome::Reject(RejectReason::GateVetoSurvival));
             }
-            if g[2].0 > 200_000_000 || g[2].0 > g[3].0.saturating_add(10_000_000) {
+            if g[2].0 > GATE_P_MAX_1E9 || g[2].0 > g[3].0.saturating_add(GATE_EPS_1E9) {
                 return Ok(DecisionOutcome::Reject(RejectReason::GateVetoSecurity));
             }
         }
@@ -747,15 +775,31 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         }
         Ok(())
     }
-    fn reject_to_measurement(&mut self, pid: ProposalId, r: RejectReason) -> Result<(), Error> {
+    fn reject_to_measurement(
+        &mut self,
+        ledger: &mut LedgerState<AccountId>,
+        pid: ProposalId,
+        r: RejectReason,
+    ) -> Result<(), Error> {
         self.proposal_mut(pid)?.state = ProposalState::Rejected(r);
         self.events.push(Event::ProposalRejected { pid, reason: r });
         if self.proposal(pid)?.markets.is_some() {
-            self.reject_branch_measurement(pid)?;
+            self.reject_branch_measurement(ledger, pid)?;
         }
         Ok(())
     }
-    fn reject_branch_measurement(&mut self, pid: ProposalId) -> Result<(), Error> {
+    fn reject_branch_measurement(
+        &mut self,
+        ledger: &mut LedgerState<AccountId>,
+        pid: ProposalId,
+    ) -> Result<(), Error> {
+        // T21 (05 §2.1): a rejected/expired proposal whose markets were deployed
+        // resolves its vault to the REJECT branch before measurement, so the REJECT
+        // leg trades through and settle_cohort can settle a `Resolved` vault. Without
+        // this the vault stays `Open` and `settle_scalar` errors, stranding the cohort.
+        ledger
+            .resolve(LedgerOrigin::ResolveAuthority, pid, Branch::Reject)
+            .map_err(|_| Error::Ledger)?;
         self.start_measurement(pid)
     }
     fn start_measurement(&mut self, pid: ProposalId) -> Result<(), Error> {
@@ -887,18 +931,27 @@ fn requires_gate(c: ProposalClass, ask: Balance) -> bool {
     matches!(c, ProposalClass::Code | ProposalClass::Meta)
         || (matches!(c, ProposalClass::Treasury) && ask > 0)
 }
+// `dec.delta` per class — the hurdle floors of the Ask-scaled schedule
+// (13 §2; 05 §5.4 step 6). PARAM/TREASURY/CODE/META = 0.015/0.025/0.040/0.060.
+// CONSTITUTIONAL is unreachable through this engine (hurdle 1.0).
 fn class_delta(c: ProposalClass) -> u64 {
     match c {
-        ProposalClass::Param => 20_000_000,
-        ProposalClass::Treasury => 30_000_000,
-        ProposalClass::Code | ProposalClass::Meta => 40_000_000,
+        ProposalClass::Param => 15_000_000,
+        ProposalClass::Treasury => 25_000_000,
+        ProposalClass::Code => 40_000_000,
+        ProposalClass::Meta => 60_000_000,
         ProposalClass::Constitutional => ONE,
     }
 }
+// `dec.sigma` per class — the reject-leg baseline slack (13 §2; 05 §5.3/§5.4).
+// PARAM/TREASURY/CODE/META = 0.003/0.005/0.008/0.010.
 fn class_sigma(c: ProposalClass) -> u64 {
     match c {
-        ProposalClass::Treasury => 10_000_000,
-        _ => 0,
+        ProposalClass::Param => 3_000_000,
+        ProposalClass::Treasury => 5_000_000,
+        ProposalClass::Code => 8_000_000,
+        ProposalClass::Meta => 10_000_000,
+        ProposalClass::Constitutional => 0,
     }
 }
 fn timelock(c: ProposalClass) -> BlockNumber {
@@ -936,6 +989,8 @@ pub mod benchmarking {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pallet_conditional_ledger::Event as LedgerEvent;
+    use pallet_welfare::{GateBreachFlags, Snapshot};
     fn acct(x: u8) -> [u8; 32] {
         [x; 32]
     }
@@ -998,6 +1053,7 @@ mod tests {
     #[test]
     fn submit_qualify_decide_adopt() {
         let mut s = EpochState::new();
+        let mut ledger = LedgerState::<[u8; 32]>::new();
         s.submit(Origin::Signed, prop(1, ProposalState::Submitted))
             .unwrap();
         s.sync_phase(43_200);
@@ -1012,7 +1068,8 @@ mod tests {
         });
         s.proposal_mut(1).unwrap().decide_at = 10;
         assert_eq!(
-            s.decide(Origin::Keeper, 1, 10, pass_input()).unwrap(),
+            s.decide(Origin::Keeper, &mut ledger, 1, 10, pass_input())
+                .unwrap(),
             DecisionOutcome::Adopt
         );
         assert_eq!(s.proposal(1).unwrap().state, ProposalState::Queued);
@@ -1020,6 +1077,8 @@ mod tests {
     #[test]
     fn first_insufficient_extends_second_rejects() {
         let mut s = EpochState::new();
+        let mut ledger = LedgerState::<[u8; 32]>::new();
+        ledger.create_vault(1, 1).unwrap();
         let mut p = prop(1, ProposalState::Trading);
         p.markets = Some(MarketSet {
             accept: 1,
@@ -1031,17 +1090,25 @@ mod tests {
         let mut i = pass_input();
         i.welfare_grade_ok = false;
         assert_eq!(
-            s.decide(Origin::Keeper, 1, 0, i).unwrap(),
+            s.decide(Origin::Keeper, &mut ledger, 1, 0, i).unwrap(),
             DecisionOutcome::Extend
         );
         assert_eq!(
-            s.decide(Origin::Keeper, 1, DECISION_EXTENSION, i).unwrap(),
+            s.decide(Origin::Keeper, &mut ledger, 1, DECISION_EXTENSION, i)
+                .unwrap(),
             DecisionOutcome::Reject(RejectReason::NotDecisionGrade)
         );
+        // T21 fired: the deployed vault is resolved to the REJECT branch, not left Open.
+        assert!(ledger
+            .events
+            .iter()
+            .any(|e| matches!(e, LedgerEvent::VaultResolved(1, Branch::Reject))));
     }
     #[test]
     fn security_sizing_rejects() {
         let mut s = EpochState::new();
+        let mut ledger = LedgerState::<[u8; 32]>::new();
+        ledger.create_vault(1, 1).unwrap();
         let mut p = prop(1, ProposalState::Trading);
         p.markets = Some(MarketSet {
             accept: 1,
@@ -1053,7 +1120,7 @@ mod tests {
         let mut i = pass_input();
         i.in_cap_prize = Some(1_000_000);
         assert_eq!(
-            s.decide(Origin::Keeper, 1, 0, i).unwrap(),
+            s.decide(Origin::Keeper, &mut ledger, 1, 0, i).unwrap(),
             DecisionOutcome::Reject(RejectReason::SecuritySizing)
         );
     }
@@ -1073,5 +1140,144 @@ mod tests {
         s.resource_locks.push(([1; 8], 1));
         s.resource_locks.push(([1; 8], 1));
         assert_eq!(s.try_state(), Err(Error::TryStateViolation));
+    }
+    #[test]
+    fn class_hurdle_params_match_spec() {
+        // 13 §2: dec.delta = 0.015/0.025/0.040/0.060 and dec.sigma =
+        // 0.003/0.005/0.008/0.010 for PARAM/TREASURY/CODE/META. CODE and META
+        // must differ (they were conflated at 0.040/0 previously).
+        assert_eq!(class_delta(ProposalClass::Param), 15_000_000);
+        assert_eq!(class_delta(ProposalClass::Treasury), 25_000_000);
+        assert_eq!(class_delta(ProposalClass::Code), 40_000_000);
+        assert_eq!(class_delta(ProposalClass::Meta), 60_000_000);
+        assert_eq!(class_sigma(ProposalClass::Param), 3_000_000);
+        assert_eq!(class_sigma(ProposalClass::Treasury), 5_000_000);
+        assert_eq!(class_sigma(ProposalClass::Code), 8_000_000);
+        assert_eq!(class_sigma(ProposalClass::Meta), 10_000_000);
+    }
+    #[test]
+    fn param_hurdle_adopts_at_spec_delta() {
+        // A PARAM margin of 0.017 clears the spec hurdle δ=0.015 (adopt) but would
+        // have failed the old hardcoded δ=0.020. Pins finding #4 into the engine.
+        let mut s = EpochState::new();
+        let mut ledger = LedgerState::<[u8; 32]>::new();
+        ledger.create_vault(1, 1).unwrap();
+        let mut p = prop(1, ProposalState::Trading);
+        p.markets = Some(MarketSet {
+            accept: 1,
+            reject: 2,
+            gates: None,
+            baseline: 3,
+        });
+        s.proposals.push(p);
+        let mut i = pass_input();
+        i.accept_full = FixedU64(517_000_000);
+        i.accept_trailing = FixedU64(517_000_000);
+        i.accept_spot = FixedU64(517_000_000);
+        assert_eq!(
+            s.decide(Origin::Keeper, &mut ledger, 1, 0, i).unwrap(),
+            DecisionOutcome::Adopt
+        );
+    }
+    #[test]
+    fn gate_veto_uses_configured_cap() {
+        // 13 §2 / 05 §5.1: an adopt-gate Survival TWAP of 0.10 sits above the
+        // p_max=0.05 ruin cap and must veto, though it fell under the old
+        // hardcoded 0.20. reject TWAP equals adopt, so only the absolute cap fires.
+        let mut s = EpochState::<[u8; 32]>::new();
+        let mut p = prop(1, ProposalState::Trading);
+        p.class = ProposalClass::Code; // requires gate markets
+        p.markets = Some(MarketSet {
+            accept: 1,
+            reject: 2,
+            gates: Some([1, 2, 3, 4]),
+            baseline: 5,
+        });
+        s.proposals.push(p);
+        let mut i = pass_input();
+        i.gate_twaps = Some([
+            FixedU64(100_000_000), // adopt Survival = 0.10 > p_max 0.05
+            FixedU64(100_000_000), // reject Survival = 0.10 (relative test inert)
+            FixedU64(0),           // adopt Security
+            FixedU64(0),           // reject Security
+        ]);
+        assert_eq!(
+            s.decide_engine(1, &i),
+            Ok(DecisionOutcome::Reject(RejectReason::GateVetoSurvival))
+        );
+    }
+    fn wsnapshot(epoch: EpochId, welfare: u64) -> Snapshot {
+        Snapshot {
+            epoch,
+            spec_version: 1,
+            s_pillar: FixedU64(welfare),
+            c_onchain: FixedU64(welfare),
+            c_attested: FixedU64(welfare),
+            p_pillar: FixedU64(welfare),
+            a_pillar: FixedU64(welfare),
+            gate_s: FixedU64(ONE),
+            gate_c: FixedU64(ONE),
+            welfare: FixedU64(welfare),
+            components: Vec::new(),
+        }
+    }
+    #[test]
+    fn settle_cohort_reads_gate_breach_flags() {
+        // 05 §4.7/§6: gate books settle on the daily breach flags over e+1..e+2,
+        // not a hardcoded `false`. A Survival breach recorded at e+1 must settle the
+        // Survival gate `true` while Security (unbreached) settles `false`.
+        let mut s = EpochState::<[u8; 32]>::new();
+        s.epoch.phase = EpochPhase::Housekeeping;
+        let mut p = prop(1, ProposalState::Measuring);
+        p.class = ProposalClass::Code; // gate-bearing: carries gate books
+        p.markets = Some(MarketSet {
+            accept: 1,
+            reject: 2,
+            gates: Some([1, 2, 3, 4]),
+            baseline: 5,
+        });
+        s.proposals.push(p);
+        s.cohorts.push(CohortInfo {
+            epoch: 0,
+            proposals: alloc::vec![1],
+            status: CohortStatus::Measuring { until_epoch: 2 },
+        });
+
+        let mut welfare = WelfareState::new();
+        welfare.snapshots.push(wsnapshot(1, 500_000_000));
+        welfare.snapshots.push(wsnapshot(2, 500_000_000));
+        welfare.gate_flags.push((
+            1,
+            GateBreachFlags {
+                s_breached: true,
+                c_breached: false,
+                day_bitmap: [0; 2],
+            },
+        ));
+
+        let mut ledger = LedgerState::<[u8; 32]>::new();
+        ledger.create_vault(1, 1).unwrap();
+        ledger
+            .resolve(LedgerOrigin::ResolveAuthority, 1, Branch::Accept)
+            .unwrap();
+
+        s.settle_cohort(
+            Origin::Keeper,
+            &mut welfare,
+            &mut ledger,
+            0,
+            1,
+            FixedU64(500_000_000),
+            100,
+        )
+        .unwrap();
+        assert!(ledger
+            .events
+            .iter()
+            .any(|e| matches!(e, LedgerEvent::GateSettled(1, _, GateType::Survival, true))));
+        assert!(ledger
+            .events
+            .iter()
+            .any(|e| matches!(e, LedgerEvent::GateSettled(1, _, GateType::Security, false))));
     }
 }
