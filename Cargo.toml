@@ -15,6 +15,7 @@ members = [
   "pallets/welfare",
   "pallets/epoch",
   "pallets/execution-guard",
+  "runtime/bleavit-runtime",
 ]
 
 [workspace.package]
