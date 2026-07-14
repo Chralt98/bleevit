@@ -122,5 +122,19 @@
     }
   },
   "precision": "Python Decimal, 90 decimal digits (>=256-bit precision target)",
-  "schema": "bleavit.reference-model.v1"
+  "schema": "bleavit.reference-model.v1",
+  "welfare_vectors": [
+    {
+      "name": "settlement_full",
+      "score": "1.0000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "w1": "1",
+      "w2": "1"
+    },
+    {
+      "name": "settlement_zero_floor",
+      "score": "0.000031622776601683793319988935444327185337195551393252168268575048527925944386392382",
+      "w1": "0",
+      "w2": "1"
+    }
+  ]
 }

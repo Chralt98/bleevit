@@ -1,5 +1,7 @@
 from decimal import Decimal, getcontext
 getcontext().prec = 80
+ONE = Decimal("1")
+EPS_W = Decimal("0.000000001")
 
 def geometric_mean(values):
     prod = Decimal(1)
@@ -11,7 +13,13 @@ def minmax_normalize(value, lo, hi):
     lo=Decimal(lo); hi=Decimal(hi); value=Decimal(value)
     if hi <= lo: raise ValueError("bad range")
     return min(max((value-lo)/(hi-lo), Decimal(0)), Decimal(1))
-def settlement_score(accept_welfare, reject_welfare):
-    a=Decimal(accept_welfare); r=Decimal(reject_welfare)
-    if a + r == 0: return Decimal("0.5")
-    return a / (a + r)
+
+def gate(x, lo, hi):
+    x=Decimal(x); lo=Decimal(lo); hi=Decimal(hi)
+    if x <= lo: return Decimal(0)
+    if x >= hi: return ONE
+    t=(x-lo)/(hi-lo)
+    return t*t*(Decimal(3)-Decimal(2)*t)
+
+def settlement_score(w_epoch_1, w_epoch_2):
+    return geometric_mean([max(Decimal(w_epoch_1), EPS_W), max(Decimal(w_epoch_2), EPS_W)])
