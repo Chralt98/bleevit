@@ -21,6 +21,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bleavit-runtime"
+version = "0.1.0"
+dependencies = [
+ "futarchy-primitives",
+ "pallet-origins",
+ "parity-scale-codec",
+ "scale-info",
+]
+
+[[package]]
 name = "byte-slice-cast"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

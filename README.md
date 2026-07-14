@@ -48,8 +48,9 @@ rollout that removes `sudo` at Phase 4.
 | `crates/futarchy-primitives/` | M1 shared primitive crate: `no_std` contract/view types, version constant, and kernel/chain/currency bounds |
 | `crates/futarchy-fixed/` | M2 deterministic 64.64 fixed-point LMSR/transcendental crate with generated regression fixtures |
 | [`reference-model/`](reference-model/pyproject.toml), [`tools/reference-model/generate-vectors.py`](tools/reference-model/generate-vectors.py) | M3 independent Python executable spec and CI-regenerated JSON vector corpus |
-| `pallets/` | Track A crates implemented so far: `constitution`, `conditional-ledger`, `market`, `origins`, and `oracle`; remaining pallet roots land in later milestones |
-| `runtime/`, `node/`, `frontend/` | Implementation roots created for future milestones; currently placeholders until their tracks begin |
+| `pallets/` | Track A custom pallet crates implemented through A11 |
+| `runtime/bleavit-runtime/` | B1 runtime assembly crate: pallet composition model, SafetyFilter BaseCallFilter adapter, USDC/fee/origin/genesis filtering wiring |
+| `node/`, `frontend/` | Implementation roots created for future milestones; currently placeholders until their tracks begin |
 
 ## How this gets built
 
