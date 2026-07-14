@@ -24,10 +24,26 @@ dependencies = [
 name = "bleavit-runtime"
 version = "0.1.0"
 dependencies = [
+ "bleavit-runtime-api",
  "futarchy-primitives",
+ "pallet-conditional-ledger",
+ "pallet-constitution",
+ "pallet-epoch",
+ "pallet-execution-guard",
+ "pallet-futarchy-treasury",
+ "pallet-market",
+ "pallet-oracle",
  "pallet-origins",
+ "pallet-welfare",
  "parity-scale-codec",
  "scale-info",
+]
+
+[[package]]
+name = "bleavit-runtime-api"
+version = "0.1.0"
+dependencies = [
+ "futarchy-primitives",
 ]
 
 [[package]]

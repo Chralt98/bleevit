@@ -10,8 +10,8 @@ use futarchy_fixed::{
     FixedError, FixedU64x64, LmsrSide, LN_2,
 };
 use futarchy_primitives::{
-    Balance, Branch, EpochId, FixedU64, GateType, MarketId, PositionKind, ProposalId, ScalarSide,
-    TradeSide,
+    Balance, Branch, EpochId, FixedU64, GateType, MarketId, PositionKind, ProposalId, QuoteView,
+    ScalarSide, TradeSide,
 };
 use pallet_conditional_ledger::{baseline, position, LedgerState};
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
@@ -436,6 +436,88 @@ impl<AccountId: Clone + Eq> MarketState<AccountId> {
             p_after: p,
         });
         Ok(())
+    }
+
+    pub fn quote_view(
+        &self,
+        id: MarketId,
+        side: TradeSide,
+        amount: Balance,
+    ) -> Result<QuoteView, Error> {
+        let m = self
+            .markets
+            .iter()
+            .find(|m| m.id == id)
+            .ok_or(Error::UnknownMarket)?;
+        ensure_trading(m.phase)?;
+        ensure_trade_bounds(m.b, amount)?;
+        let scalar_side = match side {
+            TradeSide::BuyLong | TradeSide::SellLong => ScalarSide::Long,
+            TradeSide::BuyShort | TradeSide::SellShort => ScalarSide::Short,
+        };
+        let (cost, post_long, post_short) = match side {
+            TradeSide::BuyLong | TradeSide::BuyShort => {
+                let cost_fx = lmsr_buy_cost(
+                    fx(m.q_long)?,
+                    fx(m.q_short)?,
+                    fx(m.b)?,
+                    lside(scalar_side),
+                    fx(amount)?,
+                )
+                .map_err(map_fixed)?;
+                let q_long = if matches!(scalar_side, ScalarSide::Long) {
+                    add(m.q_long, amount)?
+                } else {
+                    m.q_long
+                };
+                let q_short = if matches!(scalar_side, ScalarSide::Short) {
+                    add(m.q_short, amount)?
+                } else {
+                    m.q_short
+                };
+                (fixed_to_base_units_up(cost_fx)?, q_long, q_short)
+            }
+            TradeSide::SellLong | TradeSide::SellShort => {
+                let proceeds_fx = lmsr_sell_proceeds(
+                    fx(m.q_long)?,
+                    fx(m.q_short)?,
+                    fx(m.b)?,
+                    lside(scalar_side),
+                    fx(amount)?,
+                )
+                .map_err(map_fixed)?;
+                let q_long = if matches!(scalar_side, ScalarSide::Long) {
+                    sub(m.q_long, amount)?
+                } else {
+                    m.q_long
+                };
+                let q_short = if matches!(scalar_side, ScalarSide::Short) {
+                    sub(m.q_short, amount)?
+                } else {
+                    m.q_short
+                };
+                (fixed_to_base_units_down(proceeds_fx)?, q_long, q_short)
+            }
+        };
+        let p = lmsr_price_long(fx(post_long)?, fx(post_short)?, fx(m.b)?).map_err(map_fixed)?;
+        let p_after_1e9 = FixedU64(
+            (p.raw()
+                .checked_mul(PRICE_ONE_1E9 as u128)
+                .ok_or(Error::ArithmeticOverflow)?
+                >> 64) as u64,
+        );
+        let spread = post_long
+            .max(post_short)
+            .saturating_sub(post_long.min(post_short));
+        Ok(QuoteView {
+            cost,
+            fee: fee_up(cost)?,
+            p_after_1e9,
+            max_trade: m.b / 4,
+            within_domain: spread
+                <= m.b
+                    .saturating_mul(futarchy_primitives::kernel::LMSR_DOMAIN_BOUND as u128),
+        })
     }
 
     pub fn close(&mut self, id: MarketId) -> Result<(), Error> {

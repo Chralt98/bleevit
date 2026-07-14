@@ -8,6 +8,15 @@ repository.workspace = true
 [dependencies]
 futarchy-primitives = { path = "../../crates/futarchy-primitives", default-features = false }
 pallet-origins = { path = "../../pallets/origins", default-features = false }
+bleavit-runtime-api = { path = "../runtime-api", default-features = false }
+pallet-constitution = { path = "../../pallets/constitution", default-features = false }
+pallet-conditional-ledger = { path = "../../pallets/conditional-ledger", default-features = false }
+pallet-market = { path = "../../pallets/market", default-features = false }
+pallet-epoch = { path = "../../pallets/epoch", default-features = false }
+pallet-welfare = { path = "../../pallets/welfare", default-features = false }
+pallet-oracle = { path = "../../pallets/oracle", default-features = false }
+pallet-execution-guard = { path = "../../pallets/execution-guard", default-features = false }
+pallet-futarchy-treasury = { path = "../../pallets/futarchy-treasury", default-features = false }
 parity-scale-codec = { version = "3", default-features = false, features = ["derive"] }
 scale-info = { version = "2", default-features = false, features = ["derive"] }
 
@@ -16,6 +25,15 @@ default = ["std"]
 std = [
   "futarchy-primitives/std",
   "pallet-origins/std",
+  "bleavit-runtime-api/std",
+  "pallet-constitution/std",
+  "pallet-conditional-ledger/std",
+  "pallet-market/std",
+  "pallet-epoch/std",
+  "pallet-welfare/std",
+  "pallet-oracle/std",
+  "pallet-execution-guard/std",
+  "pallet-futarchy-treasury/std",
   "parity-scale-codec/std",
   "scale-info/std",
 ]

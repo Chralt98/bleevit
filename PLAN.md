@@ -20,7 +20,7 @@ Legend: ⬜ pending · 🔨 in progress · ✅ done · ⛔ blocked · 🅿 defer
 
 ## Current focus
 
-**Current: B2 — `FutarchyApi` runtime API**. B1 runtime assembly is complete; next up is exposing the versioned chain↔frontend runtime API methods and view types.
+**Current: B3 — node and chain specs**. B2 runtime API is complete; next up is node scaffolding, chain specs, ss58 7777 identity, bootnodes, and genesis configuration.
 
 ---
 
@@ -63,7 +63,7 @@ superseded `BACKEND_PLAN.md` §26; their scope is covered by Tracks M/A/B.)
 | ID | Milestone | Spec | Depends | Status | Notes |
 |---|---|---|---|---|---|
 | B1 | Runtime assembly — standard-pallet config (incl. genesis `frame-system` filter D-13, USDC as ForeignAsset, fees in VIT/USDC), `SafetyFilter` as `BaseCallFilter`, origins wiring | 01 §5–§6; 06 §3; 09 §5 | A1–A11 | ✅ | Runtime assembly model crate, SafetyFilter BaseCallFilter adapter, D-13 genesis filtering, USDC/fee/origin wiring, and filter-exhaustiveness tests are in place |
-| B2 | `FutarchyApi` runtime API — all 11 methods + view types | 02 §3–§4 | B1 | ⬜ | Part of contract; append-only after freeze |
+| B2 | `FutarchyApi` runtime API — all 11 methods + view types | 02 §3–§4 | B1 | ✅ | Added `bleavit-runtime-api`, runtime implementation over bounded state views, quote/position/queue/params/NAV/oracle/cohort surfaces, and contract-surface tests |
 | B3 | Node, chain specs (ss58 7777, WSS bootnodes listed), genesis config incl. VIT allocation/vesting | 02 §8/§10; 08 §2; 12 §6.2 | B1 | ⬜ | ss58 registry submission before Phase 2 |
 | B4 | XCM — USDC/DOT reserve transfers, Asset Hub channel, reserve-probe plumbing, coretime renewal (freeze-exempt) | 09 §6; 07 §8; 01 §4 | B1 | ⬜ | No `Transact` governance either direction |
 | B5 | Benchmarks, weights, PoV budgets (196-market table), weight-regression CI | 15 §4.5; 13 §4–§5 | B1 | ⬜ | I-20 |
@@ -258,3 +258,4 @@ Append-only; newest last. Format: `| Date | Milestone(s) | Done | Next |`
 
 | 2026-07-14 | B1 | Implemented `runtime/bleavit-runtime`: added the workspace runtime assembly crate with the standard/custom pallet composition list, chain identity constants, USDC `ForeignAssets` model, VIT/USDC fee configuration keyed to `fee.vit_usdc_rate`, `SafetyFilter` as `BaseCallFilter`, custom-origin/class wiring, D-13 genesis `frame-system` call filtering for bootstrap/sudo, and an S5-style filter-exhaustiveness sample covering domains plus utility/proxy/multisig/scheduler/sudo wrappers. Full Rust workspace gates, runtime no-default-features tests, runtime runtime-benchmarks feature tests, docs link lint, and a spec-compliance pass against 01 §5–§6, 06 §3, 09 §5, and 15 S5/I-8/I-10/I-11 found no blockers. B1 is now ✅. | B2 — `FutarchyApi` runtime API (all 11 methods + view types) |
 | 2026-07-14 | B1 (PR feedback) | Addressed Codex review feedback on the B1 runtime wiring: `system.apply_authorized_upgrade(code)` is now modelled as the permissionless post-authorization application call instead of an `InternalRoot` call, while `system.authorize_upgrade(hash)` remains internal-root-only. Added a pending-upgrade-aware runtime filter helper that denies apply attempts with no pending upgrade or before `applicable_at`, plus a regression test for the authorize/apply split. Full workspace gates, runtime no-default-features tests, runtime runtime-benchmarks feature tests, and docs link lint passed. B1 remains ✅. | B2 — `FutarchyApi` runtime API (all 11 methods + view types) |
+| 2026-07-14 | B2 | Implemented the `FutarchyApi` runtime API surface: added the dedicated `runtime/runtime-api` crate with the 11-method trait and method manifest, wired `RuntimeState` to return every contract view from bounded pallet state, added market quote-view support, and covered method-count/bounds/account-position behavior in tests. Full Rust workspace gates and docs link lint passed; spec-compliance review against 02 §3–§4 found no blockers. B2 is now ✅. | B3 — node and chain specs (ss58 7777, WSS bootnodes, genesis allocation/vesting) |
