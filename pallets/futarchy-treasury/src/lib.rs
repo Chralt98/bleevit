@@ -20,11 +20,13 @@ pub const TRS_CAP_30D_BPS: u32 = 1_000;
 pub const TRS_CAP_180D_BPS: u32 = 3_000;
 pub const TRS_STREAM_THRESHOLD_BPS: u32 = 100;
 pub const ISS_INFLATION_CAP_BPS: u32 = 200;
+pub const DAY_BLOCKS: BlockNumber = 14_400;
 pub const DAYS_30_BLOCKS: BlockNumber = 432_000;
 pub const DAYS_180_BLOCKS: BlockNumber = 2_592_000;
 pub const DAYS_365_BLOCKS: BlockNumber = 5_256_000;
 pub const KEEPER_BUDGET_EPOCH: Balance = 12_000 * USDC;
 pub const COLLATOR_COMP_EPOCH: Balance = 2_000 * USDC;
+pub const MAX_FUNDED_CORETIME_PERIODS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum TreasuryAccount {
@@ -128,40 +130,77 @@ pub struct Stream {
     pub cancelled: bool,
 }
 
+/// Rolling outflow meter over the trailing `DAYS` days (08 §1.3, I-7).
+///
+/// Charges accumulate in per-day buckets; the enforced window is the current
+/// (partial) day plus the previous `DAYS − 1` full days, which covers slightly
+/// more than `DAYS` days of history — the conservative direction. A fixed
+/// reset-at-boundary window would admit up to twice the cap across the seam.
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-pub struct RollingMeter {
-    pub window: BlockNumber,
+pub struct RollingMeter<const DAYS: usize> {
     pub limit_bps: u32,
-    pub spent: Balance,
-    pub window_start: BlockNumber,
+    pub buckets: [Balance; DAYS],
+    pub last_day: BlockNumber,
 }
 
-impl RollingMeter {
-    pub const fn new(window: BlockNumber, limit_bps: u32) -> Self {
+impl<const DAYS: usize> RollingMeter<DAYS> {
+    pub const fn new(limit_bps: u32) -> Self {
         Self {
-            window,
             limit_bps,
-            spent: 0,
-            window_start: 0,
+            buckets: [0; DAYS],
+            last_day: 0,
         }
     }
-    pub fn charge(&mut self, now: BlockNumber, nav: Balance, amount: Balance) -> Result<(), Error> {
-        if now >= self.window_start.saturating_add(self.window) {
-            self.spent = 0;
-            self.window_start = now;
+    /// Evict buckets that fell out of the trailing window.
+    pub fn roll(&mut self, now: BlockNumber) {
+        let day = now / DAY_BLOCKS;
+        if day <= self.last_day {
+            return;
         }
+        let gap = day - self.last_day;
+        if gap as usize >= DAYS {
+            self.buckets = [0; DAYS];
+        } else {
+            for offset in 1..=gap {
+                let index = (self.last_day.saturating_add(offset)) as usize % DAYS;
+                self.buckets[index] = 0;
+            }
+        }
+        self.last_day = day;
+    }
+    pub fn spent(&self) -> Balance {
+        self.buckets
+            .iter()
+            .copied()
+            .fold(0, Balance::saturating_add)
+    }
+    /// Whether a charge would fit; call [`Self::roll`] first.
+    pub fn can_charge(&self, nav: Balance, amount: Balance) -> Result<(), Error> {
         let limit = bps(nav, self.limit_bps)?;
-        let next = self.spent.checked_add(amount).ok_or(Error::Overflow)?;
+        let next = self.spent().checked_add(amount).ok_or(Error::Overflow)?;
         ensure!(next <= limit, Error::MeterExhausted);
-        self.spent = next;
         Ok(())
+    }
+    /// Record a charge that [`Self::can_charge`] already admitted.
+    pub fn add(&mut self, now: BlockNumber, amount: Balance) -> Result<(), Error> {
+        let index = (now / DAY_BLOCKS) as usize % DAYS;
+        self.buckets[index] = self.buckets[index]
+            .checked_add(amount)
+            .ok_or(Error::Overflow)?;
+        Ok(())
+    }
+    /// Roll, check, and record in one step.
+    pub fn charge(&mut self, now: BlockNumber, nav: Balance, amount: Balance) -> Result<(), Error> {
+        self.roll(now);
+        self.can_charge(nav, amount)?;
+        self.add(now, amount)
     }
     pub fn utilization_bps(&self, nav: Balance) -> u32 {
         let limit = bps(nav, self.limit_bps).unwrap_or(0);
         if limit == 0 {
             0
         } else {
-            self.spent
+            self.spent()
                 .saturating_mul(10_000)
                 .saturating_div(limit)
                 .min(10_000) as u32
@@ -244,6 +283,8 @@ pub enum Error {
     NotRecipient,
     AlreadyCancelled,
     BadDuration,
+    RenewalWindowClosed,
+    PeriodAlreadyFunded,
     TooManyStreams,
     TooManyBudgetLines,
     TooManyObligations,
@@ -263,11 +304,18 @@ pub struct Treasury {
     pub streams: Vec<Stream>,
     pub pending_outflows: Vec<Balance>,
     pub pol_commitments: Vec<Balance>,
-    pub meter_30d: RollingMeter,
-    pub meter_180d: RollingMeter,
+    pub meter_30d: RollingMeter<30>,
+    pub meter_180d: RollingMeter<180>,
     pub issuance: IssuanceMeter,
     pub events: Vec<Event>,
     pub next_stream_id: u64,
+    /// VIT balances credited to budget lines by `issue_vit` (08 §2.3) —
+    /// tracked apart from the USDC line balances so NAV (USDC at par, VIT
+    /// marked 0 per 08 §1.2) never counts minted VIT.
+    pub vit_lines: Vec<(BudgetLine, Balance)>,
+    /// Coretime periods already funded via `execute_coretime_renewal`
+    /// (09 §4 idempotency key), most recent last.
+    pub funded_coretime_periods: Vec<u32>,
 }
 
 impl Default for Treasury {
@@ -280,8 +328,8 @@ impl Default for Treasury {
             streams: Vec::new(),
             pending_outflows: Vec::new(),
             pol_commitments: Vec::new(),
-            meter_30d: RollingMeter::new(DAYS_30_BLOCKS, TRS_CAP_30D_BPS),
-            meter_180d: RollingMeter::new(DAYS_180_BLOCKS, TRS_CAP_180D_BPS),
+            meter_30d: RollingMeter::new(TRS_CAP_30D_BPS),
+            meter_180d: RollingMeter::new(TRS_CAP_180D_BPS),
             issuance: IssuanceMeter {
                 supply_at_window_start: 1_000_000_000 * VIT,
                 minted: 0,
@@ -289,6 +337,8 @@ impl Default for Treasury {
             },
             events: Vec::new(),
             next_stream_id: 0,
+            vit_lines: Vec::new(),
+            funded_coretime_periods: Vec::new(),
         }
     }
 }
@@ -316,6 +366,12 @@ impl Treasury {
     ) -> Result<(), Error> {
         ensure!(origin == Origin::FutarchyTreasury, Error::BadOrigin);
         self.ensure_spendable()?;
+        // 08 §1.3: grants above trs.stream_threshold = 1% NAV MUST stream —
+        // a direct spend must not bypass vesting and later cancellability.
+        ensure!(
+            amount <= bps(self.nav().nav, TRS_STREAM_THRESHOLD_BPS)?,
+            Error::StreamRequired
+        );
         self.enforce_outflow(now, amount)?;
         self.debit_line(line, amount)?;
         self.events.push(Event::Spent { line, dest, amount });
@@ -428,12 +484,31 @@ impl Treasury {
         ensure!(next <= cap, Error::IssuanceCapExceeded);
         self.issuance.minted = next;
         self.vit_supply = self.vit_supply.checked_add(amount).ok_or(Error::Overflow)?;
+        // 08 §2.3: the minted VIT is credited to the requested REWARDS/ops
+        // line so the line can actually disburse it.
+        if let Some((_, bal)) = self.vit_lines.iter_mut().find(|(l, _)| *l == line) {
+            *bal = bal.checked_add(amount).ok_or(Error::Overflow)?;
+        } else {
+            ensure!(
+                self.vit_lines.len() < MAX_BUDGET_LINES,
+                Error::TooManyBudgetLines
+            );
+            self.vit_lines.push((line, amount));
+        }
         self.events.push(Event::VitIssued {
             amount,
             line,
             meter_after: next,
         });
         Ok(())
+    }
+
+    pub fn vit_line_balance(&self, line: BudgetLine) -> Balance {
+        self.vit_lines
+            .iter()
+            .find(|(l, _)| *l == line)
+            .map(|(_, b)| *b)
+            .unwrap_or(0)
     }
     pub fn recover_foreign(
         &mut self,
@@ -454,9 +529,30 @@ impl Treasury {
         });
         Ok(())
     }
-    pub fn call_coretime_renewal(&mut self, origin: Origin, amount: Balance) -> Result<(), Error> {
-        ensure!(origin == Origin::FutarchyTreasury, Error::BadOrigin);
+    /// 09 §4 `execute_coretime_renewal(period_index)`: permissionless
+    /// (Signed, keeper-rebated), spends only from the pre-authorized
+    /// `ops.coretime` line (the line balance is the bound — no NAV meters),
+    /// exempt from every freeze including the reserve-health flag, idempotent
+    /// per coretime period, and a no-op error while the renewal window is
+    /// closed. `renewal_window_open` is runtime context derived from the
+    /// Coretime chain state.
+    pub fn execute_coretime_renewal(
+        &mut self,
+        _keeper: AccountId,
+        period_index: u32,
+        renewal_window_open: bool,
+        amount: Balance,
+    ) -> Result<(), Error> {
+        ensure!(renewal_window_open, Error::RenewalWindowClosed);
+        ensure!(
+            !self.funded_coretime_periods.contains(&period_index),
+            Error::PeriodAlreadyFunded
+        );
         self.debit_line(BudgetLine::OpsCoretime, amount)?;
+        if self.funded_coretime_periods.len() >= MAX_FUNDED_CORETIME_PERIODS {
+            self.funded_coretime_periods.remove(0);
+        }
+        self.funded_coretime_periods.push(period_index);
         self.events.push(Event::CoretimeRenewalCalled {
             line: BudgetLine::OpsCoretime,
             amount,
@@ -525,6 +621,20 @@ impl Treasury {
             ensure!(s.claimed <= s.total, Error::Overflow);
             ensure!(s.duration > 0, Error::BadDuration);
         }
+        ensure!(
+            self.vit_lines.len() <= MAX_BUDGET_LINES,
+            Error::TooManyBudgetLines
+        );
+        let vit_in_lines = self
+            .vit_lines
+            .iter()
+            .map(|(_, b)| *b)
+            .fold(0, Balance::saturating_add);
+        ensure!(vit_in_lines <= self.vit_supply, Error::Overflow);
+        ensure!(
+            self.funded_coretime_periods.len() <= MAX_FUNDED_CORETIME_PERIODS,
+            Error::TooManyObligations
+        );
         Ok(())
     }
     fn ensure_spendable(&self) -> Result<(), Error> {
@@ -537,8 +647,14 @@ impl Treasury {
             amount <= bps(nav, TRS_CAP_PROPOSAL_BPS)?,
             Error::ProposalCapExceeded
         );
-        self.meter_30d.charge(now, nav, amount)?;
-        self.meter_180d.charge(now, nav, amount)
+        // Check both windows before recording in either: a rejected outflow
+        // must not consume meter capacity.
+        self.meter_30d.roll(now);
+        self.meter_180d.roll(now);
+        self.meter_30d.can_charge(nav, amount)?;
+        self.meter_180d.can_charge(nav, amount)?;
+        self.meter_30d.add(now, amount)?;
+        self.meter_180d.add(now, amount)
     }
     fn debit_main(&mut self, amount: Balance) -> Result<(), Error> {
         ensure!(self.main_usdc >= amount, Error::InsufficientFunds);
@@ -656,13 +772,32 @@ mod tests {
             .unwrap_err(),
             Error::BadOrigin
         );
+        // 08 §1.3: a direct spend above trs.stream_threshold = 1% NAV must
+        // stream instead (Codex review, PR #21) - it must not pay out
+        // immediately merely because it is below the 5% proposal cap.
         assert_eq!(
             t.spend(
                 TREASURY,
                 0,
                 BudgetLine::OpsCollators,
                 acct(1),
-                2_000_000 * USDC
+                300_000 * USDC
+            )
+            .unwrap_err(),
+            Error::StreamRequired
+        );
+        // The 5% proposal cap still binds stream openings.
+        assert_eq!(
+            t.open_stream(
+                TREASURY,
+                0,
+                StreamInput {
+                    line: BudgetLine::OpsCollators,
+                    recipient: acct(2),
+                    total: 2_000_000 * USDC,
+                    start: 0,
+                    duration: 100,
+                }
             )
             .unwrap_err(),
             Error::ProposalCapExceeded
@@ -740,6 +875,9 @@ mod tests {
         );
         let cap = 20_000_000 * VIT;
         t.issue_vit(TREASURY, 0, cap, BudgetLine::Rewards).unwrap();
+        // Codex review, PR #21: the minted VIT must land on the requested
+        // line, not only in the supply/meter accounting.
+        assert_eq!(t.vit_line_balance(BudgetLine::Rewards), cap);
         assert_eq!(
             t.issue_vit(TREASURY, 0, 1, BudgetLine::Rewards)
                 .unwrap_err(),
@@ -747,16 +885,85 @@ mod tests {
         );
         t.issue_vit(TREASURY, DAYS_365_BLOCKS, 1, BudgetLine::OpsArweave)
             .unwrap();
+        assert_eq!(t.vit_line_balance(BudgetLine::OpsArweave), 1);
+        t.try_state().unwrap();
     }
     #[test]
-    fn coretime_renewal_is_dedicated_call_even_under_reserve_flag() {
+    fn coretime_renewal_is_permissionless_line_bounded_and_idempotent() {
+        // 09 §4 (Codex review, PR #21): the renewal is a Signed keeper path -
+        // requiring the FutarchyTreasury origin would keep the B-16 wedge
+        // closed on paper only, since no decision can execute under a freeze.
         let mut t = funded();
         t.set_reserve_impaired(1, true);
-        t.call_coretime_renewal(TREASURY, 100_000 * USDC).unwrap();
+        assert_eq!(
+            t.execute_coretime_renewal(acct(7), 42, false, 100_000 * USDC)
+                .unwrap_err(),
+            Error::RenewalWindowClosed
+        );
+        t.execute_coretime_renewal(acct(7), 42, true, 100_000 * USDC)
+            .unwrap();
         assert!(matches!(
             t.events.last(),
             Some(Event::CoretimeRenewalCalled { .. })
         ));
+        // Idempotent per period_index.
+        assert_eq!(
+            t.execute_coretime_renewal(acct(8), 42, true, 100_000 * USDC)
+                .unwrap_err(),
+            Error::PeriodAlreadyFunded
+        );
+        // Bounded solely by the pre-authorized line balance.
+        assert_eq!(
+            t.execute_coretime_renewal(acct(8), 43, true, 500_000 * USDC)
+                .unwrap_err(),
+            Error::InsufficientFunds
+        );
+        t.execute_coretime_renewal(acct(8), 43, true, 400_000 * USDC)
+            .unwrap();
+        t.try_state().unwrap();
+    }
+
+    #[test]
+    fn outflow_meters_roll_across_the_window_boundary() {
+        // Codex review, PR #21: with a fixed window, 10% NAV at the last block
+        // of the window plus 10% at the first block of the next passed while
+        // the trailing 30 days held 20%. The bucketed meter rejects it.
+        let nav = 1_000_000 * USDC;
+        let tenth = 100_000 * USDC;
+        let mut m: RollingMeter<30> = RollingMeter::new(TRS_CAP_30D_BPS);
+        let day29 = DAYS_30_BLOCKS - 1;
+        m.charge(day29, nav, tenth).unwrap();
+        assert_eq!(
+            m.charge(DAYS_30_BLOCKS, nav, tenth).unwrap_err(),
+            Error::MeterExhausted
+        );
+        // Once the loaded day falls out of the trailing window, capacity
+        // returns.
+        m.charge(day29 + DAYS_30_BLOCKS + DAY_BLOCKS, nav, tenth)
+            .unwrap();
+    }
+
+    #[test]
+    fn rejected_outflows_do_not_consume_meter_capacity() {
+        // Codex review, PR #21: a spend that passes the 30d meter but fails
+        // the 180d meter must leave both meters unchanged.
+        let mut t = funded();
+        let nav = t.nav().spendable_nav;
+        // Pre-load the 180d meter to its cap so any further outflow fails it.
+        let cap_180 = bps(nav, TRS_CAP_180D_BPS).unwrap();
+        t.meter_180d.buckets[0] = cap_180;
+        let before_30 = t.meter_30d.spent();
+        assert_eq!(
+            t.spend(TREASURY, 0, BudgetLine::OpsCollators, acct(1), USDC)
+                .unwrap_err(),
+            Error::MeterExhausted
+        );
+        assert_eq!(t.meter_30d.spent(), before_30);
+        assert_eq!(t.meter_180d.spent(), cap_180);
+        // The capacity is still there for a spend that fits both windows.
+        t.meter_180d.buckets[0] = 0;
+        t.spend(TREASURY, 0, BudgetLine::OpsCollators, acct(1), USDC)
+            .unwrap();
     }
     #[test]
     fn try_state_checks_bounds() {
