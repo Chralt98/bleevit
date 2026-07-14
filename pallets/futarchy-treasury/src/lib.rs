@@ -130,24 +130,26 @@ pub struct Stream {
     pub cancelled: bool,
 }
 
-/// Rolling outflow meter over the trailing `DAYS` days (08 §1.3, I-7).
+/// Rolling outflow meter over a trailing window (08 §1.3, I-7).
 ///
-/// Charges accumulate in per-day buckets; the enforced window is the current
-/// (partial) day plus the previous `DAYS − 1` full days, which covers slightly
-/// more than `DAYS` days of history — the conservative direction. A fixed
-/// reset-at-boundary window would admit up to twice the cap across the seam.
+/// Charges accumulate in per-day buckets; `BUCKETS` is the window length in
+/// days **plus one**, so a bucket is evicted only once every spend in it is
+/// strictly older than the window (a spend late on day d stays counted
+/// through day d + BUCKETS − 1). Coverage is therefore always at least the
+/// window — the conservative direction. A fixed reset-at-boundary window
+/// would admit up to twice the cap across the seam.
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-pub struct RollingMeter<const DAYS: usize> {
+pub struct RollingMeter<const BUCKETS: usize> {
     pub limit_bps: u32,
-    pub buckets: [Balance; DAYS],
+    pub buckets: [Balance; BUCKETS],
     pub last_day: BlockNumber,
 }
 
-impl<const DAYS: usize> RollingMeter<DAYS> {
+impl<const BUCKETS: usize> RollingMeter<BUCKETS> {
     pub const fn new(limit_bps: u32) -> Self {
         Self {
             limit_bps,
-            buckets: [0; DAYS],
+            buckets: [0; BUCKETS],
             last_day: 0,
         }
     }
@@ -158,11 +160,11 @@ impl<const DAYS: usize> RollingMeter<DAYS> {
             return;
         }
         let gap = day - self.last_day;
-        if gap as usize >= DAYS {
-            self.buckets = [0; DAYS];
+        if gap as usize >= BUCKETS {
+            self.buckets = [0; BUCKETS];
         } else {
             for offset in 1..=gap {
-                let index = (self.last_day.saturating_add(offset)) as usize % DAYS;
+                let index = (self.last_day.saturating_add(offset)) as usize % BUCKETS;
                 self.buckets[index] = 0;
             }
         }
@@ -183,7 +185,7 @@ impl<const DAYS: usize> RollingMeter<DAYS> {
     }
     /// Record a charge that [`Self::can_charge`] already admitted.
     pub fn add(&mut self, now: BlockNumber, amount: Balance) -> Result<(), Error> {
-        let index = (now / DAY_BLOCKS) as usize % DAYS;
+        let index = (now / DAY_BLOCKS) as usize % BUCKETS;
         self.buckets[index] = self.buckets[index]
             .checked_add(amount)
             .ok_or(Error::Overflow)?;
@@ -304,8 +306,8 @@ pub struct Treasury {
     pub streams: Vec<Stream>,
     pub pending_outflows: Vec<Balance>,
     pub pol_commitments: Vec<Balance>,
-    pub meter_30d: RollingMeter<30>,
-    pub meter_180d: RollingMeter<180>,
+    pub meter_30d: RollingMeter<31>,
+    pub meter_180d: RollingMeter<181>,
     pub issuance: IssuanceMeter,
     pub events: Vec<Event>,
     pub next_stream_id: u64,
@@ -316,6 +318,10 @@ pub struct Treasury {
     /// Coretime periods already funded via `execute_coretime_renewal`
     /// (09 §4 idempotency key), most recent last.
     pub funded_coretime_periods: Vec<u32>,
+    /// Open renewal quotes `(period_index, price)` noted by the runtime from
+    /// Coretime-chain state (09 §4/§6). A present quote is what makes the
+    /// renewal window open; the price never comes from the caller.
+    pub coretime_quotes: Vec<(u32, Balance)>,
 }
 
 impl Default for Treasury {
@@ -339,6 +345,7 @@ impl Default for Treasury {
             next_stream_id: 0,
             vit_lines: Vec::new(),
             funded_coretime_periods: Vec::new(),
+            coretime_quotes: Vec::new(),
         }
     }
 }
@@ -503,6 +510,14 @@ impl Treasury {
         Ok(())
     }
 
+    pub fn line_balance(&self, line: BudgetLine) -> Balance {
+        self.lines
+            .iter()
+            .find(|(l, _)| *l == line)
+            .map(|(_, b)| *b)
+            .unwrap_or(0)
+    }
+
     pub fn vit_line_balance(&self, line: BudgetLine) -> Balance {
         self.vit_lines
             .iter()
@@ -529,33 +544,65 @@ impl Treasury {
         });
         Ok(())
     }
+    /// Note the current renewal quote for a coretime period. Runtime context
+    /// read from Coretime-chain state (09 §4/§6) — never a user-facing call;
+    /// a present quote is what makes the renewal window open.
+    pub fn note_coretime_renewal_quote(
+        &mut self,
+        period_index: u32,
+        price: Balance,
+    ) -> Result<(), Error> {
+        ensure!(
+            !self.funded_coretime_periods.contains(&period_index),
+            Error::PeriodAlreadyFunded
+        );
+        if let Some((_, quoted)) = self
+            .coretime_quotes
+            .iter_mut()
+            .find(|(p, _)| *p == period_index)
+        {
+            *quoted = price;
+            return Ok(());
+        }
+        ensure!(
+            self.coretime_quotes.len() < MAX_FUNDED_CORETIME_PERIODS,
+            Error::TooManyObligations
+        );
+        self.coretime_quotes.push((period_index, price));
+        Ok(())
+    }
+
     /// 09 §4 `execute_coretime_renewal(period_index)`: permissionless
     /// (Signed, keeper-rebated), spends only from the pre-authorized
     /// `ops.coretime` line (the line balance is the bound — no NAV meters),
     /// exempt from every freeze including the reserve-health flag, idempotent
     /// per coretime period, and a no-op error while the renewal window is
-    /// closed. `renewal_window_open` is runtime context derived from the
-    /// Coretime chain state.
+    /// closed. The paid amount is the runtime-noted quote — a permissionless
+    /// caller can neither mark a period funded for free nor drain the line.
     pub fn execute_coretime_renewal(
         &mut self,
         _keeper: AccountId,
         period_index: u32,
-        renewal_window_open: bool,
-        amount: Balance,
     ) -> Result<(), Error> {
-        ensure!(renewal_window_open, Error::RenewalWindowClosed);
         ensure!(
             !self.funded_coretime_periods.contains(&period_index),
             Error::PeriodAlreadyFunded
         );
-        self.debit_line(BudgetLine::OpsCoretime, amount)?;
+        let quote_index = self
+            .coretime_quotes
+            .iter()
+            .position(|(p, _)| *p == period_index)
+            .ok_or(Error::RenewalWindowClosed)?;
+        let (_, price) = self.coretime_quotes[quote_index];
+        self.debit_line(BudgetLine::OpsCoretime, price)?;
+        self.coretime_quotes.remove(quote_index);
         if self.funded_coretime_periods.len() >= MAX_FUNDED_CORETIME_PERIODS {
             self.funded_coretime_periods.remove(0);
         }
         self.funded_coretime_periods.push(period_index);
         self.events.push(Event::CoretimeRenewalCalled {
             line: BudgetLine::OpsCoretime,
-            amount,
+            amount: price,
         });
         Ok(())
     }
@@ -633,6 +680,10 @@ impl Treasury {
         ensure!(vit_in_lines <= self.vit_supply, Error::Overflow);
         ensure!(
             self.funded_coretime_periods.len() <= MAX_FUNDED_CORETIME_PERIODS,
+            Error::TooManyObligations
+        );
+        ensure!(
+            self.coretime_quotes.len() <= MAX_FUNDED_CORETIME_PERIODS,
             Error::TooManyObligations
         );
         Ok(())
@@ -895,31 +946,45 @@ mod tests {
         // closed on paper only, since no decision can execute under a freeze.
         let mut t = funded();
         t.set_reserve_impaired(1, true);
+        // No runtime-noted quote: the renewal window is closed.
         assert_eq!(
-            t.execute_coretime_renewal(acct(7), 42, false, 100_000 * USDC)
-                .unwrap_err(),
+            t.execute_coretime_renewal(acct(7), 42).unwrap_err(),
             Error::RenewalWindowClosed
         );
-        t.execute_coretime_renewal(acct(7), 42, true, 100_000 * USDC)
-            .unwrap();
+        // The paid amount is the noted quote (Codex review, PR #32): a
+        // permissionless keeper can neither fund a period for free nor pick
+        // the amount.
+        t.note_coretime_renewal_quote(42, 100_000 * USDC).unwrap();
+        let line_before = t.line_balance(BudgetLine::OpsCoretime);
+        t.execute_coretime_renewal(acct(7), 42).unwrap();
+        assert_eq!(
+            t.line_balance(BudgetLine::OpsCoretime),
+            line_before - 100_000 * USDC
+        );
         assert!(matches!(
             t.events.last(),
-            Some(Event::CoretimeRenewalCalled { .. })
+            Some(Event::CoretimeRenewalCalled {
+                amount,
+                ..
+            }) if *amount == 100_000 * USDC
         ));
-        // Idempotent per period_index.
+        // Idempotent per period_index - even against a re-noted quote.
         assert_eq!(
-            t.execute_coretime_renewal(acct(8), 42, true, 100_000 * USDC)
-                .unwrap_err(),
+            t.note_coretime_renewal_quote(42, 1).unwrap_err(),
+            Error::PeriodAlreadyFunded
+        );
+        assert_eq!(
+            t.execute_coretime_renewal(acct(8), 42).unwrap_err(),
             Error::PeriodAlreadyFunded
         );
         // Bounded solely by the pre-authorized line balance.
+        t.note_coretime_renewal_quote(43, 500_000 * USDC).unwrap();
         assert_eq!(
-            t.execute_coretime_renewal(acct(8), 43, true, 500_000 * USDC)
-                .unwrap_err(),
+            t.execute_coretime_renewal(acct(8), 43).unwrap_err(),
             Error::InsufficientFunds
         );
-        t.execute_coretime_renewal(acct(8), 43, true, 400_000 * USDC)
-            .unwrap();
+        t.note_coretime_renewal_quote(43, 400_000 * USDC).unwrap();
+        t.execute_coretime_renewal(acct(8), 43).unwrap();
         t.try_state().unwrap();
     }
 
@@ -930,7 +995,7 @@ mod tests {
         // the trailing 30 days held 20%. The bucketed meter rejects it.
         let nav = 1_000_000 * USDC;
         let tenth = 100_000 * USDC;
-        let mut m: RollingMeter<30> = RollingMeter::new(TRS_CAP_30D_BPS);
+        let mut m: RollingMeter<31> = RollingMeter::new(TRS_CAP_30D_BPS);
         let day29 = DAYS_30_BLOCKS - 1;
         m.charge(day29, nav, tenth).unwrap();
         assert_eq!(
@@ -941,6 +1006,23 @@ mod tests {
         // returns.
         m.charge(day29 + DAYS_30_BLOCKS + DAY_BLOCKS, nav, tenth)
             .unwrap();
+    }
+
+    #[test]
+    fn boundary_day_spend_is_retained_for_the_full_window() {
+        // Codex review, PR #32: a spend on the last block of day 0 is only
+        // ~29 days old at day 30's first block; the eviction ring must keep
+        // it counted (window + 1 buckets), and release it a day later.
+        let nav = 1_000_000 * USDC;
+        let tenth = 100_000 * USDC;
+        let mut m: RollingMeter<31> = RollingMeter::new(TRS_CAP_30D_BPS);
+        m.charge(DAY_BLOCKS - 1, nav, tenth).unwrap(); // last block of day 0
+        assert_eq!(
+            m.charge(DAYS_30_BLOCKS, nav, tenth).unwrap_err(), // first block of day 30
+            Error::MeterExhausted
+        );
+        // At day 31 the day-0 spend is strictly older than 30 days.
+        m.charge(DAYS_30_BLOCKS + DAY_BLOCKS, nav, tenth).unwrap();
     }
 
     #[test]
