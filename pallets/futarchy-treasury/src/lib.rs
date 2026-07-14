@@ -75,7 +75,6 @@ impl BudgetLine {
             | Self::OpsCoretime => TreasuryAccount::Ops,
         }
     }
-
     pub const fn vit_issuance_allowed(self) -> bool {
         matches!(
             self,
@@ -146,7 +145,6 @@ impl RollingMeter {
             window_start: 0,
         }
     }
-
     pub fn charge(&mut self, now: BlockNumber, nav: Balance, amount: Balance) -> Result<(), Error> {
         if now >= self.window_start.saturating_add(self.window) {
             self.spent = 0;
@@ -158,7 +156,6 @@ impl RollingMeter {
         self.spent = next;
         Ok(())
     }
-
     pub fn utilization_bps(&self, nav: Balance) -> u32 {
         let limit = bps(nav, self.limit_bps).unwrap_or(0);
         if limit == 0 {
@@ -309,7 +306,6 @@ impl Treasury {
         self.events.push(Event::BudgetLineFunded { line, amount });
         Ok(())
     }
-
     pub fn spend(
         &mut self,
         origin: Origin,
@@ -325,7 +321,6 @@ impl Treasury {
         self.events.push(Event::Spent { line, dest, amount });
         Ok(())
     }
-
     pub fn open_stream(
         &mut self,
         origin: Origin,
@@ -336,8 +331,9 @@ impl Treasury {
         self.ensure_spendable()?;
         ensure!(input.duration > 0, Error::BadDuration);
         ensure!(self.streams.len() < MAX_STREAMS, Error::TooManyStreams);
+        let nav = self.nav().nav;
         ensure!(
-            input.total > bps(self.nav().nav, TRS_STREAM_THRESHOLD_BPS)?,
+            input.total > bps(nav, TRS_STREAM_THRESHOLD_BPS)?,
             Error::StreamRequired
         );
         self.enforce_outflow(now, input.total)?;
@@ -361,7 +357,6 @@ impl Treasury {
         });
         Ok(id)
     }
-
     pub fn claim_stream(
         &mut self,
         who: AccountId,
@@ -387,7 +382,6 @@ impl Treasury {
         });
         Ok(claimable)
     }
-
     pub fn cancel_stream(&mut self, origin: Origin, id: u64) -> Result<Balance, Error> {
         ensure!(origin == Origin::FutarchyTreasury, Error::BadOrigin);
         let idx = self
@@ -411,7 +405,6 @@ impl Treasury {
         });
         Ok(remainder)
     }
-
     pub fn issue_vit(
         &mut self,
         origin: Origin,
@@ -442,7 +435,6 @@ impl Treasury {
         });
         Ok(())
     }
-
     pub fn recover_foreign(
         &mut self,
         origin: Origin,
@@ -462,7 +454,6 @@ impl Treasury {
         });
         Ok(())
     }
-
     pub fn call_coretime_renewal(&mut self, origin: Origin, amount: Balance) -> Result<(), Error> {
         ensure!(origin == Origin::FutarchyTreasury, Error::BadOrigin);
         self.debit_line(BudgetLine::OpsCoretime, amount)?;
@@ -472,14 +463,12 @@ impl Treasury {
         });
         Ok(())
     }
-
     pub fn set_reserve_impaired(&mut self, epoch: EpochId, flag: bool) {
         if self.reserve_impaired != flag {
             self.reserve_impaired = flag;
             self.events.push(Event::NavHaircutFlagged { epoch, flag });
         }
     }
-
     pub fn nav(&self) -> NavView {
         let obligations = self
             .open_stream_remainders()
@@ -489,9 +478,10 @@ impl Treasury {
             .main_usdc
             .saturating_add(sum_lines(&self.lines))
             .saturating_sub(obligations);
+        let spendable_nav = if self.reserve_impaired { 0 } else { nav };
         NavView {
             nav,
-            spendable_nav: if self.reserve_impaired { 0 } else { nav },
+            spendable_nav,
             reserve_impaired: self.reserve_impaired,
             meter_utilization_bps: self
                 .meter_30d
@@ -499,16 +489,15 @@ impl Treasury {
                 .max(self.meter_180d.utilization_bps(nav)),
         }
     }
-
     pub fn floor(class: ProposalClass) -> Balance {
         match class {
             ProposalClass::Param => 1_848_400 * USDC,
             ProposalClass::Treasury => 7_393_600 * USDC,
             ProposalClass::Code => 13_862_944 * USDC,
-            ProposalClass::Meta | ProposalClass::Constitutional => 21_256_533 * USDC,
+            ProposalClass::Meta => 21_256_533 * USDC,
+            ProposalClass::Constitutional => 21_256_533 * USDC,
         }
     }
-
     pub fn ensure_nav_floor(&mut self, class: ProposalClass) -> Result<(), Error> {
         let nav = self.nav().spendable_nav;
         let floor = Self::floor(class);
@@ -518,7 +507,6 @@ impl Treasury {
         }
         Ok(())
     }
-
     pub fn try_state(&self) -> Result<(), Error> {
         ensure!(
             self.lines.len() <= MAX_BUDGET_LINES,
@@ -539,12 +527,10 @@ impl Treasury {
         }
         Ok(())
     }
-
     fn ensure_spendable(&self) -> Result<(), Error> {
         ensure!(!self.reserve_impaired, Error::ReserveImpaired);
         Ok(())
     }
-
     fn enforce_outflow(&mut self, now: BlockNumber, amount: Balance) -> Result<(), Error> {
         let nav = self.nav().spendable_nav;
         ensure!(
@@ -554,13 +540,11 @@ impl Treasury {
         self.meter_30d.charge(now, nav, amount)?;
         self.meter_180d.charge(now, nav, amount)
     }
-
     fn debit_main(&mut self, amount: Balance) -> Result<(), Error> {
         ensure!(self.main_usdc >= amount, Error::InsufficientFunds);
         self.main_usdc -= amount;
         Ok(())
     }
-
     fn credit_line(&mut self, line: BudgetLine, amount: Balance) -> Result<(), Error> {
         if let Some((_, bal)) = self.lines.iter_mut().find(|(l, _)| *l == line) {
             *bal = bal.checked_add(amount).ok_or(Error::Overflow)?;
@@ -573,7 +557,6 @@ impl Treasury {
         }
         Ok(())
     }
-
     fn debit_line(&mut self, line: BudgetLine, amount: Balance) -> Result<(), Error> {
         let (_, bal) = self
             .lines
@@ -584,7 +567,6 @@ impl Treasury {
         *bal -= amount;
         Ok(())
     }
-
     fn open_stream_remainders(&self) -> Balance {
         self.streams
             .iter()
@@ -602,7 +584,6 @@ pub fn bps(amount: Balance, bps: u32) -> Result<Balance, Error> {
         .checked_div(10_000)
         .ok_or(Error::Overflow)
 }
-
 pub fn vested_amount(
     total: Balance,
     start: BlockNumber,
@@ -612,12 +593,12 @@ pub fn vested_amount(
     if now <= start {
         0
     } else {
+        let elapsed = now.saturating_sub(start).min(duration);
         total
-            .saturating_mul(now.saturating_sub(start).min(duration) as Balance)
+            .saturating_mul(elapsed as Balance)
             .saturating_div(duration as Balance)
     }
 }
-
 fn sum(v: &[Balance]) -> Balance {
     v.iter().copied().fold(0, Balance::saturating_add)
 }
@@ -632,7 +613,6 @@ pub mod benchmarking {
     }
 }
 
-#[macro_export]
 macro_rules! ensure {
     ($cond:expr, $err:expr $(,)?) => {
         if !$cond {
@@ -640,6 +620,7 @@ macro_rules! ensure {
         }
     };
 }
+use ensure;
 
 #[cfg(test)]
 mod tests {
@@ -724,8 +705,8 @@ mod tests {
                     recipient: acct(2),
                     total: 10_000 * USDC,
                     start: 0,
-                    duration: 100,
-                },
+                    duration: 100
+                }
             )
             .unwrap_err(),
             Error::StreamRequired
@@ -777,7 +758,6 @@ mod tests {
             Some(Event::CoretimeRenewalCalled { .. })
         ));
     }
-
     #[test]
     fn try_state_checks_bounds() {
         let mut t = funded();
