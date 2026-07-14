@@ -48,8 +48,8 @@ rollout that removes `sudo` at Phase 4.
 | `crates/futarchy-primitives/` | M1 shared primitive crate: `no_std` contract/view types, version constant, and kernel/chain/currency bounds |
 | `crates/futarchy-fixed/` | M2 deterministic 64.64 fixed-point LMSR/transcendental crate with generated regression fixtures |
 | [`reference-model/`](reference-model/pyproject.toml), [`tools/reference-model/generate-vectors.py`](tools/reference-model/generate-vectors.py) | M3 independent Python executable spec and CI-regenerated JSON vector corpus |
-| `pallets/` | Track A custom pallet crates implemented through A11 |
-| `runtime/bleavit-runtime/` | B1 runtime assembly crate: pallet composition model, SafetyFilter BaseCallFilter adapter, USDC/fee/origin/genesis filtering wiring |
+| `pallets/`, `crates/*-core/` | Track A (re-scoped to production FRAME): each `pallets/<name>/` is a `#[frame_support::pallet]` shell (lib.rs · mock · tests · benchmarks) over a frame-free functional core in `crates/<name>-core/`. A1–A11 logic exists as the cores; the FRAME shells are the reopened Track-A work |
+| `runtime/bleavit-runtime/` | B1 runtime assembly crate: pallet composition model, SafetyFilter BaseCallFilter adapter, USDC/fee/origin/genesis filtering wiring — a frame-free model, not yet `construct_runtime!`/`impl_runtime_apis!` (that is B1a) |
 | `node/`, `frontend/` | Implementation roots created for future milestones; currently placeholders until their tracks begin |
 
 ## How this gets built
