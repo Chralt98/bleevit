@@ -5,7 +5,8 @@ extern crate alloc;
 
 use alloc::{vec, vec::Vec};
 use futarchy_primitives::{
-    chain_identity, currency, kernel, Balance, ParamKey, INTEGRATION_CONTRACT_VERSION,
+    chain_identity, currency, kernel, Balance, BlockNumber, ParamKey, H256,
+    INTEGRATION_CONTRACT_VERSION,
 };
 use pallet_origins::{CallDomain, Origin, RuntimeCall, SafetyFilter};
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
@@ -127,7 +128,8 @@ impl SystemCall {
     pub const fn domain(self) -> CallDomain {
         match self {
             Self::Remark => CallDomain::Public,
-            Self::AuthorizeUpgrade | Self::ApplyAuthorizedUpgrade => CallDomain::InternalRoot,
+            Self::AuthorizeUpgrade => CallDomain::InternalRoot,
+            Self::ApplyAuthorizedUpgrade => CallDomain::Public,
             Self::SetHeapPages
             | Self::SetCode
             | Self::SetCodeWithoutChecks
@@ -156,6 +158,20 @@ impl BleavitCall {
     }
 }
 
+#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub struct PendingUpgrade {
+    pub code_hash: H256,
+    pub authorized_at: BlockNumber,
+    pub applicable_at: BlockNumber,
+}
+
+#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub enum RuntimeFilterError {
+    SafetyFilter,
+    PendingUpgradeMissing,
+    PendingUpgradeTooEarly,
+}
+
 pub struct BaseCallFilter;
 
 impl BaseCallFilter {
@@ -165,6 +181,35 @@ impl BaseCallFilter {
 
     pub fn contains_for(origin: Origin, call: &BleavitCall) -> bool {
         SafetyFilter::contains_for(origin, &call.as_filter_call())
+    }
+
+    pub fn validate_at(
+        origin: Option<Origin>,
+        call: &BleavitCall,
+        now: BlockNumber,
+        pending_upgrade: Option<PendingUpgrade>,
+    ) -> Result<(), RuntimeFilterError> {
+        let filter_call = call.as_filter_call();
+        match origin {
+            Some(origin) if !SafetyFilter::contains_for(origin, &filter_call) => {
+                return Err(RuntimeFilterError::SafetyFilter);
+            }
+            None if !SafetyFilter::contains(&filter_call) => {
+                return Err(RuntimeFilterError::SafetyFilter);
+            }
+            _ => {}
+        }
+
+        if matches!(
+            call,
+            BleavitCall::System(SystemCall::ApplyAuthorizedUpgrade)
+        ) {
+            let pending = pending_upgrade.ok_or(RuntimeFilterError::PendingUpgradeMissing)?;
+            if now < pending.applicable_at {
+                return Err(RuntimeFilterError::PendingUpgradeTooEarly);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -404,17 +449,34 @@ mod tests {
     }
 
     #[test]
-    fn internal_upgrade_calls_are_not_publicly_reachable() {
-        for call in [
-            SystemCall::AuthorizeUpgrade,
-            SystemCall::ApplyAuthorizedUpgrade,
-        ] {
-            assert!(!BaseCallFilter::contains(&BleavitCall::System(call)));
-            assert!(!BaseCallFilter::contains_for(
-                Origin::FutarchyCode,
-                &BleavitCall::System(call)
-            ));
-        }
+    fn authorize_upgrade_is_internal_but_apply_is_permissionless_after_lead_time() {
+        assert!(!BaseCallFilter::contains(&BleavitCall::System(
+            SystemCall::AuthorizeUpgrade
+        )));
+        assert!(!BaseCallFilter::contains_for(
+            Origin::FutarchyCode,
+            &BleavitCall::System(SystemCall::AuthorizeUpgrade)
+        ));
+
+        let apply = BleavitCall::System(SystemCall::ApplyAuthorizedUpgrade);
+        let pending = PendingUpgrade {
+            code_hash: [9; 32],
+            authorized_at: 10,
+            applicable_at: 20,
+        };
+        assert!(BaseCallFilter::contains(&apply));
+        assert_eq!(
+            BaseCallFilter::validate_at(None, &apply, 19, Some(pending)),
+            Err(RuntimeFilterError::PendingUpgradeTooEarly)
+        );
+        assert_eq!(
+            BaseCallFilter::validate_at(None, &apply, 20, Some(pending)),
+            Ok(())
+        );
+        assert_eq!(
+            BaseCallFilter::validate_at(None, &apply, 20, None),
+            Err(RuntimeFilterError::PendingUpgradeMissing)
+        );
     }
 
     #[test]
