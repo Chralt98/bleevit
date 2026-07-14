@@ -75,10 +75,7 @@ impl<T: Decode, const N: u32> Decode for BoundedVec<T, N> {
         if len > N {
             return Err("BoundedVec length exceeds declared bound".into());
         }
-        let mut items = Vec::with_capacity(len as usize);
-        for _ in 0..len {
-            items.push(T::decode(input)?);
-        }
+        let items = parity_scale_codec::decode_vec_with_len(input, len as usize)?;
         Ok(Self(items))
     }
 }
@@ -519,6 +516,7 @@ mod tests {
     struct CountingInput<'a> {
         data: &'a [u8],
         read: usize,
+        alloc_mem: usize,
     }
 
     impl parity_scale_codec::Input for CountingInput<'_> {
@@ -536,6 +534,11 @@ mod tests {
             self.read = end;
             Ok(())
         }
+
+        fn on_before_alloc_mem(&mut self, size: usize) -> Result<(), parity_scale_codec::Error> {
+            self.alloc_mem = self.alloc_mem.saturating_add(size);
+            Ok(())
+        }
     }
 
     #[test]
@@ -547,9 +550,24 @@ mod tests {
         let mut input = CountingInput {
             data: &encoded,
             read: 0,
+            alloc_mem: 0,
         };
         assert!(BoundedVec::<u8, 4>::decode(&mut input).is_err());
         assert_eq!(input.read, prefix_len);
+        assert_eq!(input.alloc_mem, 0);
+    }
+
+    #[test]
+    fn scale_decode_charges_allocation_for_in_bound_length() {
+        let encoded = alloc::vec![7_u8; 4].encode();
+        let mut input = CountingInput {
+            data: &encoded,
+            read: 0,
+            alloc_mem: 0,
+        };
+        let decoded = BoundedVec::<u8, 4>::decode(&mut input).unwrap();
+        assert_eq!(decoded.as_slice(), &[7, 7, 7, 7]);
+        assert_eq!(input.alloc_mem, 4);
     }
 
     #[test]
