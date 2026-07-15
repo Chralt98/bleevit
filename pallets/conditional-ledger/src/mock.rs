@@ -99,7 +99,10 @@ impl Contains<AccountId> for Protocol {
 
 parameter_types! {
     pub const LedgerPalletId: PalletId = PalletId(*b"bl/ledgr");
-    pub MinSplit: Balance = kernel::MIN_SPLIT_USDC;
+    // `static` so tests can raise the live `ledger.min_split` above the kernel
+    // floor (13 §1 lets META raise it to 1 USDC) to exercise the R-2 live-floor
+    // paths; defaults to the kernel floor, fresh per test thread.
+    pub static MinSplit: Balance = kernel::MIN_SPLIT_USDC;
     pub PositionDeposit: Balance = kernel::POSITION_DEPOSIT_USDC;
     pub const MaxPositionsPerAccount: u32 = MAX_POSITIONS_PER_ACCOUNT;
     pub const ArchiveDelay: u64 = 100; // blocks (short, for tests)

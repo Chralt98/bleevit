@@ -695,3 +695,67 @@ fn reap_refunds_every_owner_and_keeps_totals_consistent() {
         try_state();
     });
 }
+
+#[test]
+fn scalar_and_gate_splits_enforce_live_min_split() {
+    // Codex P2 (03 §7 R-2): `split_scalar`/`split_gate` mint new LONG/SHORT/gate
+    // entries and so are bound by the creation floor at the LIVE `ledger.min_split`
+    // — not just the stale kernel floor the core guards. Raise the tunable to its
+    // 1-USDC ceiling (13 §1) and confirm sub-floor scalar/gate splits are rejected
+    // even though they clear the 0.01-USDC kernel floor.
+    new_test_ext().execute_with(|| {
+        MinSplit::set(UNIT); // live floor 1 USDC ≫ kernel floor 0.01 USDC
+        create(1);
+        assert_ok!(Ledger::split(signed(ALICE), 1, 5 * UNIT));
+        // Above the kernel floor (0.5 USDC > 0.01) but below the live floor: reject.
+        assert_noop!(
+            Ledger::split_scalar(signed(ALICE), 1, Branch::Accept, UNIT / 2),
+            E::BelowMinimum
+        );
+        assert_noop!(
+            Ledger::split_gate(
+                signed(ALICE),
+                1,
+                Branch::Accept,
+                GateType::Security,
+                UNIT / 2
+            ),
+            E::BelowMinimum
+        );
+        // At the live floor both are admitted.
+        assert_ok!(Ledger::split_scalar(signed(ALICE), 1, Branch::Accept, UNIT));
+        assert_ok!(Ledger::split_gate(
+            signed(ALICE),
+            1,
+            Branch::Accept,
+            GateType::Security,
+            UNIT
+        ));
+        try_state();
+    });
+}
+
+#[test]
+fn transfer_remainder_sweep_uses_live_min_split() {
+    // Codex P2 (03 §7 R-2): the remainder sweep binds the LIVE `ledger.min_split`,
+    // not the stale kernel floor. With the tunable at 1 USDC, a Signed transfer
+    // leaving a 0.5-USDC remainder (well above the 0.01-USDC kernel floor, so the
+    // core alone would NOT sweep) must still move the whole balance rather than
+    // strand sub-floor dust; a remainder exactly at the floor is left in place.
+    new_test_ext().execute_with(|| {
+        MinSplit::set(UNIT); // 1 USDC live floor; kernel floor is 0.01 USDC
+        create(1);
+        assert_ok!(Ledger::split(signed(ALICE), 1, 5 * UNIT));
+        // Send 4.5 of 5 USDC → remainder 0.5 < live floor → sweep the whole 5.
+        let acc = pos(1, Branch::Accept, PositionKind::BranchUsdc);
+        assert_ok!(Ledger::transfer(signed(ALICE), acc, BOB, 9 * UNIT / 2));
+        assert_eq!(Positions::<Test>::get(acc, ALICE), 0);
+        assert_eq!(Positions::<Test>::get(acc, BOB), 5 * UNIT);
+        // Send 4 of 5 USDC → remainder 1 == live floor (strict "below") → no sweep.
+        let rej = pos(1, Branch::Reject, PositionKind::BranchUsdc);
+        assert_ok!(Ledger::transfer(signed(ALICE), rej, CHARLIE, 4 * UNIT));
+        assert_eq!(Positions::<Test>::get(rej, ALICE), UNIT);
+        assert_eq!(Positions::<Test>::get(rej, CHARLIE), 4 * UNIT);
+        try_state();
+    });
+}

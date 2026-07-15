@@ -27,8 +27,11 @@
 //! Every mutating call loads only the bounded set of storage cells the core op
 //! can touch (a proposal vault has 14 `PositionId`s, a Baseline vault 2), runs
 //! the core op — which is atomic and rolls back internally on any failure — and
-//! persists the post-image. Because the whole extrinsic is atomic in FRAME, a
-//! later collateral-transfer failure rolls the storage changes back too (G-1).
+//! persists the post-image. FRAME wraps every `#[pallet::call]` dispatch in
+//! [`frame_support::storage::with_storage_layer`], so returning **any** error —
+//! including a late `T::Collateral::transfer` failure — rolls the already-persisted
+//! storage changes back with it; the core post-image can never outlive its custody
+//! move (G-1). `#[transactional]` would only nest a redundant second layer.
 
 extern crate alloc;
 
@@ -433,6 +436,12 @@ pub mod pallet {
             amount: Balance,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
+            // 03 §7 R-2 creation floor at the LIVE `ledger.min_split`: the minted
+            // LONG/SHORT legs are new non-protocol entries, which R-2 forbids below
+            // the floor even though the §5.1 row omits it. The core guards only the
+            // stale compile-time K floor; `do_split_scalar` (`MarketAuthority`,
+            // exact by construction) stays exempt.
+            ensure!(amount >= T::MinSplit::get(), Error::<T>::BelowMinimum);
             Self::run_proposal(pid, core::slice::from_ref(&who), &who, |st| {
                 st.split_scalar(LedgerOrigin::Signed, pid, branch, &who, amount)
             })
@@ -464,6 +473,9 @@ pub mod pallet {
             amount: Balance,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
+            // 03 §7 R-2 creation floor at the LIVE `ledger.min_split` (as
+            // `split_scalar`): the minted gate legs are new non-protocol entries.
+            ensure!(amount >= T::MinSplit::get(), Error::<T>::BelowMinimum);
             Self::run_proposal(pid, core::slice::from_ref(&who), &who, |st| {
                 st.split_gate(LedgerOrigin::Signed, pid, branch, gate, &who, amount)
             })
@@ -498,9 +510,23 @@ pub mod pallet {
         ) -> DispatchResult {
             let from = ensure_signed(origin)?;
             let (pid, epoch, is_proposal) = Self::id_home(position);
-            // 03 §7 R-2 creation floor, enforced at the LIVE `ledger.min_split` (the
+            // 03 §7 R-2, both sub-rules enforced at the LIVE `ledger.min_split` (the
             // core only guards the compile-time K floor, which is stale once META
-            // raises the tunable): a new non-protocol entry cannot be created below it.
+            // raises the tunable up to its 1-USDC ceiling — 13 §1):
+            let mut amount = amount;
+            // (b) remainder sweep — a Signed transfer that would strand `from` a
+            // sub-`min_split` remainder MUST move the whole balance. Computed first so
+            // the creation floor sees the amount that actually moves; the core's own
+            // sweep (at the K floor) is then a no-op. Protocol senders are exact by
+            // construction and exempt (as in the core).
+            if !T::ProtocolAccounts::contains(&from) {
+                let bal = Positions::<T>::get(position, &from);
+                let remainder = bal.saturating_sub(amount);
+                if remainder > 0 && remainder < T::MinSplit::get() {
+                    amount = bal;
+                }
+            }
+            // (a) creation floor — a new non-protocol entry cannot be created below it.
             if !Positions::<T>::contains_key(position, &to) && !T::ProtocolAccounts::contains(&to) {
                 ensure!(amount >= T::MinSplit::get(), Error::<T>::BelowMinimum);
             }
