@@ -300,6 +300,14 @@ impl AttestorRegistry {
         Ok(())
     }
     pub fn has_quorum(&self, pid: ProposalId, artifact_hash: H256, now: BlockNumber) -> bool {
+        // 06 §7: "≥ 3 members required before any CODE/META proposal can
+        // qualify". The gate needs a full **active** registry, not just a 2-of-N
+        // count — if ejections drop the active membership below MIN_MEMBERS the
+        // attestation gate fails outright, even if two active members' windows
+        // have closed (A10 Codex PR review, I-19).
+        if self.active_member_count() < MIN_MEMBERS {
+            return false;
+        }
         let mut distinct: Vec<AccountId> = Vec::new();
         for att in self
             .attestations
@@ -363,6 +371,10 @@ impl AttestorRegistry {
     }
     fn is_active_member(&self, who: AccountId) -> bool {
         self.members.iter().any(|m| m.account == who && m.active)
+    }
+    /// Count of currently active (non-ejected) attestors (06 §7 registry floor).
+    pub fn active_member_count(&self) -> usize {
+        self.members.iter().filter(|m| m.active).count()
     }
 }
 
@@ -503,5 +515,33 @@ mod tests {
         assert!(!r.has_quorum(9, [7; 32], CHALLENGE_WINDOW_BLOCKS + 1));
         // Once acct(1)'s window closes too, quorum forms.
         assert!(r.has_quorum(9, [7; 32], 100 + CHALLENGE_WINDOW_BLOCKS + 1));
+    }
+
+    #[test]
+    fn quorum_fails_when_active_registry_drops_below_minimum() {
+        // 06 §7 (I-19): "≥ 3 members required before any CODE/META proposal can
+        // qualify". Eject one of three attestors, then have the two remaining
+        // active members attest with closed windows — quorum must still FAIL
+        // because the active registry is below MIN_MEMBERS (A10 Codex PR review).
+        let mut r = AttestorRegistry::new(members()).unwrap();
+        // Eject acct(1) via two adjudicated-false attestations.
+        let a = r.attest(acct(1), 1, [1; 32], [2; 32], 0).unwrap();
+        r.challenge_attestation(acct(9), a, [3; 32], CHALLENGE_BOND, 1)
+            .unwrap();
+        r.resolve_challenge(AttestorOrigin::RatifyTrack, a, false)
+            .unwrap();
+        let b = r.attest(acct(1), 2, [1; 32], [2; 32], 2).unwrap();
+        r.challenge_attestation(acct(9), b, [3; 32], CHALLENGE_BOND, 3)
+            .unwrap();
+        r.resolve_challenge(AttestorOrigin::RatifyTrack, b, false)
+            .unwrap();
+        assert!(!r.is_active_member(acct(1)));
+        assert_eq!(r.active_member_count(), 2);
+        // The two still-active members each attest a CODE artifact; windows close.
+        r.attest(acct(2), 9, [7; 32], [8; 32], 0).unwrap();
+        r.attest(acct(3), 9, [7; 32], [8; 32], 0).unwrap();
+        // Two counting attestations from distinct active members, but the active
+        // registry is below MIN_MEMBERS ⇒ the CODE/META gate has no quorum.
+        assert!(!r.has_quorum(9, [7; 32], CHALLENGE_WINDOW_BLOCKS + 1));
     }
 }
