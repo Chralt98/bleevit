@@ -9,7 +9,7 @@ use core::convert::TryFrom;
 use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 
-pub const INTEGRATION_CONTRACT_VERSION: u32 = 2;
+pub const INTEGRATION_CONTRACT_VERSION: u32 = 3;
 
 pub type Balance = u128;
 pub type ProposalId = u64;
@@ -716,6 +716,9 @@ pub type CohortSummaryView = CohortSummary;
 pub struct OracleRoundView {
     pub component: MetricId,
     pub epoch: EpochId,
+    // Per-version game key (contract v3, 07 §2(4)): an activation boundary keeps
+    // two games live for one (component, epoch); the FE keys rounds by the triple.
+    pub spec_version: MetricSpecVersion,
     pub round: u8,
     pub reporter: AccountId,
     pub value_1e9: FixedU64,
@@ -876,8 +879,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn contract_version_is_v2() {
-        assert_eq!(INTEGRATION_CONTRACT_VERSION, 2);
+    fn contract_version_is_v3() {
+        // Bumped 2 → 3 for the oracle per-version triple-key reconciliation (A5;
+        // 02 §7.2/§13). A change to §2–§12 of the frozen contract bumps this.
+        assert_eq!(INTEGRATION_CONTRACT_VERSION, 3);
     }
 
     #[test]
@@ -997,6 +1002,35 @@ mod tests {
             _ => panic!("MarketKind must encode as a SCALE variant type"),
         };
         assert_eq!(names, CONTRACT_NAMES);
+    }
+
+    #[test]
+    fn oracle_round_view_fields_match_contract_02_section_4() {
+        use scale_info::TypeDef;
+        // 02 §4 (contract v3) freezes the FE-facing `OracleRoundView` projection.
+        // The canonical frontend keys per-version games by these fields (incl.
+        // `spec_version`, added in v3), so lock the name + SCALE order against
+        // re-divergence (rule 5) — this is the §4 half of the SQ-58 reconciliation
+        // that `RoundState`'s lock in `oracle-core` does not cover.
+        const CONTRACT_FIELDS: [&str; 11] = [
+            "component",
+            "epoch",
+            "spec_version",
+            "round",
+            "reporter",
+            "value_1e9",
+            "evidence_hash",
+            "bond",
+            "challenge_deadline",
+            "acked_by_watchtowers",
+            "escalated",
+        ];
+        let type_info = OracleRoundView::type_info();
+        let names: alloc::vec::Vec<&str> = match &type_info.type_def {
+            TypeDef::Composite(c) => c.fields.iter().filter_map(|f| f.name).collect(),
+            _ => panic!("OracleRoundView must encode as a SCALE composite type"),
+        };
+        assert_eq!(names, CONTRACT_FIELDS);
     }
 
     #[test]

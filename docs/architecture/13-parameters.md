@@ -208,7 +208,7 @@ On-chain results MUST match within the §2 error bound plus one base unit of rou
 | Positions key order | **`(PositionId, AccountId)`** — per-vault prefix-drainable for reaping (was `(AccountId, PositionId)`) | — | [03](03-conditional-ledger.md) |
 | `MaxSettlingCohorts` | 4 non-terminal (2 measuring + 1 awaiting oracle + 1 settling) | `pallet-epoch` | [05](05-welfare-and-decision-engine.md) |
 | Resource locks | ≤ 32 proposals × 8 domains | `pallet-epoch` | [05](05-welfare-and-decision-engine.md) |
-| Oracle games | ≤ 16 components × 4 settling epochs × 3 rounds | `pallet-oracle` | [07](07-oracle-and-disputes.md) |
+| Oracle games (live rounds) | ≤ 16 components × 4 settling epochs × 2 concurrent frozen versions = **128** — one live round per `(component, epoch, version)` game (the 3-round escalation ladder is sequential *within* a game, not concurrent storage; ≤ 2 versions overlap only across a MetricSpec activation boundary — [07](07-oracle-and-disputes.md) §2(4)). Within 02 §3's `open_oracle_rounds` view cap of 192. `MAX_ROUNDS = 128` (SQ-59) | `pallet-oracle` | [07](07-oracle-and-disputes.md) |
 | `MetricSpecs` | ≤ 16 versions | `pallet-welfare` | [05](05-welfare-and-decision-engine.md) |
 | Snapshots | ≤ 20 epochs (H + challenge + 12) | `pallet-welfare` | [05](05-welfare-and-decision-engine.md) |
 | `ExecutionRecords` | ring 256 (canonical history is event-derived within the committed window, D-2/D-6 — “pruned to indexer” language deleted) | [09](09-execution-upgrades-and-rollout.md), [02](02-integration-contract.md) |
