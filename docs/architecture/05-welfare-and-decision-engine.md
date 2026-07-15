@@ -18,16 +18,34 @@ pub enum ProposalClass { Param, Treasury, Code, Meta, Constitutional }
 
 ### 1.2 `Proposal` — new fields (B-med: decide() fields)
 
-The canonical `Proposal` (type frozen in [doc 02](./02-integration-contract.md)) gains three fields the engine consumes; the previous spec's pseudocode referenced two of them without declaring them:
+The canonical `Proposal` (layout frozen as part of the [doc 02](./02-integration-contract.md) contract "by inclusion in `futarchy-primitives`") gains three fields the engine consumes (`ask`, `decide_at`, `rerun`); the base field list, which 02 and this document previously deferred to each other without either enumerating it, is **frozen here in full** — this declaration order is the SCALE layout:
 
 ```rust
-pub struct Proposal {
-    // ... fields as in doc 02 ...
+/// Generic over the runtime `AccountId` (concrete instantiation: AccountId32, 02 §8);
+/// carried by `futarchy-primitives` per 02 §2.
+pub struct Proposal<AccountId> {
+    pub id: ProposalId,
+    pub proposer: AccountId,
+    pub class: ProposalClass,
+    pub state: ProposalState,
+    pub epoch: EpochId,                     // creation epoch — the schedule anchor (§2.3)
+    pub submitted_at: BlockNumber,
+    pub payload_hash: H256,                 // pinned at qualification (06; re-checked 09 §1.2(2))
     pub ask: Balance,            // committed USDC outflow (TREASURY; 0 otherwise). Consumed by
                                  // bond formula, security sizing (§5.6), Ask-scaled liquidity (doc 08)
+    pub bond: Balance,                      // class bond held (13 §1 `prop.bond`)
+    pub resources: BoundedVec<[u8; 8], 8>,  // declared resource-domain keys (bound: 13 §4 "Resource locks")
+    pub metric_spec: MetricSpecVersion,     // creation-time spec version (I-16)
     pub decide_at: BlockNumber,  // absolute; computed and stored at qualification from the
                                  // creation-time epoch schedule (§2.3); updated only by T8/T13
     pub rerun: bool,             // set at rerun open (T13); selects the 2×POL / δ+1pp regime
+    pub extended: bool,                     // per-pair extension consumed (§2.1 T8)
+    pub delayed_once: bool,                 // guardian delay-once consumed (06)
+    pub markets: Option<MarketSet>,         // book ids once seeded (04)
+    pub maturity: Option<BlockNumber>,      // execution-queue maturity (09 §1.2(1))
+    pub grace_end: Option<BlockNumber>,     // execution grace deadline (09 §1.2(1))
+    pub version_constraint: Option<RuntimeVersionConstraint>, // layout: 09 §1.2(3)
+    pub decision: Option<DecisionOutcome>,  // set at decide()/terminal transition
 }
 ```
 
