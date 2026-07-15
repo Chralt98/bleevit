@@ -77,6 +77,61 @@ fn usdc(who: AccountId) -> Balance {
 }
 
 #[test]
+fn baseline_seed_is_funded_by_treasury_not_the_book() {
+    // PR #53 Codex P1a: the Baseline seed must be funded from the POL_BASELINE
+    // `treasury` line (04 §8.3/§10), not the book account — the FRAME ledger charges
+    // the split payer's USDC, and the book is not the treasury, so charging it would
+    // fail (book unfunded) or drain the wrong account.
+    new_test_ext().execute_with(|| {
+        create_baseline();
+        let treasury_before = usdc(TREASURY);
+        let book_before = usdc(BOOK);
+        seed(BASELINE_ID);
+        assert!(
+            usdc(TREASURY) < treasury_before,
+            "treasury (POL_BASELINE) must fund the baseline seed"
+        );
+        assert_eq!(
+            usdc(BOOK),
+            book_before,
+            "the book must not be charged for its own seed"
+        );
+        // The book still ends holding the headroom complete set.
+        let long = position_balance(baseline(EPOCH, ScalarSide::Long), BOOK);
+        let short = position_balance(baseline(EPOCH, ScalarSide::Short), BOOK);
+        assert_eq!(long, short);
+        assert!(long > 0);
+        assert_try_state();
+    });
+}
+
+#[test]
+fn seed_failure_rolls_back_atomically_and_sets_no_flag() {
+    // PR #53 Codex P1b: `seed` is an internal (non-`#[pallet::call]`) path with no
+    // FRAME storage layer of its own, so a mid-sequence ledger failure could strand
+    // partial state (and leave `SeededMarkets` unwritten → a retry double-seeds). A
+    // book whose headroom `b·ln2` exceeds the treasury's USDC fails at the first split's
+    // collateral settlement; the `with_storage_layer` wrap must roll everything back.
+    new_test_ext().execute_with(|| {
+        let big_b = 200_000 * UNIT; // headroom ~138,600 USDC > treasury's 100,000
+        assert_ok!(Market::create_market(
+            signed(MARKET_ADMIN),
+            30,
+            BookKind::Baseline { epoch: 9 },
+            BOOK,
+            FEES,
+            big_b,
+        ));
+        assert!(Market::seed(signed(MARKET_ADMIN), 30, TREASURY).is_err());
+        // No seeded flag, and no stranded baseline positions for treasury or the book.
+        assert!(!crate::SeededMarkets::<Test>::contains_key(30));
+        assert_eq!(position_balance(baseline(9, ScalarSide::Long), TREASURY), 0);
+        assert_eq!(position_balance(baseline(9, ScalarSide::Long), BOOK), 0);
+        assert_ok!(Ledger::do_try_state());
+    });
+}
+
+#[test]
 fn r7_baseline_sell_does_not_charge_the_seller() {
     // 04 §6.1: a sell pays the seller net-of-fee value; it must NEVER debit them.
     // In the unbranched Baseline book the seller is paid in a net complete set the

@@ -497,40 +497,45 @@ pub mod pallet {
             }
 
             let (market_kind, pid, epoch) = Self::describe_kind(kind);
-            match kind {
-                BookKind::Decision { proposal, .. } | BookKind::Gate { proposal, .. } => {
-                    // A proposal's ≤ 6 books (2 decision + 4 gate, 04 §1.1) share ONE
-                    // conditional-ledger vault (03 §2.1). Create it on the first book
-                    // for this proposal and reuse it for the rest: the ledger rejects a
-                    // duplicate `create_vault`, so without this guard every multi-book
-                    // proposal — including a bare PARAM decision *pair* — would fail on
-                    // its second `create_market` (G-1: reuse, never error out).
-                    if !pallet_conditional_ledger::Vaults::<T>::contains_key(proposal) {
-                        pallet_conditional_ledger::Pallet::<T>::create_vault(
+            // Same reasoning as `seed`: this internal path creates a ledger vault and
+            // writes market storage, so wrap it in a storage layer so a partial failure
+            // cannot outlive its caller's error handling (G-1).
+            frame_support::storage::with_storage_layer(|| -> DispatchResult {
+                match kind {
+                    BookKind::Decision { proposal, .. } | BookKind::Gate { proposal, .. } => {
+                        // A proposal's ≤ 6 books (2 decision + 4 gate, 04 §1.1) share ONE
+                        // conditional-ledger vault (03 §2.1). Create it on the first book
+                        // for this proposal and reuse it for the rest: the ledger rejects a
+                        // duplicate `create_vault`, so without this guard every multi-book
+                        // proposal — including a bare PARAM decision *pair* — would fail on
+                        // its second `create_market` (G-1: reuse, never error out).
+                        if !pallet_conditional_ledger::Vaults::<T>::contains_key(proposal) {
+                            pallet_conditional_ledger::Pallet::<T>::create_vault(
+                                PalletLedger::<T>::authority_origin(),
+                                proposal,
+                                0,
+                            )?;
+                        }
+                    }
+                    BookKind::Baseline { epoch } => {
+                        pallet_conditional_ledger::Pallet::<T>::create_baseline_vault(
                             PalletLedger::<T>::authority_origin(),
-                            proposal,
-                            0,
+                            epoch,
                         )?;
+                        BaselineMarketOf::<T>::insert(epoch, id);
                     }
                 }
-                BookKind::Baseline { epoch } => {
-                    pallet_conditional_ledger::Pallet::<T>::create_baseline_vault(
-                        PalletLedger::<T>::authority_origin(),
-                        epoch,
-                    )?;
-                    BaselineMarketOf::<T>::insert(epoch, id);
-                }
-            }
 
-            Markets::<T>::insert(id, MarketBook::open(id, kind, account, fees_account, b));
-            Self::deposit_event(Event::MarketCreated {
-                market: id,
-                kind: market_kind,
-                pid,
-                epoch,
-                b,
-            });
-            Ok(())
+                Markets::<T>::insert(id, MarketBook::open(id, kind, account, fees_account, b));
+                Self::deposit_event(Event::MarketCreated {
+                    market: id,
+                    kind: market_kind,
+                    pid,
+                    epoch,
+                    b,
+                });
+                Ok(())
+            })
         }
 
         /// Internal epoch-authority API: seed worst-case-loss headroom (04 §10).
@@ -543,15 +548,23 @@ pub mod pallet {
                 !SeededMarkets::<T>::contains_key(id),
                 Error::<T>::AlreadySeeded
             );
-            let mut ledger = PalletLedger::<T>::new();
-            let headroom =
-                market_core::seed_book(&book, &mut ledger, &treasury).map_err(Error::<T>::from)?;
-            SeededMarkets::<T>::insert(id, ());
-            Self::deposit_event(Event::Seeded {
-                market: id,
-                headroom,
-            });
-            Ok(())
+            // Internal (non-`#[pallet::call]`) path: FRAME's per-dispatch storage layer
+            // wraps only public extrinsics, so an epoch-tick caller that swallows the
+            // error would strand a partial seed (`seed_book` drives several ledger
+            // `do_*` writes that can `Err` after the scoped adapter already persisted,
+            // and `SeededMarkets` would go unwritten → a retry could double-seed). Wrap
+            // the whole sequence so any partial failure rolls back atomically (G-1).
+            frame_support::storage::with_storage_layer(|| -> DispatchResult {
+                let mut ledger = PalletLedger::<T>::new();
+                let headroom = market_core::seed_book(&book, &mut ledger, &treasury)
+                    .map_err(Error::<T>::from)?;
+                SeededMarkets::<T>::insert(id, ());
+                Self::deposit_event(Event::Seeded {
+                    market: id,
+                    headroom,
+                });
+                Ok(())
+            })
         }
 
         /// Internal epoch-authority API: close a book and start its archive delay.

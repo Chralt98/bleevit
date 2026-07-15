@@ -774,9 +774,33 @@ pub fn seed_book<A: Clone + Eq, L: LedgerOps<A>>(
                 .do_split_gate(proposal, branch, gate, &m.account, headroom)
                 .map_err(|_| Error::Ledger)?;
         }
-        BookKind::Baseline { epoch } => ledger
-            .do_split_baseline(epoch, &m.account, headroom)
-            .map_err(|_| Error::Ledger)?,
+        BookKind::Baseline { epoch } => {
+            // POL_BASELINE (the `treasury` arg) funds the seed (04 §8.3/§10), NOT the
+            // book account: the FRAME ledger charges the split payer's USDC, and the
+            // deterministic book account is not the POL_BASELINE treasury line, so
+            // splitting to `m.account` would fail (book unfunded) or drain the wrong
+            // account. Treasury mints the headroom set, then both legs move to the
+            // book — the unbranched analogue of the decision/gate seed paths.
+            ledger
+                .do_split_baseline(epoch, treasury, headroom)
+                .map_err(|_| Error::Ledger)?;
+            ledger
+                .do_transfer(
+                    baseline(epoch, ScalarSide::Long),
+                    treasury,
+                    &m.account,
+                    headroom,
+                )
+                .map_err(|_| Error::Ledger)?;
+            ledger
+                .do_transfer(
+                    baseline(epoch, ScalarSide::Short),
+                    treasury,
+                    &m.account,
+                    headroom,
+                )
+                .map_err(|_| Error::Ledger)?;
+        }
     }
     Ok(headroom)
 }
