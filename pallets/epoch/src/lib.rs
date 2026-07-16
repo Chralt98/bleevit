@@ -123,6 +123,10 @@ pub trait ExecutionGuardAccess {
     ) -> DispatchResult;
     fn queue_reject_reason(pid: ProposalId) -> Option<RejectReason>;
     fn retry_exhausted(pid: ProposalId) -> bool;
+    /// Idempotently remove the A11 queue entry and every guard-owned
+    /// auxiliary (locks, expedited/attestation/ratification bindings and the
+    /// pinned preimage). Epoch calls this after T15/T16/T22 state advancement.
+    fn dequeue_terminal(pid: ProposalId) -> DispatchResult;
 }
 
 /// Sole settlement hand-off (05 §6). The implementation is pallet-welfare,
@@ -483,6 +487,7 @@ pub mod pallet {
         BatchTooLarge,
         ArithmeticOverflow,
         Ledger,
+        ExecutionGuard,
         Welfare,
         TryStateViolation,
         BadProposalShape,
@@ -597,6 +602,10 @@ pub mod pallet {
                     };
                     let preimage_ok =
                         T::Preimage::len(proposal.payload_hash) == Some(proposal.payload_len);
+                    let guard_owned_before = matches!(
+                        proposal.state,
+                        ProposalState::Queued | ProposalState::FailedExecuted
+                    );
                     state.tick(
                         CoreOrigin::Keeper,
                         ledger,
@@ -615,6 +624,14 @@ pub mod pallet {
                         },
                         &params,
                     )?;
+                    let guard_owned_after = matches!(
+                        state.proposal_view(pid)?.state,
+                        ProposalState::Queued | ProposalState::FailedExecuted
+                    );
+                    if guard_owned_before && !guard_owned_after {
+                        T::ExecutionGuard::dequeue_terminal(pid)
+                            .map_err(|_| CoreError::ExecutionGuard)?;
+                    }
                     if state.events.iter().any(
                         |event| matches!(event, CoreEvent::RerunOpened(opened) if *opened == pid),
                     ) {
@@ -855,7 +872,19 @@ pub mod pallet {
         ) -> DispatchResult {
             T::ExecutionGuardOrigin::ensure_origin(origin)?;
             Self::mutate(|state, ledger| {
-                state.retry_exhausted_to_measurement(CoreOrigin::ExecutionGuard, ledger, pid)
+                match state.proposal_view(pid)?.state {
+                    ProposalState::FailedExecuted => state.retry_exhausted_to_measurement(
+                        CoreOrigin::ExecutionGuard,
+                        ledger,
+                        pid,
+                    )?,
+                    ProposalState::Measuring
+                    | ProposalState::Settled
+                    | ProposalState::Expired
+                    | ProposalState::Rejected(_) => {}
+                    _ => return Err(CoreError::BadState),
+                }
+                T::ExecutionGuard::dequeue_terminal(pid).map_err(|_| CoreError::ExecutionGuard)
             })
         }
 
@@ -868,7 +897,20 @@ pub mod pallet {
         ) -> DispatchResult {
             T::ExecutionGuardOrigin::ensure_origin(origin)?;
             Self::mutate(|state, ledger| {
-                state.expire_or_stale_queue(CoreOrigin::ExecutionGuard, ledger, pid, reason)
+                match state.proposal_view(pid)?.state {
+                    ProposalState::Queued => state.expire_or_stale_queue(
+                        CoreOrigin::ExecutionGuard,
+                        ledger,
+                        pid,
+                        reason,
+                    )?,
+                    ProposalState::Measuring
+                    | ProposalState::Settled
+                    | ProposalState::Expired
+                    | ProposalState::Rejected(_) => {}
+                    _ => return Err(CoreError::BadState),
+                }
+                T::ExecutionGuard::dequeue_terminal(pid).map_err(|_| CoreError::ExecutionGuard)
             })
         }
 
@@ -1588,6 +1630,7 @@ pub mod pallet {
                 CoreError::BatchTooLarge => Error::<T>::BatchTooLarge.into(),
                 CoreError::ArithmeticOverflow => Error::<T>::ArithmeticOverflow.into(),
                 CoreError::Ledger => Error::<T>::Ledger.into(),
+                CoreError::ExecutionGuard => Error::<T>::ExecutionGuard.into(),
                 CoreError::Welfare => Error::<T>::Welfare.into(),
                 CoreError::TryStateViolation => Error::<T>::TryStateViolation.into(),
             }

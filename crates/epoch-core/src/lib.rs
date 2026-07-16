@@ -402,6 +402,7 @@ pub enum Error {
     BatchTooLarge,
     ArithmeticOverflow,
     Ledger,
+    ExecutionGuard,
     Welfare,
     TryStateViolation,
 }

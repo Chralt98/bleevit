@@ -2281,14 +2281,17 @@ name = "pallet-execution-guard"
 version = "0.1.0"
 dependencies = [
  "execution-guard-core",
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
  "futarchy-primitives",
- "pallet-attestor",
- "pallet-conditional-ledger",
- "pallet-epoch",
- "pallet-guardian",
  "pallet-origins",
  "parity-scale-codec",
  "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+ "sp-version",
 ]
 
 [[package]]

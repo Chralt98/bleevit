@@ -3,7 +3,7 @@
 use crate as pallet_epoch;
 use crate::*;
 use frame_support::{derive_impl, parameter_types, traits::EnsureOrigin};
-use futarchy_primitives::{BoundedVec, Branch, ProposalState};
+use futarchy_primitives::{BoundedVec, Branch, ProposalState, ResourceId};
 use parity_scale_codec::{Decode, Encode};
 use sp_core::crypto::AccountId32;
 use sp_runtime::{traits::IdentityLookup, BuildStorage, DispatchError};
@@ -125,6 +125,7 @@ pub enum SeamCall {
         grace: BlockNumber,
         requires_ratification: bool,
     },
+    DequeueTerminal(ProposalId),
     Welfare(EpochId, MetricSpecVersion, SettlementTarget),
     CreateVault(ProposalId, MetricSpecVersion),
     Resolve(ProposalId, Branch),
@@ -157,6 +158,92 @@ impl SeamCalls {
         calls.push(call);
         Self::set(calls);
         Ok(())
+    }
+}
+
+/// Transaction-aware A11 storage adapter for A8 handoff regressions. The real
+/// guard suite independently tests these exact ownership classes; this model
+/// proves `epoch.tick` reaches the full cleanup through the configured seam.
+#[derive(Clone, Debug, Decode, Default, Encode, Eq, PartialEq)]
+pub struct MockGuardState {
+    pub queue: Vec<(ProposalId, H256)>,
+    pub held_resources: Vec<(ProposalId, ResourceId)>,
+    pub expedited: Vec<ProposalId>,
+    pub attestation_bindings: Vec<(ProposalId, u32, H256)>,
+    pub ratifications: Vec<ProposalId>,
+    pub pinned_preimages: Vec<(ProposalId, H256)>,
+    pub unpinned_preimages: Vec<H256>,
+}
+
+pub struct GuardStateModel;
+
+impl GuardStateModel {
+    const KEY: &'static [u8] = b":test:epoch:guard-state";
+
+    pub fn get() -> MockGuardState {
+        sp_io::storage::get(Self::KEY)
+            .and_then(|encoded| {
+                let mut input: &[u8] = encoded.as_ref();
+                MockGuardState::decode(&mut input).ok()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn set(state: MockGuardState) {
+        sp_io::storage::set(Self::KEY, &state.encode());
+    }
+
+    pub fn insert(pid: ProposalId, payload_hash: H256) -> frame_support::dispatch::DispatchResult {
+        let mut state = Self::get();
+        if state.queue.iter().any(|(candidate, _)| *candidate == pid) {
+            return Ok(());
+        }
+        if state.queue.len() >= futarchy_primitives::bounds::MAX_LIVE_PROPOSALS as usize {
+            return Err(DispatchError::Other("mock execution guard QueueFull"));
+        }
+        state.queue.push((pid, payload_hash));
+        state.held_resources.push((pid, [pid as u8; 8]));
+        state.expedited.push(pid);
+        state.pinned_preimages.push((pid, payload_hash));
+        Self::set(state);
+        Ok(())
+    }
+
+    pub fn prime_full(
+        pid: ProposalId,
+        payload_hash: H256,
+    ) -> frame_support::dispatch::DispatchResult {
+        Self::insert(pid, payload_hash)?;
+        let mut state = Self::get();
+        state.attestation_bindings.push((pid, 7, payload_hash));
+        state.ratifications.push(pid);
+        Self::set(state);
+        Ok(())
+    }
+
+    pub fn remove(pid: ProposalId) {
+        let mut state = Self::get();
+        let Some(payload_hash) = state
+            .queue
+            .iter()
+            .find_map(|(candidate, hash)| (*candidate == pid).then_some(*hash))
+        else {
+            return;
+        };
+        state.queue.retain(|(candidate, _)| *candidate != pid);
+        state
+            .held_resources
+            .retain(|(candidate, _)| *candidate != pid);
+        state.expedited.retain(|candidate| *candidate != pid);
+        state
+            .attestation_bindings
+            .retain(|(candidate, _, _)| *candidate != pid);
+        state.ratifications.retain(|candidate| *candidate != pid);
+        state
+            .pinned_preimages
+            .retain(|(candidate, _)| *candidate != pid);
+        state.unpinned_preimages.push(payload_hash);
+        Self::set(state);
     }
 }
 
@@ -354,7 +441,8 @@ impl ExecutionGuardAccess for TestExecutionGuard {
             maturity,
             grace,
             requires_ratification,
-        })
+        })?;
+        GuardStateModel::insert(pid, payload_hash)
     }
 
     fn queue_reject_reason(_pid: ProposalId) -> Option<RejectReason> {
@@ -363,6 +451,12 @@ impl ExecutionGuardAccess for TestExecutionGuard {
 
     fn retry_exhausted(_pid: ProposalId) -> bool {
         RetryExhausted::get()
+    }
+
+    fn dequeue_terminal(pid: ProposalId) -> frame_support::dispatch::DispatchResult {
+        SeamCalls::push(SeamCall::DequeueTerminal(pid))?;
+        GuardStateModel::remove(pid);
+        Ok(())
     }
 }
 
@@ -529,6 +623,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
     ext.execute_with(|| {
         System::set_block_number(1);
         SeamCalls::set(Vec::new());
+        GuardStateModel::set(MockGuardState::default());
     });
     ext
 }

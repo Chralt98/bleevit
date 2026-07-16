@@ -1723,6 +1723,166 @@ fn execution_callbacks_cover_t21_t22_and_t23() {
 }
 
 #[test]
+fn r2_tick_t15_t16_and_t22_call_guard_terminal_cleanup() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(Epoch::seed(callback_state(1, ProposalState::Queued)));
+        assert_ok!(GuardStateModel::prime_full(1, [1; 32]));
+        let grace_end = Proposals::<Test>::get(1)
+            .and_then(|proposal| proposal.grace_end)
+            .expect("queued grace");
+        set_block(grace_end.saturating_add(1));
+        assert_ok!(Epoch::tick(
+            RuntimeOrigin::signed(keeper()),
+            tick_batch(vec![1]),
+        ));
+        assert_eq!(
+            Proposals::<Test>::get(1).map(|proposal| proposal.state),
+            Some(ProposalState::Measuring)
+        );
+        assert!(SeamCalls::get().contains(&SeamCall::DequeueTerminal(1)));
+        let guard = GuardStateModel::get();
+        assert!(guard.queue.is_empty());
+        assert!(guard.held_resources.is_empty());
+        assert!(guard.expedited.is_empty());
+        assert!(guard.attestation_bindings.is_empty());
+        assert!(guard.ratifications.is_empty());
+        assert!(guard.pinned_preimages.is_empty());
+        assert_eq!(guard.unpinned_preimages, vec![[1; 32]]);
+    });
+
+    new_test_ext().execute_with(|| {
+        assert_ok!(Epoch::seed(callback_state(1, ProposalState::Queued)));
+        assert_ok!(GuardStateModel::prime_full(1, [1; 32]));
+        QueueReject::set(Some(RejectReason::StaleQueue));
+        assert_ok!(Epoch::tick(
+            RuntimeOrigin::signed(keeper()),
+            tick_batch(vec![1]),
+        ));
+        assert_eq!(
+            Proposals::<Test>::get(1).map(|proposal| proposal.state),
+            Some(ProposalState::Measuring)
+        );
+        assert!(SeamCalls::get().contains(&SeamCall::DequeueTerminal(1)));
+        assert!(GuardStateModel::get().queue.is_empty());
+    });
+
+    new_test_ext().execute_with(|| {
+        assert_ok!(Epoch::seed(callback_state(
+            1,
+            ProposalState::FailedExecuted,
+        )));
+        assert_ok!(GuardStateModel::prime_full(1, [1; 32]));
+        RetryExhausted::set(true);
+        assert_ok!(Epoch::tick(
+            RuntimeOrigin::signed(keeper()),
+            tick_batch(vec![1]),
+        ));
+        assert_eq!(
+            Proposals::<Test>::get(1).map(|proposal| proposal.state),
+            Some(ProposalState::Measuring)
+        );
+        assert!(SeamCalls::get().contains(&SeamCall::DequeueTerminal(1)));
+        assert!(GuardStateModel::get().queue.is_empty());
+    });
+}
+
+#[test]
+fn r2_forty_sequential_t15_expiries_do_not_exhaust_guard_queue() {
+    new_test_ext().execute_with(|| {
+        for pid in 1..=40 {
+            assert_ok!(Epoch::seed(callback_state(pid, ProposalState::Queued)));
+            assert_ok!(GuardStateModel::insert(pid, [pid as u8; 32]));
+            let grace_end = Proposals::<Test>::get(pid)
+                .and_then(|proposal| proposal.grace_end)
+                .expect("queued grace");
+            set_block(grace_end.saturating_add(1));
+            assert_ok!(Epoch::tick(
+                RuntimeOrigin::signed(keeper()),
+                tick_batch(vec![pid]),
+            ));
+            assert!(GuardStateModel::get().queue.is_empty());
+        }
+        assert_eq!(
+            SeamCalls::get()
+                .iter()
+                .filter(|call| matches!(call, SeamCall::DequeueTerminal(_)))
+                .count(),
+            40
+        );
+    });
+}
+
+#[test]
+fn r2_terminal_cleanup_failure_rolls_back_epoch_and_ledger() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(Epoch::seed(callback_state(1, ProposalState::Queued)));
+        assert_ok!(GuardStateModel::prime_full(1, [1; 32]));
+        let guard_before = GuardStateModel::get();
+        SeamFailure::set(Some(SeamCall::DequeueTerminal(1)));
+        assert_noop!(
+            Epoch::expire_or_stale_queue(
+                RuntimeOrigin::signed(execution_guard()),
+                1,
+                Some(RejectReason::StaleQueue),
+            ),
+            Error::<Test>::ExecutionGuard
+        );
+        assert_eq!(
+            Proposals::<Test>::get(1).map(|proposal| proposal.state),
+            Some(ProposalState::Queued)
+        );
+        assert!(SeamCalls::get().is_empty());
+        assert_eq!(GuardStateModel::get(), guard_before);
+    });
+}
+
+#[test]
+fn r2_terminal_callbacks_are_benign_after_epoch_already_advanced() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(Epoch::seed(callback_state(1, ProposalState::Queued)));
+        assert_ok!(Epoch::expire_or_stale_queue(
+            RuntimeOrigin::signed(execution_guard()),
+            1,
+            Some(RejectReason::StaleQueue),
+        ));
+        assert_ok!(Epoch::expire_or_stale_queue(
+            RuntimeOrigin::signed(execution_guard()),
+            1,
+            Some(RejectReason::StaleQueue),
+        ));
+        assert_eq!(
+            SeamCalls::get()
+                .iter()
+                .filter(|call| **call == SeamCall::DequeueTerminal(1))
+                .count(),
+            2
+        );
+    });
+
+    new_test_ext().execute_with(|| {
+        assert_ok!(Epoch::seed(callback_state(
+            1,
+            ProposalState::FailedExecuted,
+        )));
+        assert_ok!(Epoch::retry_exhausted_to_measurement(
+            RuntimeOrigin::signed(execution_guard()),
+            1,
+        ));
+        assert_ok!(Epoch::retry_exhausted_to_measurement(
+            RuntimeOrigin::signed(execution_guard()),
+            1,
+        ));
+        assert_eq!(
+            SeamCalls::get()
+                .iter()
+                .filter(|call| **call == SeamCall::DequeueTerminal(1))
+                .count(),
+            2
+        );
+    });
+}
+
+#[test]
 fn failed_execution_event_is_not_surfaced_by_epoch() {
     new_test_ext().execute_with(|| {
         assert_ok!(Epoch::seed(callback_state(1, ProposalState::Queued)));
