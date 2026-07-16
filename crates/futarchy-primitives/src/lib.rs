@@ -732,11 +732,16 @@ pub struct OracleRoundView {
 pub mod bounds {
     pub const MAX_PROPOSAL_SUMMARIES: u32 = 32;
     pub const MAX_ACCOUNT_POSITIONS: u32 = 64;
-    pub const MAX_EXECUTION_QUEUE: u32 = 32;
+    /// Canonical on-chain execution-history ring bound (09 §1.5 / 13 §4).
+    pub const MAX_EXECUTION_RECORDS: u32 = 256;
     pub const MAX_PARAM_KEYS: u32 = 64;
     pub const RECENT_COHORT_SUMMARIES: u32 = 32;
     pub const MAX_OPEN_ORACLE_ROUNDS: u32 = 192;
     pub const MAX_COHORT_PROPOSALS: u32 = 5;
+    pub const MAX_NON_TERMINAL_COHORTS: u32 = 4;
+    pub const MAX_RESOURCES_PER_PROPOSAL: u32 = 8;
+    /// Generic bounded-meter registry capacity (13 §4).
+    pub const MAX_METERS: u32 = 16;
     pub const INTAKE_QUEUE: u32 = 64;
     pub const MAX_LIVE_PROPOSALS: u32 = 32;
     pub const MAX_LIVE_MARKETS: u32 = 196;
@@ -764,14 +769,24 @@ pub mod chain_identity {
 
 pub mod kernel {
     pub const MILLISECS_PER_BLOCK: u64 = 6_000;
+    /// Frozen six-second-block day used by security-sizing duration math (13 §3.1).
+    pub const BLOCKS_PER_DAY: u32 = 14_400;
     pub const MIN_SPLIT_USDC: u128 = super::currency::USDC_CENT;
     pub const MIN_TRANSFER_USDC: u128 = super::currency::USDC_CENT;
     pub const MIN_TRADE_USDC: u128 = 1_000_000;
     /// Max observation gap before a decision-window staleness event (04 §7; 13 §3.2).
     pub const MKT_STALE_GAP_BLOCKS: u64 = 50;
     pub const POSITION_DEPOSIT_USDC: u128 = 100_000;
+    /// Minimum META-amendable epoch length (14 days; 05 §3.1 / 13 §1).
+    pub const MIN_EPOCH_LENGTH_BLOCKS: u32 = 201_600;
     pub const DEC_EXTENSION_BLOCKS: u32 = 43_200;
+    /// Rerun hurdle increment (one percentage point; T13 / 05 §5.4).
+    pub const RERUN_HURDLE_BUMP_1E9: u64 = 10_000_000;
+    /// Capture-resistance multiplier `AttackCost >= 3 * InCapPrize` (D-4).
+    pub const SECURITY_FACTOR: u128 = 3;
     pub const DESCRIPTOR_LEAD_TIME_BLOCKS: u32 = 43_200;
+    /// T18→T23 retry interval before the T22 keeper transition (05 §2.1).
+    pub const EXECUTION_RETRY_WINDOW_BLOCKS: u32 = 3 * BLOCKS_PER_DAY;
     pub const WATCHTOWER_EXTENSION_BLOCKS: u32 = 28_800;
     /// The 72 h optimistic challenge window (`orc.window`, 07 §5.2/§7), a frozen
     /// shared kernel floor (META ≤ 120 h, never lowered). Single home for the
@@ -783,7 +798,11 @@ pub mod kernel {
     pub const MAX_NESTED_CALLS: u32 = 16;
     pub const MAX_CALLS: u32 = 16;
     pub const MAX_BYTES: u32 = 64 * 1024;
-    pub const MAX_WEIGHT_PERCENT: u8 = 25;
+    /// Maximum aggregate payload dispatch weight as a fraction of the block
+    /// limit (`prop.max_weight`, 13 §2). The ratio form avoids re-encoding the
+    /// same kernel value as an execution-guard arithmetic literal.
+    pub const PROP_MAX_WEIGHT_NUM: u64 = 1;
+    pub const PROP_MAX_WEIGHT_DEN: u64 = 4;
     pub const LMSR_DOMAIN_BOUND: u32 = 48;
     /// Maximum approximation error for a primitive transcendental (`exp2`/`log2`/`ln`),
     /// in units of 1 ulp = 2⁻⁶⁴ (04 §4). Single home for the `futarchy-fixed` kernel bound

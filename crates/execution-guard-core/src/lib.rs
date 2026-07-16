@@ -14,7 +14,7 @@ use futarchy_primitives::{
 };
 use guardian_core::{Guardian, PlaybookId};
 use origins_core::{Origin as ClassOrigin, RuntimeCall, SafetyFilter};
-use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
+use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 
 macro_rules! ensure {
@@ -25,18 +25,20 @@ macro_rules! ensure {
     };
 }
 
-pub const MAX_QUEUE: usize = 32;
-pub const MAX_EXECUTION_RECORDS: usize = 256;
+pub const MAX_QUEUE: usize = futarchy_primitives::bounds::MAX_LIVE_PROPOSALS as usize;
+pub const MAX_EXECUTION_RECORDS: usize =
+    futarchy_primitives::bounds::MAX_EXECUTION_RECORDS as usize;
 pub const MAX_CALLS: usize = futarchy_primitives::kernel::MAX_CALLS as usize;
 pub const MAX_PAYLOAD_BYTES: u32 = futarchy_primitives::kernel::MAX_BYTES;
-pub const MAX_DECLARED_DOMAINS: usize = 16;
-pub const MAX_RESOURCE_LOCKS: usize = 8;
+pub const MAX_DECLARED_DOMAINS: usize = futarchy_primitives::kernel::MAX_CALLS as usize;
+pub const MAX_RESOURCE_LOCKS: usize =
+    futarchy_primitives::bounds::MAX_RESOURCES_PER_PROPOSAL as usize;
 pub const DESCRIPTOR_LEAD_TIME: BlockNumber =
     futarchy_primitives::kernel::DESCRIPTOR_LEAD_TIME_BLOCKS;
 /// T18 retry window (05 §2.1: **72 h**, `= 43,200` blocks per [13]). From the
 /// block a payload reverts, `execute` may be retried (T23) until this elapses;
 /// afterwards the proposal is measured executed-with-failure (T22).
-pub const RETRY_WINDOW: BlockNumber = 43_200;
+pub const RETRY_WINDOW: BlockNumber = futarchy_primitives::kernel::EXECUTION_RETRY_WINDOW_BLOCKS;
 
 /// Deterministic content hash of a byte string — the model stand-in for the
 /// on-chain preimage content-addressing of 09 §1.2(2)/§7.3 (same idiom as
@@ -76,7 +78,18 @@ pub fn hash_payload(calls: &[DispatchCall]) -> H256 {
     content_hash(&buf)
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub enum GuardOrigin {
     Signed,
     EpochDecision,
@@ -84,7 +97,18 @@ pub enum GuardOrigin {
     System,
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub enum CallDomain {
     Public,
     Param,
@@ -128,7 +152,7 @@ pub struct Payload {
     pub calls: Vec<DispatchCall>,
 }
 
-#[derive(Clone, Debug, Decode, Encode, Eq, PartialEq, TypeInfo)]
+#[derive(Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, PartialEq, TypeInfo)]
 pub struct QueuedExecution {
     pub pid: ProposalId,
     pub payload_hash: H256,
@@ -150,7 +174,18 @@ pub struct QueuedExecution {
     pub failed_at: Option<BlockNumber>,
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub struct PendingUpgrade {
     pub hash: H256,
     pub authorized_at: BlockNumber,
@@ -158,7 +193,7 @@ pub struct PendingUpgrade {
     pub target_spec_version: u32,
 }
 
-#[derive(Clone, Debug, Decode, Encode, Eq, PartialEq, TypeInfo)]
+#[derive(Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, PartialEq, TypeInfo)]
 pub enum Event {
     Enqueued {
         pid: ProposalId,
@@ -195,7 +230,18 @@ pub enum Event {
     },
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub enum Error {
     BadOrigin,
     QueueFull,
@@ -229,7 +275,64 @@ pub enum Error {
     Overflow,
 }
 
-#[derive(Clone, Debug, Decode, Encode, Eq, PartialEq, TypeInfo)]
+/// A11's fallible epoch callback surface. The FRAME shell implements this over
+/// `pallet-epoch`; the in-memory compatibility adapter below preserves the
+/// historical core API. Keeping ledger resolution behind epoch is the A8→A11
+/// seam required by 05 §6.
+pub trait EpochHandoff {
+    fn mark_executed(&mut self, pid: ProposalId) -> Result<(), Error>;
+    fn mark_failed_executed(&mut self, pid: ProposalId) -> Result<(), Error>;
+    fn retry_exhausted_to_measurement(&mut self, pid: ProposalId) -> Result<(), Error>;
+    fn reject_or_stale(&mut self, pid: ProposalId, reason: RejectReason) -> Result<(), Error>;
+}
+
+/// Dispatch-time attestation view. The record identity is frozen in the queue;
+/// implementations must answer from durable state and fail closed for a
+/// missing, revoked, challenged, or under-quorum record (09 §1.2(5), I-19).
+pub trait AttestationView {
+    fn present_and_quorate(
+        &self,
+        pid: ProposalId,
+        payload_hash: H256,
+        attestation_id: AttestationId,
+        now: BlockNumber,
+    ) -> bool;
+}
+
+/// Dispatch-time guardian view. Both reads are pure; state transitions happen
+/// only after the complete ordered check list has passed (G-1).
+pub trait GuardianView {
+    fn rerun_held(&self, pid: ProposalId) -> bool;
+    fn ledger_freeze_active(&self, now: BlockNumber) -> bool;
+}
+
+/// Prevalidated runtime-upgrade authorization discovered by the FRAME shell
+/// from the decoded, committed RuntimeCall batch. The core never trusts a
+/// caller-supplied hash; this value is produced only after the shell has
+/// re-derived the exact allowlisted `system.authorize_upgrade` call.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
+pub struct UpgradeAuthorization {
+    pub hash: H256,
+    pub target_spec_version: u32,
+    /// Precomputed before real dispatch by the FRAME shell. Keeping the
+    /// overflow check out of terminal bookkeeping is required by G-1.
+    pub applicable_at: BlockNumber,
+    pub block_hash: H256,
+    pub state_root: H256,
+}
+
+#[derive(Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, PartialEq, TypeInfo)]
 pub struct ExecutionGuard {
     pub queue: Vec<QueuedExecution>,
     pub records: Vec<ExecutionRecord>,
@@ -323,19 +426,89 @@ impl ExecutionGuard {
         block_hash: H256,
         state_root: H256,
     ) -> Result<(), Error> {
+        let guardian = InMemoryGuardian(guardian);
+        let attestors = InMemoryAttestations(attestors);
+        let mut epoch = InMemoryEpochHandoff { epoch, ledger };
+        self.execute_with(
+            origin, &mut epoch, &guardian, &attestors, pid, payload, now, block_hash, state_root,
+        )
+    }
+
+    /// Trait-generic execution entry used by the FRAME shell seam and retained
+    /// by the frame-free differential oracle. It preserves the legacy method's
+    /// semantics while removing its concrete pallet/core coupling.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_with<E: EpochHandoff, G: GuardianView, A: AttestationView>(
+        &mut self,
+        origin: GuardOrigin,
+        epoch: &mut E,
+        guardian: &G,
+        attestors: &A,
+        pid: ProposalId,
+        payload: Payload,
+        now: BlockNumber,
+        block_hash: H256,
+        state_root: H256,
+    ) -> Result<(), Error> {
         ensure!(matches!(origin, GuardOrigin::Signed), Error::BadOrigin);
         let idx = self
             .queue
             .iter()
             .position(|q| q.pid == pid)
             .ok_or(Error::NotFound)?;
-        let q = self.queue[idx].clone();
-        self.check_dispatch_time(&q, guardian, attestors, &payload, now)?;
+        let q = self.queue.get(idx).cloned().ok_or(Error::NotFound)?;
+        self.check_dispatch_time_with(&q, guardian, attestors, &payload, now)?;
         let outcome = self.dispatch_batch(&q, &payload, now, block_hash, state_root)?;
+        self.complete_prevalidated(origin, epoch, pid, outcome, now, None)
+    }
+
+    /// Finish a batch whose full 09 §1.2(1–11) checks and real atomic dispatch
+    /// were performed by the FRAME shell. This method owns only the core's
+    /// T14/T18/T23 bookkeeping and optional upgrade record. Every fallible
+    /// precondition is evaluated before the epoch callback; after it succeeds,
+    /// the remaining in-memory mutations are infallible and bounded by the
+    /// shell adapter (G-1).
+    pub fn complete_prevalidated<E: EpochHandoff>(
+        &mut self,
+        origin: GuardOrigin,
+        epoch: &mut E,
+        pid: ProposalId,
+        outcome: DispatchOutcomeCode,
+        now: BlockNumber,
+        upgrade: Option<UpgradeAuthorization>,
+    ) -> Result<(), Error> {
+        ensure!(matches!(origin, GuardOrigin::Signed), Error::BadOrigin);
+        let idx = self
+            .queue
+            .iter()
+            .position(|q| q.pid == pid)
+            .ok_or(Error::NotFound)?;
+        let q = self.queue.get(idx).cloned().ok_or(Error::NotFound)?;
+
+        let pending = if let Some(upgrade) = upgrade {
+            ensure!(
+                matches!(q.class, ProposalClass::Code | ProposalClass::Meta),
+                Error::BadUpgradePayload
+            );
+            ensure!(self.pending_upgrade.is_none(), Error::PendingUpgradeExists);
+            Some((
+                PendingUpgrade {
+                    hash: upgrade.hash,
+                    authorized_at: now,
+                    applicable_at: upgrade.applicable_at,
+                    target_spec_version: upgrade.target_spec_version,
+                },
+                (upgrade.block_hash, upgrade.state_root),
+            ))
+        } else {
+            None
+        };
+
         match outcome {
             DispatchOutcomeCode::Ok => {
                 // T14 (first success) or T23 (retry within window): `mark_executed`
                 // accepts both `Queued` and `FailedExecuted`.
+                epoch.mark_executed(pid)?;
                 let record = ExecutionRecord {
                     pid,
                     payload_hash: q.payload_hash,
@@ -344,10 +517,20 @@ impl ExecutionGuard {
                     result: outcome,
                 };
                 self.push_record(record.clone());
-                self.queue.remove(idx);
-                epoch
-                    .mark_executed(EpochOrigin::ExecutionGuard, ledger, pid)
-                    .map_err(|_| Error::DispatchFailed)?;
+                self.queue.retain(|queued| queued.pid != pid);
+                self.held_resources.retain(|(owner, _)| *owner != pid);
+                if let Some((pending, checkpoint)) = pending {
+                    self.pending_upgrade = Some(pending);
+                    self.events.push(Event::UpgradeAuthorized {
+                        code_hash: pending.hash,
+                        authorized_at: pending.authorized_at,
+                        applicable_at: pending.applicable_at,
+                    });
+                    // The queue item is being removed, so the checkpoint remains
+                    // observable through the event/audit stream and the pending
+                    // record rather than a dangling auxiliary queue entry.
+                    let _ = checkpoint;
+                }
                 self.events.push(Event::PreimageUnpinned {
                     pid,
                     payload_hash: q.payload_hash,
@@ -362,6 +545,15 @@ impl ExecutionGuard {
                 // live so a retry (T23) can run within `RETRY_WINDOW`. We return
                 // `Ok` so the T18 transition and record persist — returning an
                 // error here would roll them back and re-strand the proposal.
+                let first_failure = self
+                    .queue
+                    .get(idx)
+                    .ok_or(Error::NotFound)?
+                    .failed_at
+                    .is_none();
+                if first_failure {
+                    epoch.mark_failed_executed(pid)?;
+                }
                 let record = ExecutionRecord {
                     pid,
                     payload_hash: q.payload_hash,
@@ -370,11 +562,8 @@ impl ExecutionGuard {
                     result: outcome,
                 };
                 self.push_record(record);
-                if self.queue[idx].failed_at.is_none() {
-                    epoch
-                        .mark_failed_executed(EpochOrigin::ExecutionGuard, pid)
-                        .map_err(|_| Error::DispatchFailed)?;
-                    self.queue[idx].failed_at = Some(now);
+                if first_failure {
+                    self.queue.get_mut(idx).ok_or(Error::NotFound)?.failed_at = Some(now);
                 }
                 self.events.push(Event::ExecutionFailed { pid, outcome });
                 Ok(())
@@ -393,25 +582,49 @@ impl ExecutionGuard {
         pid: ProposalId,
         now: BlockNumber,
     ) -> Result<(), Error> {
+        let mut epoch = InMemoryEpochHandoff { epoch, ledger };
+        self.expire_failed_execution_with(origin, &mut epoch, pid, now)
+    }
+
+    pub fn expire_failed_execution_with<E: EpochHandoff>(
+        &mut self,
+        origin: GuardOrigin,
+        epoch: &mut E,
+        pid: ProposalId,
+        now: BlockNumber,
+    ) -> Result<(), Error> {
         ensure!(matches!(origin, GuardOrigin::Signed), Error::BadOrigin);
         let idx = self
             .queue
             .iter()
             .position(|q| q.pid == pid)
             .ok_or(Error::NotFound)?;
-        let failed_at = self.queue[idx].failed_at.ok_or(Error::NotFound)?;
-        let payload_hash = self.queue[idx].payload_hash;
+        let queued = self.queue.get(idx).ok_or(Error::NotFound)?;
+        let failed_at = queued.failed_at.ok_or(Error::NotFound)?;
         ensure!(
             now > failed_at.saturating_add(RETRY_WINDOW),
             Error::RetryWindowOpen
         );
-        epoch
-            .retry_exhausted_to_measurement(EpochOrigin::ExecutionGuard, ledger, pid)
-            .map_err(|_| Error::DispatchFailed)?;
-        self.queue.remove(idx);
-        self.events
-            .push(Event::PreimageUnpinned { pid, payload_hash });
+        epoch.retry_exhausted_to_measurement(pid)?;
+        self.dequeue_terminal(pid);
         Ok(())
+    }
+
+    /// Idempotent A8→A11 terminal cleanup. Epoch owns T15/T16/T22 state
+    /// transitions; the guard owns only the queue/lock/preimage bookkeeping.
+    /// Repeating the callback after the queue entry is gone is a benign no-op.
+    pub fn dequeue_terminal(&mut self, pid: ProposalId) {
+        if let Some(payload_hash) = self
+            .queue
+            .iter()
+            .find(|queued| queued.pid == pid)
+            .map(|queued| queued.payload_hash)
+        {
+            self.queue.retain(|queued| queued.pid != pid);
+            self.events
+                .push(Event::PreimageUnpinned { pid, payload_hash });
+        }
+        self.held_resources.retain(|(owner, _)| *owner != pid);
     }
 
     /// 09 §2.1(4)/(6), §2.2: permissionless application of an authorized upgrade.
@@ -446,11 +659,57 @@ impl ExecutionGuard {
         Ok(())
     }
 
+    /// Complete a permissionless application after the FRAME shell has
+    /// re-derived the artifact hash/version, enforced DescriptorLeadTime and
+    /// successfully dispatched the exact allowlisted system call via internal
+    /// Root. This contains no fallible work after the precondition block.
+    pub fn complete_upgrade_application(
+        &mut self,
+        origin: GuardOrigin,
+        code_hash: H256,
+        observed_spec_version: u32,
+        now: BlockNumber,
+    ) -> Result<(), Error> {
+        ensure!(matches!(origin, GuardOrigin::Signed), Error::BadOrigin);
+        let pending = self.pending_upgrade.ok_or(Error::NoPendingUpgrade)?;
+        ensure!(now >= pending.applicable_at, Error::DescriptorLeadTime);
+        ensure!(pending.hash == code_hash, Error::UpgradeHashMismatch);
+        ensure!(
+            observed_spec_version == pending.target_spec_version,
+            Error::UpgradeVersionMismatch
+        );
+        self.pending_upgrade = None;
+        self.current_spec_name.spec_version = pending.target_spec_version;
+        self.events.push(Event::UpgradeApplied {
+            code_hash,
+            spec_version: pending.target_spec_version,
+        });
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn check_dispatch_time(
         &self,
         q: &QueuedExecution,
         guardian: &Guardian,
         attestors: &AttestorRegistry,
+        payload: &Payload,
+        now: BlockNumber,
+    ) -> Result<(), Error> {
+        self.check_dispatch_time_with(
+            q,
+            &InMemoryGuardian(guardian),
+            &InMemoryAttestations(attestors),
+            payload,
+            now,
+        )
+    }
+
+    fn check_dispatch_time_with<G: GuardianView, A: AttestationView>(
+        &self,
+        q: &QueuedExecution,
+        guardian: &G,
+        attestors: &A,
         payload: &Payload,
         now: BlockNumber,
     ) -> Result<(), Error> {
@@ -480,11 +739,7 @@ impl ExecutionGuard {
         if matches!(q.class, ProposalClass::Code | ProposalClass::Meta) {
             let id = q.attestation_id.ok_or(Error::AttestationMissing)?;
             ensure!(
-                attestors.attestations.iter().any(|a| a.id == id),
-                Error::AttestationMissing
-            );
-            ensure!(
-                attestors.has_quorum(q.pid, q.payload_hash, now),
+                attestors.present_and_quorate(q.pid, q.payload_hash, id, now),
                 Error::AttestationMissing
             );
         }
@@ -500,14 +755,8 @@ impl ExecutionGuard {
                 .all(|r| self.held_resources.contains(&(q.pid, *r))),
             Error::ResourceLockMissing
         );
-        ensure!(!guardian.rerun_used.contains(&q.pid), Error::GuardianHold);
-        ensure!(
-            !guardian
-                .active_playbooks
-                .iter()
-                .any(|p| matches!(p.id, PlaybookId::LedgerFreeze) && now <= p.expiry),
-            Error::FreezeActive
-        );
+        ensure!(!guardian.rerun_held(q.pid), Error::GuardianHold);
+        ensure!(!guardian.ledger_freeze_active(now), Error::FreezeActive);
         ensure!(
             !self.hard_gate_breach && !self.dead_man_freeze && !self.migration_halt,
             Error::FreezeActive
@@ -528,8 +777,16 @@ impl ExecutionGuard {
                 Error::BadDomainDeclaration
             );
             ensure!(domain_allowed(q.class, c.domain), Error::CapabilityDenied);
-            SafetyFilter::validate(Some(class_origin), &c.call).map_err(|_| Error::SafetyFilter)?;
         }
+        // Closed-wrapper SafetyFilter applied with the `MAX_CALLS` (≤ 16-calls-
+        // total) budget shared across the WHOLE batch, not reset per top-level
+        // call (09 §1.4). This mirrors the FRAME pallet's aggregate re-derivation
+        // so the differential oracle stays in lock-step (I-11/I-20).
+        SafetyFilter::validate_batch(Some(class_origin), payload.calls.iter().map(|c| &c.call))
+            .map_err(|e| match e {
+                origins_core::Error::TooManyCalls => Error::TooManyCalls,
+                _ => Error::SafetyFilter,
+            })?;
         Ok(())
     }
 
@@ -586,7 +843,8 @@ impl ExecutionGuard {
 
     fn push_record(&mut self, record: ExecutionRecord) {
         if self.records.len() == MAX_EXECUTION_RECORDS {
-            self.records.remove(0);
+            self.records.rotate_left(1);
+            let _ = self.records.pop();
         }
         self.records.push(record);
     }
@@ -595,6 +853,16 @@ impl ExecutionGuard {
         &mut self,
         epoch: &mut EpochState<AccountId>,
         ledger: &mut LedgerState<AccountId>,
+        pid: ProposalId,
+        reason: RejectReason,
+    ) -> Result<(), Error> {
+        let mut epoch = InMemoryEpochHandoff { epoch, ledger };
+        self.reject_stale_or_unratified_with(&mut epoch, pid, reason)
+    }
+
+    pub fn reject_stale_or_unratified_with<E: EpochHandoff>(
+        &mut self,
+        epoch: &mut E,
         pid: ProposalId,
         reason: RejectReason,
     ) -> Result<(), Error> {
@@ -612,12 +880,8 @@ impl ExecutionGuard {
         // leave the proposal `Queued` in the epoch while gone from the guard —
         // unable to execute or reach `Rejected` (the reported P2 for
         // `AttestationMissing`, which previously returned `BadDecisionInput`).
-        epoch
-            .expire_or_stale_queue(EpochOrigin::ExecutionGuard, ledger, pid, Some(reason))
-            .map_err(|_| Error::StaleQueue)?;
-        if let Some(idx) = self.queue.iter().position(|q| q.pid == pid) {
-            self.queue.remove(idx);
-        }
+        epoch.reject_or_stale(pid, reason)?;
+        self.dequeue_terminal(pid);
         self.events.push(Event::Rejected { pid, reason });
         Ok(())
     }
@@ -673,14 +937,77 @@ impl ExecutionGuard {
     }
 }
 
-fn requires_ratification(class: ProposalClass) -> bool {
+struct InMemoryEpochHandoff<'a, AccountId> {
+    epoch: &'a mut EpochState<AccountId>,
+    ledger: &'a mut LedgerState<AccountId>,
+}
+
+impl<AccountId: Clone + Eq> EpochHandoff for InMemoryEpochHandoff<'_, AccountId> {
+    fn mark_executed(&mut self, pid: ProposalId) -> Result<(), Error> {
+        self.epoch
+            .mark_executed(EpochOrigin::ExecutionGuard, self.ledger, pid)
+            .map_err(|_| Error::DispatchFailed)
+    }
+
+    fn mark_failed_executed(&mut self, pid: ProposalId) -> Result<(), Error> {
+        self.epoch
+            .mark_failed_executed(EpochOrigin::ExecutionGuard, pid)
+            .map_err(|_| Error::DispatchFailed)
+    }
+
+    fn retry_exhausted_to_measurement(&mut self, pid: ProposalId) -> Result<(), Error> {
+        self.epoch
+            .retry_exhausted_to_measurement(EpochOrigin::ExecutionGuard, self.ledger, pid)
+            .map_err(|_| Error::DispatchFailed)
+    }
+
+    fn reject_or_stale(&mut self, pid: ProposalId, reason: RejectReason) -> Result<(), Error> {
+        self.epoch
+            .expire_or_stale_queue(EpochOrigin::ExecutionGuard, self.ledger, pid, Some(reason))
+            .map_err(|_| Error::StaleQueue)
+    }
+}
+
+struct InMemoryAttestations<'a>(&'a AttestorRegistry);
+
+impl AttestationView for InMemoryAttestations<'_> {
+    fn present_and_quorate(
+        &self,
+        pid: ProposalId,
+        payload_hash: H256,
+        attestation_id: AttestationId,
+        now: BlockNumber,
+    ) -> bool {
+        self.0
+            .attestations
+            .iter()
+            .any(|attestation| attestation.id == attestation_id)
+            && self.0.has_quorum(pid, payload_hash, now)
+    }
+}
+
+struct InMemoryGuardian<'a>(&'a Guardian);
+
+impl GuardianView for InMemoryGuardian<'_> {
+    fn rerun_held(&self, pid: ProposalId) -> bool {
+        self.0.rerun_used.contains(&pid)
+    }
+
+    fn ledger_freeze_active(&self, now: BlockNumber) -> bool {
+        self.0.active_playbooks.iter().any(|playbook| {
+            matches!(playbook.id, PlaybookId::LedgerFreeze) && now <= playbook.expiry
+        })
+    }
+}
+
+pub fn requires_ratification(class: ProposalClass) -> bool {
     matches!(
         class,
         ProposalClass::Code | ProposalClass::Meta | ProposalClass::Constitutional
     )
 }
 
-fn domain_allowed(class: ProposalClass, domain: CallDomain) -> bool {
+pub fn domain_allowed(class: ProposalClass, domain: CallDomain) -> bool {
     match domain {
         CallDomain::Public => true,
         CallDomain::Param => matches!(class, ProposalClass::Param),
@@ -929,6 +1256,36 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_nested_call_budget_is_shared_across_the_whole_batch() {
+        // 9 top-level `batch_all` wrappers, each nesting one Param leaf, is 18
+        // aggregate calls > MAX_CALLS (16). Each top-level call is individually
+        // fine (2 calls, depth 1); only the budget SHARED across the whole batch
+        // (09 §1.4 "≤ 16 calls total") catches it. The frame-free core must
+        // reject here exactly as the FRAME pallet does, so the differential holds.
+        let mut g = ExecutionGuard::new(vc(1));
+        let calls: Vec<DispatchCall> = (0..9)
+            .map(|_| {
+                let mut c = call(CallDomain::Param);
+                c.call = RuntimeCall::UtilityBatchAll(vec![RuntimeCall::Leaf(ODomain::Param)]);
+                c
+            })
+            .collect();
+        let mut q = queued(ProposalClass::Param);
+        q.declared_domains = vec![CallDomain::Param];
+        q.payload_hash = hash_payload(&calls);
+        q.payload_len = 90; // 9 * encoded_len(10)
+        g.held_resources.push((1, *b"resource"));
+        g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
+        let guardian = guardian7();
+        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
+        assert_eq!(
+            g.check_dispatch_time(&g.queue[0], &guardian, &att, &pl(calls), 10)
+                .unwrap_err(),
+            Error::TooManyCalls
+        );
+    }
+
+    #[test]
     fn upgrade_authorize_and_descriptor_lead_time() {
         let mut g = ExecutionGuard::new(vc(1));
         let code = b"runtime-wasm-v2".to_vec();
@@ -987,6 +1344,18 @@ mod tests {
         bad.payload_len = MAX_PAYLOAD_BYTES + 1;
         g.queue.push(bad);
         assert_eq!(g.try_state().unwrap_err(), Error::PayloadTooLarge);
+    }
+
+    #[test]
+    fn r6_queue_bound_is_single_homed_to_max_live_proposals() {
+        assert_eq!(
+            MAX_QUEUE,
+            futarchy_primitives::bounds::MAX_LIVE_PROPOSALS as usize
+        );
+        // Structural regression: the old coincidentally-equal duplicate could
+        // pass the value assertion while still violating rule 4.
+        let source = include_str!("lib.rs");
+        assert!(!source.contains(concat!("bounds::MAX_EXECUTION_", "QUEUE")));
     }
 
     // P1 (09 §1.2(2)): execution is bound to the committed preimage — the hash is

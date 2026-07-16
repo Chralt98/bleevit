@@ -154,6 +154,25 @@ impl SafetyFilter {
         Self::validate_inner(origin, call, &mut budget, false)
     }
 
+    /// Validate a batch of top-level calls under a SINGLE shared budget so the
+    /// `MAX_NESTED_CALLS` ("≤ 16 calls total", 06 §3.3 / 09 §1.4) bound is
+    /// enforced across the whole payload, not reset once per top-level call.
+    /// Each top-level call still gets its own nesting-depth budget (`depth` is
+    /// `enter`/`leave`-balanced); only the aggregate call count is shared —
+    /// `count_call` is monotone, so it accumulates across siblings. The
+    /// execution guard uses this so its frame-free core matches the FRAME
+    /// pallet's aggregate re-derivation (differential parity).
+    pub fn validate_batch<'a>(
+        origin: Option<Origin>,
+        calls: impl IntoIterator<Item = &'a RuntimeCall>,
+    ) -> Result<(), Error> {
+        let mut budget = Budget::root();
+        for call in calls {
+            Self::validate_inner(origin, call, &mut budget, false)?;
+        }
+        Ok(())
+    }
+
     // `in_proxyish_wrapper` marks that the walk crossed a proxy/multisig
     // wrapper (06 §3.3: those are denied when the inner call is
     // privileged-domain). The flag makes the check recursive — a privileged
