@@ -125,7 +125,9 @@ pub trait ExecutionGuardAccess {
     fn retry_exhausted(pid: ProposalId) -> bool;
     /// Idempotently remove the A11 queue entry and every guard-owned
     /// auxiliary (locks, expedited/attestation/ratification bindings and the
-    /// pinned preimage). Epoch calls this after T15/T16/T22 state advancement.
+    /// pinned preimage). Epoch calls this after every guard-terminal
+    /// transition — T15/T16/T22 (via `tick`), plus the direct T20
+    /// (`force_reject_process_hold`) and T24 (`veto_upheld`) guardian paths.
     fn dequeue_terminal(pid: ProposalId) -> DispatchResult;
 }
 
@@ -579,10 +581,15 @@ pub mod pallet {
                     } else {
                         Self::requires_gate_markets_at_seed(&proposal)
                     };
-                    let process_hold = T::Guardian::dead_man_engaged()
+                    // Suppress new market/vault deployment while any safety hold
+                    // is active: a genuine stale-epoch (the core's T20 force-reject),
+                    // the dead-man pause (05 §4.8) or a ledger freeze (06 §6.3). The
+                    // core decides freeze-vs-force-reject from its own authoritative
+                    // state, so these are deliberately not fed into `tick` inputs.
+                    let safety_hold = T::Guardian::dead_man_engaged()
                         || T::Constitution::ledger_frozen()
                         || state.stale_process_hold(pid);
-                    let markets = if !process_hold
+                    let markets = if !safety_hold
                         && state.recovery_epoch.is_none()
                         && state.epoch.phase == EpochPhase::Seed
                         && matches!(
@@ -620,7 +627,6 @@ pub mod pallet {
                             review_window_closed: T::Guardian::review_window_closed(pid),
                             queue_reject_reason: T::ExecutionGuard::queue_reject_reason(pid),
                             retry_exhausted: T::ExecutionGuard::retry_exhausted(pid),
-                            process_hold,
                         },
                         &params,
                     )?;
@@ -845,7 +851,14 @@ pub mod pallet {
         #[pallet::weight(T::WeightInfo::veto_upheld())]
         pub fn veto_upheld(origin: OriginFor<T>, pid: ProposalId) -> DispatchResult {
             T::GuardianOrigin::ensure_origin(origin)?;
-            Self::mutate(|state, ledger| state.veto_upheld(CoreOrigin::GuardianHold, ledger, pid))
+            Self::mutate(|state, ledger| {
+                // T24: a `Suspended` proposal was `Queued` before `delay_once`, so A11
+                // still owns its queue entry, preimage pin and resource locks. Upholding
+                // the veto drives it to the terminal rejected/measuring outcome; release
+                // the guard state in lockstep (idempotent — a no-op if nothing is queued).
+                state.veto_upheld(CoreOrigin::GuardianHold, ledger, pid)?;
+                T::ExecutionGuard::dequeue_terminal(pid).map_err(|_| CoreError::ExecutionGuard)
+            })
         }
 
         #[pallet::call_index(8)]
@@ -919,7 +932,12 @@ pub mod pallet {
         pub fn force_reject_process_hold(origin: OriginFor<T>, pid: ProposalId) -> DispatchResult {
             T::GuardianOrigin::ensure_origin(origin)?;
             Self::mutate(|state, ledger| {
-                state.force_reject_process_hold(CoreOrigin::GuardianHold, ledger, pid)
+                // Direct T20 guardian path: when the target is `Queued`/`FailedExecuted`
+                // (or a `Suspended` proposal that was queued) A11 still owns the queue
+                // entry. Force-rejecting it is terminal, so release the guard state in
+                // lockstep (idempotent — a no-op for pre-queue states with no entry).
+                state.force_reject_process_hold(CoreOrigin::GuardianHold, ledger, pid)?;
+                T::ExecutionGuard::dequeue_terminal(pid).map_err(|_| CoreError::ExecutionGuard)
             })
         }
 

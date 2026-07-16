@@ -237,7 +237,6 @@ pub struct TickInputs {
     pub review_window_closed: bool,
     pub queue_reject_reason: Option<RejectReason>,
     pub retry_exhausted: bool,
-    pub process_hold: bool,
 }
 
 impl Default for TickInputs {
@@ -249,7 +248,6 @@ impl Default for TickInputs {
             review_window_closed: false,
             queue_reject_reason: None,
             retry_exhausted: false,
-            process_hold: false,
         }
     }
 }
@@ -1122,7 +1120,11 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         self.sync_phase(now);
 
         let state = self.proposal(pid)?.state;
-        if (input.process_hold || self.stale_process_hold(pid))
+        // T20 force-reject (05 §2.1): a genuine stale-epoch (`StaleEpochBound`), or
+        // a ledger freeze (06 §6.3 — a live proposal resolves to status quo; any
+        // vault voids at par, D-1). Dead-man is deliberately *excluded*: 05 §4.8
+        // freezes the queue and pauses the clock, it never rejects a live proposal.
+        if (self.ledger_frozen || self.stale_process_hold(pid))
             && !matches!(
                 state,
                 ProposalState::Executed
@@ -1136,7 +1138,12 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
             return self.force_reject_process_hold(Origin::Keeper, ledger, pid);
         }
 
-        if self.recovery_epoch.is_some() {
+        // Dead-man pause (05 §4.8) freezes the execution queue and pauses the
+        // clock; the post-pause recovery epoch is proposal-free. In each case tick
+        // is a no-op — pending transitions are held (status quo, G-1), never
+        // decided or force-rejected. A dead-man decision still resolves to status
+        // quo independently at `decide()` time (05 §5 step 2).
+        if self.dead_man_armed || self.recovery_epoch.is_some() {
             self.events.push(Event::NoOp);
             return Ok(());
         }

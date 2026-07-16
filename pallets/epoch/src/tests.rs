@@ -414,6 +414,11 @@ fn run_t20_void_seam_differential() {
         oracle
             .force_reject_process_hold(CoreOrigin::GuardianHold, &mut ledger, 1)
             .expect("core T20 scenario is accepted");
+        // The pallet wrapper releases any A11 queue entry after the core T20
+        // transition (idempotent A8→A11 cleanup). The frame-free oracle has no
+        // guard seam, so mirror the expected pallet-level call here — exactly as
+        // the qualify/seed differential mirrors `OpenMarkets`.
+        ledger.calls.push(SeamCall::DequeueTerminal(1));
         assert_ok!(Epoch::force_reject_process_hold(
             RuntimeOrigin::signed(guardian()),
             1,
@@ -1720,6 +1725,106 @@ fn execution_callbacks_cover_t21_t22_and_t23() {
         );
         assert!(SeamCalls::get().contains(&SeamCall::Resolve(1, Branch::Accept)));
     });
+}
+
+#[test]
+fn dead_man_freezes_live_proposals_instead_of_force_rejecting() {
+    // 05 §4.8: an engaged dead-man switch freezes the execution queue and pauses
+    // the clock. `tick` is permissionless, so it must never convert a live
+    // proposal into a rejection/void — the T20 tick force-reject is the
+    // VOID/stale-epoch path only (05 §2.1), never a dead-man liveness outage.
+    new_test_ext().execute_with(|| {
+        // A queued proposal owns its A11 queue entry and carries a live vault.
+        assert_ok!(Epoch::seed(callback_state(1, ProposalState::Queued)));
+        assert_ok!(GuardStateModel::prime_full(1, [1; 32]));
+        DeadManEngaged::set(true);
+        assert_ok!(Epoch::tick(
+            RuntimeOrigin::signed(keeper()),
+            tick_batch(vec![1]),
+        ));
+        // Frozen, not rejected: state unchanged, vault not voided, guard entry
+        // retained (the queue freeze), never dequeued.
+        assert_eq!(
+            Proposals::<Test>::get(1).map(|proposal| proposal.state),
+            Some(ProposalState::Queued)
+        );
+        assert!(!SeamCalls::get()
+            .iter()
+            .any(|call| matches!(call, SeamCall::Void(_) | SeamCall::DequeueTerminal(_))));
+        assert!(!GuardStateModel::get().queue.is_empty());
+    });
+}
+
+#[test]
+fn veto_upheld_releases_the_queued_guard_entry() {
+    // A proposal queued (A11 owns its entry), delayed to `Suspended` by the
+    // guardian, then vetoed at T24 must release the guard queue entry — otherwise
+    // A11 leaks capacity and trips its terminal-entry try-state check.
+    new_test_ext().execute_with(|| {
+        assert_ok!(Epoch::seed(callback_state(1, ProposalState::Queued)));
+        assert_ok!(GuardStateModel::prime_full(1, [1; 32]));
+        // T-cycle: the guardian delay is not terminal, so the guard entry
+        // deliberately persists through `Suspended`.
+        assert_ok!(Epoch::delay_once(
+            RuntimeOrigin::signed(guardian()),
+            1,
+            [7; 32],
+        ));
+        assert_eq!(
+            Proposals::<Test>::get(1).map(|proposal| proposal.state),
+            Some(ProposalState::Suspended)
+        );
+        assert!(!GuardStateModel::get().queue.is_empty());
+        // T24: upholding the veto drives it terminal and must dequeue A11.
+        assert_ok!(Epoch::veto_upheld(RuntimeOrigin::signed(guardian()), 1));
+        assert_eq!(
+            Proposals::<Test>::get(1).map(|proposal| proposal.state),
+            Some(ProposalState::Measuring)
+        );
+        assert!(SeamCalls::get().contains(&SeamCall::DequeueTerminal(1)));
+        let guard = GuardStateModel::get();
+        assert!(guard.queue.is_empty());
+        assert!(guard.held_resources.is_empty());
+        assert!(guard.expedited.is_empty());
+        assert!(guard.attestation_bindings.is_empty());
+        assert!(guard.ratifications.is_empty());
+        assert!(guard.pinned_preimages.is_empty());
+    });
+}
+
+#[test]
+fn direct_force_reject_process_hold_releases_the_guard_entry() {
+    // 05 T20 direct guardian path: force-rejecting a `Queued`/`FailedExecuted`
+    // proposal is terminal and must dequeue A11. Unlike the tick/expire wrappers
+    // this path previously left the guard entry, preimage pin and locks live.
+    for state in [ProposalState::Queued, ProposalState::FailedExecuted] {
+        new_test_ext().execute_with(|| {
+            assert_ok!(Epoch::seed(callback_state(1, state)));
+            assert_ok!(GuardStateModel::prime_full(1, [1; 32]));
+            assert_ok!(Epoch::force_reject_process_hold(
+                RuntimeOrigin::signed(guardian()),
+                1,
+            ));
+            // Terminal T20 record: force-rejected (ProcessHold), then reaped by the
+            // persist adapter — with the A11 entry released in lockstep.
+            assert_eq!(
+                last_epoch_event(),
+                Some(Event::ProposalForceRejected {
+                    pid: 1,
+                    reason: RejectReason::ProcessHold,
+                })
+            );
+            assert!(Proposals::<Test>::get(1).is_none());
+            assert!(SeamCalls::get().contains(&SeamCall::DequeueTerminal(1)));
+            let guard = GuardStateModel::get();
+            assert!(guard.queue.is_empty());
+            assert!(guard.held_resources.is_empty());
+            assert!(guard.expedited.is_empty());
+            assert!(guard.attestation_bindings.is_empty());
+            assert!(guard.ratifications.is_empty());
+            assert!(guard.pinned_preimages.is_empty());
+        });
+    }
 }
 
 #[test]
