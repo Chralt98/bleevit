@@ -16,8 +16,8 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown, wasm32v1-none
       - uses: Swatinem/rust-cache@v2
-      - name: Install libclang
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev protobuf-compiler
       - name: Rust workspace gates
         run: tools/ci/rust-workspace-gates.sh
 
