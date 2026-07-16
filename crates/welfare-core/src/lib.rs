@@ -6,7 +6,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use futarchy_fixed::FixedU64x64;
 use futarchy_primitives::{EpochId, FixedU64, MetricId, MetricSpecVersion, WelfareView};
-use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
+use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 
 macro_rules! ensure {
@@ -32,9 +32,81 @@ pub const THETA_C_HI: FixedU64 = FixedU64(950_000_000);
 pub const W_P: FixedU64 = FixedU64(600_000_000);
 pub const W_A: FixedU64 = FixedU64(400_000_000);
 
+/// Live welfare tunables supplied by the constitution parameter registry.
+///
+/// The constants above remain the kernel-floor/default backstop used by the
+/// independent core and reference vectors. Production runtimes pass the live
+/// values into every operation that consumes a gate threshold or pillar
+/// weight, preserving byte-identical behavior at [`Self::DEFAULT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WelfareParams {
+    pub theta_s_lo: FixedU64,
+    pub theta_s_hi: FixedU64,
+    pub theta_c_lo: FixedU64,
+    pub theta_c_hi: FixedU64,
+    pub w_p: FixedU64,
+    pub w_a: FixedU64,
+}
+
+impl WelfareParams {
+    pub const DEFAULT: Self = Self {
+        theta_s_lo: THETA_S_LO,
+        theta_s_hi: THETA_S_HI,
+        theta_c_lo: THETA_C_LO,
+        theta_c_hi: THETA_C_HI,
+        w_p: W_P,
+        w_a: W_A,
+    };
+
+    /// Validate live tunables against their kernel floors and exact weight
+    /// identity. Invalid live parameters fail before any state mutation.
+    pub fn validate(&self) -> Result<(), Error> {
+        ensure!(
+            self.theta_s_lo.0 >= THETA_S_LO.0
+                && self.theta_s_lo.0 < self.theta_s_hi.0
+                && self.theta_s_hi.0 <= ONE
+                && self.theta_c_lo.0 >= THETA_C_LO.0
+                && self.theta_c_lo.0 < self.theta_c_hi.0
+                && self.theta_c_hi.0 <= ONE,
+            Error::ValueOutOfRange
+        );
+        ensure!(
+            (300_000_000..=700_000_000).contains(&self.w_p.0)
+                && (300_000_000..=700_000_000).contains(&self.w_a.0),
+            Error::ValueOutOfRange
+        );
+        ensure!(
+            self.w_p
+                .0
+                .checked_add(self.w_a.0)
+                .is_some_and(|sum| sum == ONE),
+            Error::BadWeightSum
+        );
+        Ok(())
+    }
+}
+
+impl Default for WelfareParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 #[derive(
-    Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, Ord, PartialEq, PartialOrd, TypeInfo,
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    TypeInfo,
+    DecodeWithMemTracking,
 )]
+#[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
 pub enum Pillar {
     S,
     COnchain,
@@ -43,14 +115,37 @@ pub enum Pillar {
     A,
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
+#[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
 pub enum SourceClass {
     Onchain,
     RelayDerived,
     Attested,
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub struct MetricSpec {
     pub id: MetricId,
     pub version: MetricSpecVersion,
@@ -72,7 +167,105 @@ pub struct MetricSpec {
     pub prior_bounds: [FixedU64; HISTORY_PRIORS],
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+// FRAME genesis configs are serde-backed under `std`. `FixedU64` is a shared
+// no_std tuple type without a serde dependency, so serialize this one genesis
+// carrier through its canonical 1e9-grid integer representation rather than
+// forcing serde into `futarchy-primitives`.
+#[cfg(feature = "std")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MetricSpecSerde {
+    id: MetricId,
+    version: MetricSpecVersion,
+    pillar: Pillar,
+    weight: u64,
+    epsilon_floor: u64,
+    activation_epoch: EpochId,
+    source: SourceClass,
+    formula_ref: [u8; 32],
+    units: [u8; 16],
+    repr: [u8; 16],
+    cadence_blocks: u32,
+    sanity_min: u64,
+    sanity_max: u64,
+    has_normalization_rule: bool,
+    has_missing_data_rule: bool,
+    has_gaming_vectors: bool,
+    has_challenge_procedure: bool,
+    prior_bounds: [u64; HISTORY_PRIORS],
+}
+
+#[cfg(feature = "std")]
+impl serde::Serialize for MetricSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        MetricSpecSerde {
+            id: self.id,
+            version: self.version,
+            pillar: self.pillar,
+            weight: self.weight.0,
+            epsilon_floor: self.epsilon_floor.0,
+            activation_epoch: self.activation_epoch,
+            source: self.source,
+            formula_ref: self.formula_ref,
+            units: self.units,
+            repr: self.repr,
+            cadence_blocks: self.cadence_blocks,
+            sanity_min: self.sanity_min.0,
+            sanity_max: self.sanity_max.0,
+            has_normalization_rule: self.has_normalization_rule,
+            has_missing_data_rule: self.has_missing_data_rule,
+            has_gaming_vectors: self.has_gaming_vectors,
+            has_challenge_procedure: self.has_challenge_procedure,
+            prior_bounds: self.prior_bounds.map(|value| value.0),
+        }
+        .serialize(serializer)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<'de> serde::Deserialize<'de> for MetricSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let spec = MetricSpecSerde::deserialize(deserializer)?;
+        Ok(Self {
+            id: spec.id,
+            version: spec.version,
+            pillar: spec.pillar,
+            weight: FixedU64(spec.weight),
+            epsilon_floor: FixedU64(spec.epsilon_floor),
+            activation_epoch: spec.activation_epoch,
+            source: spec.source,
+            formula_ref: spec.formula_ref,
+            units: spec.units,
+            repr: spec.repr,
+            cadence_blocks: spec.cadence_blocks,
+            sanity_min: FixedU64(spec.sanity_min),
+            sanity_max: FixedU64(spec.sanity_max),
+            has_normalization_rule: spec.has_normalization_rule,
+            has_missing_data_rule: spec.has_missing_data_rule,
+            has_gaming_vectors: spec.has_gaming_vectors,
+            has_challenge_procedure: spec.has_challenge_procedure,
+            prior_bounds: spec.prior_bounds.map(FixedU64),
+        })
+    }
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub struct ComponentValue {
     pub id: MetricId,
     pub value: FixedU64,
@@ -93,14 +286,36 @@ pub struct Snapshot {
     pub components: Vec<ComponentValue>,
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub struct GateBreachFlags {
     pub s_breached: bool,
     pub c_breached: bool,
     pub day_bitmap: [u32; 2],
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub enum Event {
     MetricSpecRegistered {
         version: MetricSpecVersion,
@@ -123,7 +338,18 @@ pub enum Event {
     },
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub enum Error {
     BadOrigin,
     TooManyMetricSpecs,
@@ -133,7 +359,10 @@ pub enum Error {
     DuplicateSpecVersion,
     SpecNotFound,
     BadActivationEpoch,
+    SpecNotActive,
     MissingMetricDiscipline,
+    BadEpsilonFloor,
+    BadSourceClass,
     BadWeightSum,
     ValueOutOfRange,
     MissingComponent,
@@ -186,20 +415,28 @@ impl WelfareState {
             Error::TooManyComponents
         );
         specs.sort_by_key(|s| s.id);
+        // Two-epoch activation lead time (05 §4.4). `checked_add` (not
+        // saturating) so a registration near `EpochId::MAX` cannot bypass the
+        // lead time by saturating `current + 2` down to `MAX` (G-1; final
+        // review 2026-07-16).
+        let min_activation = current_epoch
+            .checked_add(2)
+            .ok_or(Error::BadActivationEpoch)?;
         let mut prev = None;
         for spec in &specs {
             ensure!(spec.version == version, Error::SpecNotFound);
             ensure!(
-                spec.activation_epoch >= current_epoch.saturating_add(2),
+                spec.activation_epoch >= min_activation,
                 Error::BadActivationEpoch
             );
             ensure!(
                 spec.weight.0 <= ONE
-                    && spec.epsilon_floor.0 <= ONE
                     && spec.sanity_min.0 <= spec.sanity_max.0
                     && spec.sanity_max.0 <= ONE,
                 Error::ValueOutOfRange
             );
+            ensure!(spec.epsilon_floor == EPSILON_PILLAR, Error::BadEpsilonFloor);
+            ensure!(source_matches_pillar(spec), Error::BadSourceClass);
             ensure!(
                 spec.has_normalization_rule
                     && spec.has_missing_data_rule
@@ -241,7 +478,14 @@ impl WelfareState {
         spec_version: MetricSpecVersion,
         components: Vec<ComponentValue>,
         incident_multiplier: FixedU64,
+        params: &WelfareParams,
     ) -> Result<FixedU64, Error> {
+        params.validate()?;
+        let specs = self.spec(spec_version)?.to_vec();
+        ensure!(
+            specs.iter().all(|spec| spec.activation_epoch <= epoch),
+            Error::SpecNotActive
+        );
         ensure!(
             self.snapshots.len() < MAX_SNAPSHOTS,
             Error::TooManySnapshots
@@ -257,9 +501,14 @@ impl WelfareState {
                 .all(|s| s.epoch != epoch || s.spec_version != spec_version),
             Error::DuplicateSnapshot
         );
-        let specs = self.spec(spec_version)?.to_vec();
         let pillars = compute_pillars(&specs, &components, incident_multiplier)?;
-        let welfare = compute_welfare(pillars.s, pillars.c_settlement, pillars.p, pillars.a)?;
+        let welfare = compute_welfare(
+            pillars.s,
+            pillars.c_settlement,
+            pillars.p,
+            pillars.a,
+            params,
+        )?;
         self.snapshots.push(Snapshot {
             epoch,
             spec_version,
@@ -268,8 +517,8 @@ impl WelfareState {
             c_attested: pillars.c_attested,
             p_pillar: pillars.p,
             a_pillar: pillars.a,
-            gate_s: gate(pillars.s, THETA_S_LO, THETA_S_HI)?,
-            gate_c: gate(pillars.c_settlement, THETA_C_LO, THETA_C_HI)?,
+            gate_s: gate(pillars.s, params.theta_s_lo, params.theta_s_hi)?,
+            gate_c: gate(pillars.c_settlement, params.theta_c_lo, params.theta_c_hi)?,
             welfare,
             components,
         });
@@ -287,12 +536,22 @@ impl WelfareState {
         day: u8,
         spec_version: MetricSpecVersion,
         components: Vec<ComponentValue>,
+        params: &WelfareParams,
     ) -> Result<GateBreachFlags, Error> {
-        ensure!(day < 64, Error::ValueOutOfRange);
+        params.validate()?;
         let specs = self.spec(spec_version)?.to_vec();
+        ensure!(
+            specs.iter().all(|spec| spec.activation_epoch <= epoch),
+            Error::SpecNotActive
+        );
+        ensure!(day < 64, Error::ValueOutOfRange);
+        ensure!(
+            components.len() <= MAX_COMPONENTS_PER_SPEC,
+            Error::TooManyComponents
+        );
         let (s_daily, c_daily) = compute_daily_gates(&specs, &components)?;
-        let s_breach = s_daily.0 < THETA_S_LO.0;
-        let c_breach = c_daily.0 < THETA_C_LO.0;
+        let s_breach = s_daily.0 < params.theta_s_lo.0;
+        let c_breach = c_daily.0 < params.theta_c_lo.0;
         let idx = self.gate_flags.iter().position(|(e, _)| *e == epoch);
         let mut flags = idx
             .map(|i| self.gate_flags[i].1)
@@ -329,12 +588,14 @@ impl WelfareState {
         cohort_epoch: EpochId,
         spec_version: MetricSpecVersion,
     ) -> Result<FixedU64, Error> {
-        let w1 = self
-            .snapshot(cohort_epoch.saturating_add(1), spec_version)?
-            .welfare;
-        let w2 = self
-            .snapshot(cohort_epoch.saturating_add(2), spec_version)?
-            .welfare;
+        let first_epoch = cohort_epoch
+            .checked_add(1)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let second_epoch = cohort_epoch
+            .checked_add(2)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let w1 = self.snapshot(first_epoch, spec_version)?.welfare;
+        let w2 = self.snapshot(second_epoch, spec_version)?.welfare;
         let score = settlement_score(w1, w2)?;
         self.events.push(Event::SettlementComputed {
             epoch: cohort_epoch,
@@ -374,6 +635,8 @@ impl WelfareState {
     /// This is the sole source for gate-market settlement (05 §4.7, §6): no
     /// attested value can flip a gate flag.
     pub fn gate_breach(&self, epoch: EpochId) -> GateBreachFlags {
+        // SQ-79: absent daily observations deterministically read as no breach;
+        // whether G-1 requires a pessimistic default is intentionally deferred.
         self.gate_flags
             .iter()
             .find(|(e, _)| *e == epoch)
@@ -383,6 +646,15 @@ impl WelfareState {
                 c_breached: false,
                 day_bitmap: [0; 2],
             })
+    }
+
+    /// Remove finalized rolling-window data older than `cutoff_epoch`.
+    /// Metric-spec versions remain until their independent in-flight-cohort
+    /// retention rule permits pruning.
+    pub fn prune_before(&mut self, cutoff_epoch: EpochId) {
+        self.snapshots
+            .retain(|snapshot| snapshot.epoch >= cutoff_epoch);
+        self.gate_flags.retain(|(epoch, _)| *epoch >= cutoff_epoch);
     }
 
     pub fn try_state(&self) -> Result<(), Error> {
@@ -406,13 +678,30 @@ impl WelfareState {
                 ensure!(
                     spec.version == *version
                         && spec.weight.0 <= ONE
-                        && spec.epsilon_floor.0 <= ONE
+                        && spec.epsilon_floor == EPSILON_PILLAR
                         && spec.sanity_min.0 <= spec.sanity_max.0
                         && spec.sanity_max.0 <= ONE
+                        && spec.has_normalization_rule
+                        && spec.has_missing_data_rule
+                        && spec.has_gaming_vectors
+                        && spec.has_challenge_procedure
+                        && source_matches_pillar(spec)
                         && prev.replace(spec.id).is_none_or(|p| p < spec.id),
                     Error::TryStateViolation
                 );
             }
+            let weight_sum = |pillars: &[Pillar]| -> Option<u64> {
+                specs
+                    .iter()
+                    .filter(|spec| pillars.contains(&spec.pillar))
+                    .try_fold(0u64, |sum, spec| sum.checked_add(spec.weight.0))
+            };
+            ensure!(
+                weight_sum(&[Pillar::COnchain, Pillar::CAttested]) == Some(ONE)
+                    && weight_sum(&[Pillar::P]) == Some(ONE)
+                    && weight_sum(&[Pillar::A]) == Some(ONE),
+                Error::TryStateViolation
+            );
         }
         for (index, s) in self.snapshots.iter().enumerate() {
             ensure!(
@@ -462,6 +751,19 @@ impl WelfareState {
             .iter()
             .find(|s| s.epoch == epoch && s.spec_version == version)
             .ok_or(Error::MissingComponent)
+    }
+}
+
+fn source_matches_pillar(spec: &MetricSpec) -> bool {
+    match spec.pillar {
+        Pillar::S | Pillar::COnchain => {
+            matches!(
+                spec.source,
+                SourceClass::Onchain | SourceClass::RelayDerived
+            )
+        }
+        Pillar::CAttested | Pillar::A => spec.source == SourceClass::Attested,
+        Pillar::P => spec.source == SourceClass::Onchain,
     }
 }
 
@@ -640,10 +942,12 @@ pub fn compute_welfare(
     c: FixedU64,
     p: FixedU64,
     a: FixedU64,
+    params: &WelfareParams,
 ) -> Result<FixedU64, Error> {
-    let gs = gate(s, THETA_S_LO, THETA_S_HI)?;
-    let gc = gate(c, THETA_C_LO, THETA_C_HI)?;
-    let pa = geo_pair((p, W_P), (a, W_A))?;
+    params.validate()?;
+    let gs = gate(s, params.theta_s_lo, params.theta_s_hi)?;
+    let gc = gate(c, params.theta_c_lo, params.theta_c_hi)?;
+    let pa = geo_pair((p, params.w_p), (a, params.w_a))?;
     mul_down(mul_down(gs, gc)?, pa)
 }
 
@@ -714,14 +1018,18 @@ mod tests {
     use super::*;
     use alloc::vec;
     fn spec(id: MetricId, pillar: Pillar, weight: u64, version: u16) -> MetricSpec {
+        let source = match pillar {
+            Pillar::CAttested | Pillar::A => SourceClass::Attested,
+            Pillar::S | Pillar::COnchain | Pillar::P => SourceClass::Onchain,
+        };
         MetricSpec {
             id,
             version,
             pillar,
             weight: FixedU64(weight),
             epsilon_floor: EPSILON_PILLAR,
-            activation_epoch: 3,
-            source: SourceClass::Onchain,
+            activation_epoch: 2,
+            source,
             formula_ref: [1; 32],
             units: [2; 16],
             repr: [3; 16],
@@ -743,6 +1051,14 @@ mod tests {
             spec(4, Pillar::A, ONE, version),
         ]
     }
+    fn healthy_components() -> Vec<ComponentValue> {
+        (1..=4)
+            .map(|id| ComponentValue {
+                id,
+                value: FixedU64(ONE),
+            })
+            .collect()
+    }
     #[test]
     fn metric_spec_registration_enforces_activation_disciplines_and_weight_sums() {
         let mut w = WelfareState::new();
@@ -759,6 +1075,110 @@ mod tests {
             Err(Error::MissingMetricDiscipline)
         );
         assert_eq!(w.register_metric_spec(0, 1, default_specs(1)), Ok(()));
+    }
+
+    #[test]
+    fn registration_rejects_activation_lead_time_overflow_near_epoch_max() {
+        // Near EpochId::MAX, `current + 2` cannot be represented; registration
+        // must reject rather than saturate the two-epoch lead time down to MAX
+        // (G-1; final review 2026-07-16).
+        let mut w = WelfareState::new();
+        assert_eq!(
+            w.register_metric_spec(EpochId::MAX - 1, 1, default_specs(1)),
+            Err(Error::BadActivationEpoch)
+        );
+        assert_eq!(
+            w.register_metric_spec(EpochId::MAX, 1, default_specs(1)),
+            Err(Error::BadActivationEpoch)
+        );
+    }
+
+    #[test]
+    fn welfare_weights_stay_within_the_constitution_bounds() {
+        let params = WelfareParams {
+            w_p: FixedU64(800_000_000),
+            w_a: FixedU64(200_000_000),
+            ..WelfareParams::DEFAULT
+        };
+        assert_eq!(params.validate(), Err(Error::ValueOutOfRange));
+    }
+    #[test]
+    fn metric_spec_registration_rejects_bad_epsilon_and_source_class() {
+        let mut w = WelfareState::new();
+        let mut specs = default_specs(1);
+        specs[0].epsilon_floor = FixedU64(EPSILON_PILLAR.0 - 1);
+        assert_eq!(
+            w.register_metric_spec(0, 1, specs),
+            Err(Error::BadEpsilonFloor)
+        );
+
+        let mut specs = default_specs(1);
+        specs[3].source = SourceClass::Onchain;
+        assert_eq!(
+            w.register_metric_spec(0, 1, specs),
+            Err(Error::BadSourceClass)
+        );
+    }
+
+    #[test]
+    fn cranks_reject_a_metric_version_before_activation() {
+        let mut w = WelfareState::new();
+        w.register_metric_spec(0, 1, default_specs(1)).unwrap();
+        assert_eq!(
+            w.record_snapshot(
+                1,
+                1,
+                healthy_components(),
+                FixedU64(ONE),
+                &WelfareParams::DEFAULT,
+            ),
+            Err(Error::SpecNotActive)
+        );
+        assert_eq!(
+            w.record_daily_gate(1, 0, 1, healthy_components(), &WelfareParams::DEFAULT,),
+            Err(Error::SpecNotActive)
+        );
+        assert!(w.snapshots.is_empty());
+        assert!(w.gate_flags.is_empty());
+    }
+
+    #[test]
+    fn prune_rolls_the_bounded_epoch_windows() {
+        let mut w = WelfareState::new();
+        w.register_metric_spec(0, 1, default_specs(1)).unwrap();
+        w.events.clear();
+        for epoch in 2..MAX_SNAPSHOTS as u32 + 2 {
+            w.record_snapshot(
+                epoch,
+                1,
+                healthy_components(),
+                FixedU64(ONE),
+                &WelfareParams::DEFAULT,
+            )
+            .unwrap();
+            w.record_daily_gate(epoch, 0, 1, healthy_components(), &WelfareParams::DEFAULT)
+                .unwrap();
+        }
+        w.events.clear();
+        w.prune_before(3);
+        assert!(w.events.is_empty());
+        assert!(w.snapshots.iter().all(|snapshot| snapshot.epoch >= 3));
+        assert!(w.gate_flags.iter().all(|(epoch, _)| *epoch >= 3));
+        assert_eq!(w.specs.len(), 1);
+
+        let next = MAX_SNAPSHOTS as u32 + 2;
+        assert!(w
+            .record_snapshot(
+                next,
+                1,
+                healthy_components(),
+                FixedU64(ONE),
+                &WelfareParams::DEFAULT,
+            )
+            .is_ok());
+        assert!(w
+            .record_daily_gate(next, 0, 1, healthy_components(), &WelfareParams::DEFAULT,)
+            .is_ok());
     }
     #[test]
     fn daily_gate_uses_only_s_and_onchain_c_components() {
@@ -779,6 +1199,7 @@ mod tests {
                         value: FixedU64(ONE),
                     },
                 ],
+                &WelfareParams::DEFAULT,
             )
             .unwrap();
         assert!(!flags.s_breached);
@@ -833,6 +1254,7 @@ mod tests {
                         value: FixedU64(840_000_000),
                     },
                 ],
+                &WelfareParams::DEFAULT,
             )
             .unwrap();
         assert!(flags.c_breached);
@@ -907,6 +1329,29 @@ mod tests {
     }
 
     #[test]
+    fn try_state_rechecks_metric_registration_invariants() {
+        let mut w = WelfareState::new();
+        w.specs.push((1, default_specs(1)));
+        w.specs[0].1[0].epsilon_floor = FixedU64(EPSILON_PILLAR.0 - 1);
+        assert_eq!(w.try_state(), Err(Error::TryStateViolation));
+
+        let mut w = WelfareState::new();
+        w.specs.push((1, default_specs(1)));
+        w.specs[0].1[3].source = SourceClass::Onchain;
+        assert_eq!(w.try_state(), Err(Error::TryStateViolation));
+
+        let mut w = WelfareState::new();
+        w.specs.push((1, default_specs(1)));
+        w.specs[0].1[0].has_missing_data_rule = false;
+        assert_eq!(w.try_state(), Err(Error::TryStateViolation));
+
+        let mut w = WelfareState::new();
+        w.specs.push((1, default_specs(1)));
+        w.specs[0].1[1].weight = FixedU64(ONE - 1);
+        assert_eq!(w.try_state(), Err(Error::TryStateViolation));
+    }
+
+    #[test]
     fn snapshot_rejects_duplicate_epoch_spec_and_bad_incident_multiplier() {
         let mut w = WelfareState::new();
         w.register_metric_spec(0, 1, default_specs(1)).unwrap();
@@ -929,13 +1374,19 @@ mod tests {
             },
         ];
         assert_eq!(
-            w.record_snapshot(7, 1, comps.clone(), FixedU64(ONE + 1)),
+            w.record_snapshot(
+                7,
+                1,
+                comps.clone(),
+                FixedU64(ONE + 1),
+                &WelfareParams::DEFAULT,
+            ),
             Err(Error::ValueOutOfRange)
         );
-        w.record_snapshot(7, 1, comps.clone(), FixedU64(ONE))
+        w.record_snapshot(7, 1, comps.clone(), FixedU64(ONE), &WelfareParams::DEFAULT)
             .unwrap();
         assert_eq!(
-            w.record_snapshot(7, 1, comps, FixedU64(ONE)),
+            w.record_snapshot(7, 1, comps, FixedU64(ONE), &WelfareParams::DEFAULT),
             Err(Error::DuplicateSnapshot)
         );
     }
@@ -963,11 +1414,21 @@ mod tests {
                 value: FixedU64(ONE),
             },
         ];
-        w.record_snapshot(11, 1, comps.clone(), FixedU64(ONE))
+        w.record_snapshot(11, 1, comps.clone(), FixedU64(ONE), &WelfareParams::DEFAULT)
             .unwrap();
-        w.record_snapshot(12, 1, comps, FixedU64(ONE)).unwrap();
+        w.record_snapshot(12, 1, comps, FixedU64(ONE), &WelfareParams::DEFAULT)
+            .unwrap();
         assert_eq!(w.compute_settlement(10, 1), Ok(FixedU64(ONE)));
         assert_eq!(w.compute_settlement(10, 2), Err(Error::MissingComponent));
+    }
+    #[test]
+    fn settlement_epoch_arithmetic_rejects_overflow() {
+        let mut w = WelfareState::new();
+        assert_eq!(
+            w.compute_settlement(EpochId::MAX, 1),
+            Err(Error::ArithmeticOverflow)
+        );
+        assert!(w.events.is_empty());
     }
     #[test]
     fn gate_and_welfare_zero_on_security_breach() {
@@ -980,7 +1441,8 @@ mod tests {
                 FixedU64(ONE),
                 FixedU64(850_000_000),
                 FixedU64(ONE),
-                FixedU64(ONE)
+                FixedU64(ONE),
+                &WelfareParams::DEFAULT,
             )
             .unwrap(),
             FixedU64(0)

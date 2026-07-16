@@ -9,15 +9,41 @@ repository.workspace = true
 welfare-core = { path = "../../crates/welfare-core", default-features = false }
 futarchy-fixed = { path = "../../crates/futarchy-fixed", default-features = false }
 futarchy-primitives = { path = "../../crates/futarchy-primitives", default-features = false }
-parity-scale-codec = { version = "3.7.5", default-features = false, features = ["derive"] }
+parity-scale-codec = { version = "3.7.5", default-features = false, features = ["derive", "max-encoded-len"] }
 scale-info = { version = "2.11.6", default-features = false, features = ["derive"] }
+# FRAME on the `polkadot-stable2603` pins (workspace-managed versions, 01 §9).
+frame-support = { workspace = true }
+frame-system = { workspace = true }
+sp-runtime = { workspace = true }
+frame-benchmarking = { workspace = true, optional = true }
+
+[dev-dependencies]
+sp-core = { workspace = true, features = ["std"] }
+sp-io = { workspace = true, features = ["std"] }
 
 [features]
 default = ["std"]
-std = ["welfare-core/std", 
+std = [
+  "frame-benchmarking?/std",
+  "frame-support/std",
+  "frame-system/std",
   "futarchy-fixed/std",
   "futarchy-primitives/std",
   "parity-scale-codec/std",
   "scale-info/std",
+  "sp-runtime/std",
+  "welfare-core/std",
 ]
-runtime-benchmarks = []
+runtime-benchmarks = [
+  "dep:frame-benchmarking",
+  "frame-benchmarking/runtime-benchmarks",
+  "frame-support/runtime-benchmarks",
+  "frame-system/runtime-benchmarks",
+  "sp-runtime/runtime-benchmarks",
+  "welfare-core/runtime-benchmarks",
+]
+try-runtime = [
+  "frame-support/try-runtime",
+  "frame-system/try-runtime",
+  "sp-runtime/try-runtime",
+]
