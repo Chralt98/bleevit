@@ -152,6 +152,27 @@ def validate_genesis(
     if contains_todo(patch):
         failures.append('08 §2.1: genesis runtime patch must not contain a "TODO" string')
 
+    # The runtime reads its para id from genesis (`staging_parachain_info`), not
+    # from the chain-spec extension — a release spec whose top-level `para_id`
+    # is correct but whose patch still carries the 4242 fixture (or nothing)
+    # would boot a runtime configured for a different parachain (02 §8).
+    top_level_para_id = spec.get("para_id")
+    parachain_info = patch.get("parachainInfo")
+    patch_para_id = (
+        parachain_info.get("parachainId") if isinstance(parachain_info, dict) else None
+    )
+    if patch_para_id is None:
+        failures.append(
+            "02 §8: genesis patch must set parachainInfo.parachainId (the runtime "
+            "reads its para id from genesis, not the chain-spec extension)"
+        )
+    elif patch_para_id != top_level_para_id:
+        failures.append(
+            "02 §8: genesis patch parachainInfo.parachainId "
+            f"({patch_para_id!r}) must equal the chain spec's para_id "
+            f"({top_level_para_id!r})"
+        )
+
     balances_config = patch.get("balances")
     balance_rows = balances_config.get("balances") if isinstance(balances_config, dict) else None
     if not isinstance(balance_rows, list):

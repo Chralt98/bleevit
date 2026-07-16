@@ -124,25 +124,90 @@ class ValidateBootnodesTests(unittest.TestCase):
         self.assertTrue(any("duplicated" in failure for failure in failures))
 
 
+GENERATED_DEV_SPEC = (
+    SCRIPT.parents[2] / "deploy" / "chain-specs" / "out" / "bleavit-dev.json"
+)
+
+# Well-known sr25519 dev accounts (subkey //Alice … //Dave), checksummed ss58.
+ALICE = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
+BOB = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+CHARLIE = "5FLSigC9HGRKVhB9FiEo4Y3koPsNmBmLJbpXg2mp1hXcS59Y"
+DAVE = "5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy"
+VIT = 10**12
+
+
+def synthetic_dev_spec() -> dict[str, object]:
+    """A self-contained spec mirroring the runtime's development preset.
+
+    Built from the validator's own constants so the suite runs on a fresh
+    checkout — the generated artifact under deploy/chain-specs/out/ is
+    gitignored and only exists after tools/deploy/generate-chain-specs.sh
+    (which validates it directly; see the skip-gated integration test).
+    """
+    balances = [
+        [ALICE, 75_000_000 * VIT],
+        [BOB, 75_000_000 * VIT],
+        [CHARLIE, 100_000_000 * VIT],
+        [DAVE, 100_000_000 * VIT],
+    ] + [
+        [address, amount]
+        for address, amount in validator.PROTOCOL_POTS.values()
+    ]
+    schedule = list(validator.TEAM_VESTING_SCHEDULE)
+    return {
+        "para_id": 4242,
+        "genesis": {
+            "runtimeGenesis": {
+                "patch": {
+                    "balances": {"balances": balances},
+                    "vesting": {"vesting": [[CHARLIE, *schedule], [DAVE, *schedule]]},
+                    "parachainInfo": {"parachainId": 4242},
+                }
+            }
+        },
+    }
+
+
 class ValidateGenesisTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        generated_spec = (
-            SCRIPT.parents[2]
-            / "deploy"
-            / "chain-specs"
-            / "out"
-            / "bleavit-dev.json"
-        )
-        cls.valid_spec = json.loads(generated_spec.read_text(encoding="utf-8"))
+        cls.valid_spec = synthetic_dev_spec()
 
     def validate(self, spec: dict[str, object], profile: str = "dev") -> list[str]:
         failures: list[str] = []
         validator.validate_genesis(spec, profile, failures)
         return failures
 
-    def test_generated_dev_genesis_passes(self) -> None:
+    def test_synthetic_dev_genesis_passes(self) -> None:
         self.assertEqual(self.validate(copy.deepcopy(self.valid_spec)), [])
+
+    @unittest.skipUnless(
+        GENERATED_DEV_SPEC.exists(),
+        "generated artifact absent (run tools/deploy/generate-chain-specs.sh)",
+    )
+    def test_generated_dev_genesis_passes(self) -> None:
+        spec = json.loads(GENERATED_DEV_SPEC.read_text(encoding="utf-8"))
+        self.assertEqual(self.validate(spec), [])
+
+    def test_genesis_para_id_must_match_top_level(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        spec["genesis"]["runtimeGenesis"]["patch"]["parachainInfo"]["parachainId"] = 2000
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("parachainId" in failure for failure in failures), failures
+        )
+
+    def test_genesis_para_id_must_be_present(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        del spec["genesis"]["runtimeGenesis"]["patch"]["parachainInfo"]
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("parachainId" in failure for failure in failures), failures
+        )
 
     def test_missing_patch_on_paseo_fails(self) -> None:
         failures = self.validate({"genesis": {"runtimeGenesis": {}}}, "paseo")
@@ -201,7 +266,7 @@ class ValidateGenesisTests(unittest.TestCase):
     def test_todo_leakage_fails(self) -> None:
         spec = copy.deepcopy(self.valid_spec)
         patch = spec["genesis"]["runtimeGenesis"]["patch"]
-        patch["constitution"]["releaseChannel"] = ["TODO: set before release"]
+        patch["constitution"] = {"releaseChannel": ["TODO: set before release"]}
 
         failures = self.validate(spec)
 
