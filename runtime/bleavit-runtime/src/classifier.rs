@@ -358,7 +358,7 @@ fn project_inner(call: &RuntimeCall, budget: &mut ProjectionBudget) -> FilterCal
             // both. `sudo_as` has no bootstrap use the Root-dispatching `sudo`
             // does not already cover (09 §5.3), so it is denied outright. R-1
             // spec correction (06 §3.3): the wrapper table's "recursed" entry
-            // for `sudo_as` is narrowed to "denied" (PLAN Decision log; SQ-83).
+            // for `sudo_as` is narrowed to "denied" (PLAN Decision log; SQ-99).
             pallet_sudo::Call::sudo_as { .. } => denied(),
             pallet_sudo::Call::set_key { .. } | pallet_sudo::Call::remove_key { .. } => {
                 leaf(CallDomain::Public)
@@ -609,12 +609,20 @@ pub fn is_values_enactment_leaf(call: &RuntimeCall) -> bool {
         RuntimeCall::Welfare(pallet_welfare::Call::register_spec { .. })
             | RuntimeCall::Constitution(pallet_constitution::Call::amend_registry { .. })
             | RuntimeCall::Constitution(pallet_constitution::Call::set_release_channel { .. })
+            // `referenda.cancel`/`kill` are ConstitutionalValues-domain (the
+            // runtime's `CancelOrigin`/`KillOrigin`), so a values referendum
+            // enacting them must clear the origin-blind base filter — otherwise
+            // the scheduler's filtered dispatch rejects `CallFiltered` before the
+            // configured origin check runs, leaving both governance controls
+            // unreachable (PR #57 Codex-bot P2).
+            | RuntimeCall::Referenda(pallet_referenda::Call::cancel { .. })
+            | RuntimeCall::Referenda(pallet_referenda::Call::kill { .. })
             | RuntimeCall::Guardian(pallet_guardian::Call::set_members { .. })
             | RuntimeCall::Guardian(pallet_guardian::Call::ratify_action { .. })
             | RuntimeCall::Guardian(pallet_guardian::Call::renew_playbook { .. })
             | RuntimeCall::Attestor(pallet_attestor::Call::set_members { .. })
             | RuntimeCall::Attestor(pallet_attestor::Call::resolve_challenge { .. })
-            | RuntimeCall::Oracle(pallet_oracle::Call::adjudicate { .. }) // A11: execution_guard.ratify joins this closed list with the pallet.
+            | RuntimeCall::Oracle(pallet_oracle::Call::adjudicate { .. }) // A11-wiring: execution_guard.ratify joins this closed list with the pallet.
     )
 }
 

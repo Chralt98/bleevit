@@ -611,14 +611,24 @@ const fn percent(x: i32) -> sp_runtime::FixedI64 {
 // that starts at `ceil` (turnout/approval share 0) and decays to `floor` (at
 // share 1); it REQUIRES `ceil >= floor` (its `threshold` computes
 // `ceil - x·(ceil - floor)` over raw `Perbill`, which underflows/panics if
-// `floor > ceil`). 06 §2.1 support curves are written "high→low" (15%→5%,
-// 10%→3%), i.e. ceil=high, floor=low. Passing them floor-first inverts the
-// bound and bricks every track (support requirement wraps; the values layer
-// cannot confirm). Approval is flat (floor == ceil), so its order is immaterial.
+// `floor > ceil`). 06 §2.1 support curves are written "high→low", i.e.
+// ceil=high, floor=low. Passing them floor-first inverts the bound and bricks
+// every track (support requirement wraps; the values layer cannot confirm).
+// Approval is flat (floor == ceil), so its order is immaterial.
+//
+// **Values-track collapse (PR #57 Codex-bot P1).** Stock `pallet-referenda`
+// selects the track from the proposal origin (`track_for`), so the five 06 §2.1
+// tracks that all produce `ConstitutionalValues` (metric/constitution/
+// entrenched/guardian/ratify) collapse onto ONE track. To ensure no values
+// action enacts below its required bar, the shared track uses the **strongest
+// (entrenched) thresholds** — 80% approval, 20%→10% support (06 §2.1 entrenched
+// row). Over-strict but G-1-safe; `OracleResolution` keeps its own track. True
+// per-track discrimination (distinct enactment origins + per-call track scope)
+// is the values-layer milestone (SQ-103). `CV_*` therefore = entrenched values.
 pub(crate) const CV_APPROVAL: pallet_referenda::Curve =
-    pallet_referenda::Curve::make_linear(1, 1, percent(67), percent(67));
+    pallet_referenda::Curve::make_linear(1, 1, percent(80), percent(80));
 pub(crate) const CV_SUPPORT: pallet_referenda::Curve =
-    pallet_referenda::Curve::make_linear(1, 1, percent(5), percent(15));
+    pallet_referenda::Curve::make_linear(1, 1, percent(10), percent(20));
 pub(crate) const ORACLE_APPROVAL: pallet_referenda::Curve =
     pallet_referenda::Curve::make_linear(1, 1, percent(60), percent(60));
 pub(crate) const ORACLE_SUPPORT: pallet_referenda::Curve =
@@ -627,13 +637,16 @@ const TRACKS: [pallet_referenda::Track<u16, Balance, u32>; 2] = [
     pallet_referenda::Track {
         id: 0,
         info: pallet_referenda::TrackInfo {
-            name: sp_runtime::str_array("constitution"),
+            // The shared ConstitutionalValues track at entrenched strength (the
+            // strongest 06 §2.1 values track): 50,000-VIT deposit, 7 d/28 d/7 d,
+            // 4-epoch enactment (approximated at the 21-day default epoch).
+            name: sp_runtime::str_array("constitutional_values"),
             max_deciding: 10,
-            decision_deposit: 25_000 * currency::VIT,
-            prepare_period: 2 * BLOCKS_PER_DAY,
-            decision_period: 21 * BLOCKS_PER_DAY,
-            confirm_period: 3 * BLOCKS_PER_DAY,
-            min_enactment_period: 28 * BLOCKS_PER_DAY,
+            decision_deposit: 50_000 * currency::VIT,
+            prepare_period: 7 * BLOCKS_PER_DAY,
+            decision_period: 28 * BLOCKS_PER_DAY,
+            confirm_period: 7 * BLOCKS_PER_DAY,
+            min_enactment_period: 4 * 21 * BLOCKS_PER_DAY,
             min_approval: CV_APPROVAL,
             min_support: CV_SUPPORT,
         },

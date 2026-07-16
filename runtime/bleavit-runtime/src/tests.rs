@@ -1238,16 +1238,17 @@ fn referenda_support_curves_decay_high_to_low_without_underflow() {
     // Major (spec-reviewer): a floor/ceil-swapped `make_linear` underflows
     // `Perbill::sub` in `Curve::threshold` — panic under overflow-checks, or a
     // wrapped ~419% support requirement in release — making EVERY values track
-    // unable to confirm (06 §2.1: constitution 15%→5%, oracle 10%→3%). Drive
-    // each support curve at turnout 0/½/1 and assert the monotone high→low shape
-    // and the exact 13 §3.4 endpoints.
+    // unable to confirm. Drive each support curve at turnout 0/½/1 and assert
+    // the monotone high→low shape and the exact endpoints. The shared CV track
+    // carries the strongest (entrenched) 06 §2.1 thresholds (20%→10%, PR #57 bot
+    // P1); oracle keeps its own (10%→3%).
     use sp_runtime::Perbill;
     let eval = |curve: &pallet_referenda::Curve, x: Perbill| curve.threshold(x);
     let cases = [
         (
             &crate::configs::CV_SUPPORT,
-            Perbill::from_percent(15),
-            Perbill::from_percent(5),
+            Perbill::from_percent(20),
+            Perbill::from_percent(10),
         ),
         (
             &crate::configs::ORACLE_SUPPORT,
@@ -1276,10 +1277,75 @@ fn referenda_support_curves_decay_high_to_low_without_underflow() {
     // Approval curves are flat at their single value (order-immaterial).
     assert_eq!(
         crate::configs::CV_APPROVAL.threshold(Perbill::from_rational(1u32, 3u32)),
-        Perbill::from_percent(67)
+        Perbill::from_percent(80)
     );
     assert_eq!(
         crate::configs::ORACLE_APPROVAL.threshold(Perbill::from_rational(3u32, 4u32)),
         Perbill::from_percent(60)
     );
+}
+
+#[test]
+fn shared_cv_track_dominates_every_values_track_threshold() {
+    // PR #57 Codex-bot P1: the five `ConstitutionalValues` 06 §2.1 tracks
+    // collapse onto one (stock referenda routes by origin), so the shared track
+    // MUST demand at least the strongest track's approval/support at every
+    // turnout — otherwise an entrenched-scope action (e.g. lowering the
+    // entrenched-class `att.bond`) could pass at a weaker bar. Assert the shared
+    // CV curves dominate every 06 §2.1 CV track (metric 60%→50%/10%→2%,
+    // constitution 67%/15%→5%, guardian 55%/5%, ratify 50%/5%, entrenched
+    // 80%/20%→10%) pointwise.
+    use sp_runtime::Perbill;
+    let strongest_approval = Perbill::from_percent(80); // entrenched
+    let strongest_support_ceil = Perbill::from_percent(20); // entrenched at turnout 0
+    for num in 0u32..=4 {
+        let x = Perbill::from_rational(num, 4u32);
+        assert!(
+            crate::configs::CV_APPROVAL.threshold(x) >= strongest_approval,
+            "shared CV approval must be ≥ the strongest (entrenched 80%) at every turnout"
+        );
+    }
+    // Support requirement at any turnout is ≥ the strongest track's requirement
+    // at that turnout (both decay; the CV ceil equals entrenched's ceil).
+    assert_eq!(
+        crate::configs::CV_SUPPORT.threshold(Perbill::zero()),
+        strongest_support_ceil
+    );
+    // No weaker legacy value leaked in (a 67%/15% constitution-track config
+    // would fail the approval dominance above).
+    assert_eq!(
+        crate::configs::CV_APPROVAL.threshold(Perbill::zero()),
+        Perbill::from_percent(80)
+    );
+}
+
+#[test]
+fn referenda_cancel_and_kill_are_enactable_by_constitutional_values() {
+    // PR #57 Codex-bot P2: `referenda.cancel`/`kill` are ConstitutionalValues-
+    // domain (the runtime's Cancel/Kill origins), so a values referendum
+    // enacting them must clear the origin-blind base filter (bare-leaf values
+    // enactment); otherwise the scheduler's filtered dispatch rejects
+    // `CallFiltered` before the origin check, leaving both controls unreachable.
+    for call in [
+        RuntimeCall::Referenda(pallet_referenda::Call::cancel { index: 0 }),
+        RuntimeCall::Referenda(pallet_referenda::Call::kill { index: 0 }),
+    ] {
+        assert!(crate::classifier::is_values_enactment_leaf(&call));
+        assert!(
+            RuntimeBaseCallFilter::contains(&call),
+            "cancel/kill must pass the base filter as a bare values-enactment leaf: {call:?}"
+        );
+        // Bare leaf only — a wrapper carrying it stays denied.
+        assert!(!RuntimeBaseCallFilter::contains(&RuntimeCall::Utility(
+            pallet_utility::Call::batch {
+                calls: vec![call.clone()]
+            }
+        )));
+        // Signed origin still dies at the pallet's Cancel/KillOrigin (BadOrigin),
+        // not at the filter — the base filter admits, the EnsureOrigin rejects.
+        assert!(RuntimeBaseCallFilter::contains_for(
+            ClassOrigin::ConstitutionalValues,
+            &call
+        ));
+    }
 }
