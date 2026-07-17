@@ -104,8 +104,34 @@ class AssembleReleaseTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        self.surface_manifest = self.root / "surface-manifest.json"
+        self.surface_manifest.write_text(
+            json.dumps(
+                {
+                    "schema": "bleavit.critical-surface.v1",
+                    "entries": [
+                        {
+                            "id": "storage.constitution.phase_flags",
+                            "kind": "storage",
+                            "required": True,
+                            "citation": "02 §7.3",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         (self.fixtures / "fixtures-report.json").write_text(
-            json.dumps({"mode": "chainHead-v1", "missing": [], "strict_ready": True}),
+            json.dumps(
+                {
+                    "schema": "bleavit.chainhead-fixtures-report.v1",
+                    "mode": "chainHead-v1",
+                    "metadata_sha256": sha256(metadata),
+                    "recorded": ["storage.constitution.phase_flags"],
+                    "missing": [],
+                    "strict_ready": True,
+                }
+            ),
             encoding="utf-8",
         )
         (self.fixtures / "storage.constitution.phase_flags.json").write_text(
@@ -146,6 +172,8 @@ class AssembleReleaseTests(unittest.TestCase):
             str(self.specs),
             "--fixtures-dir",
             str(self.fixtures),
+            "--surface-manifest",
+            str(self.surface_manifest),
             "--zombienet-dir",
             str(self.zombienet),
             "--chopsticks-dir",
@@ -355,6 +383,61 @@ class AssembleReleaseTests(unittest.TestCase):
         manifest = json.loads((output / "release-manifest.json").read_text())
         corruption_ids = {item["id"] for item in manifest["readiness"]["corruption"]}
         self.assertNotIn("chain_specs.bleavit-dev.json.wasm_binding", corruption_ids)
+
+    def _corruption_ids(self, output: Path) -> set[str]:
+        manifest = json.loads((output / "release-manifest.json").read_text())
+        return {item["id"] for item in manifest["readiness"]["corruption"]}
+
+    def test_fixture_report_from_another_runtime_is_corruption(self) -> None:
+        report = json.loads(
+            (self.fixtures / "fixtures-report.json").read_text(encoding="utf-8")
+        )
+        report["metadata_sha256"] = "0" * 64
+        (self.fixtures / "fixtures-report.json").write_text(
+            json.dumps(report), encoding="utf-8"
+        )
+        output = self.root / "stale-fixtures"
+        result = self.run_assemble(output, allow_missing=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("chainhead.binding", self._corruption_ids(output))
+
+    def test_fixture_report_must_cover_the_full_surface(self) -> None:
+        manifest = json.loads(self.surface_manifest.read_text(encoding="utf-8"))
+        manifest["entries"].append(
+            {
+                "id": "storage.constitution.params",
+                "kind": "storage",
+                "required": True,
+                "citation": "02 §7.3",
+            }
+        )
+        self.surface_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        output = self.root / "truncated-fixtures"
+        result = self.run_assemble(output, allow_missing=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("chainhead.binding", self._corruption_ids(output))
+
+    def test_transcript_set_must_match_the_manifest_exactly(self) -> None:
+        (self.fixtures / "storage.rogue.extra.json").write_text(
+            '{"surface":"storage.rogue.extra","requests":[]}\n', encoding="utf-8"
+        )
+        output = self.root / "extra-transcript"
+        result = self.run_assemble(output, allow_missing=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("chainhead.binding", self._corruption_ids(output))
+
+    def test_fixture_report_schema_is_required(self) -> None:
+        report = json.loads(
+            (self.fixtures / "fixtures-report.json").read_text(encoding="utf-8")
+        )
+        del report["schema"]
+        (self.fixtures / "fixtures-report.json").write_text(
+            json.dumps(report), encoding="utf-8"
+        )
+        output = self.root / "schemaless-fixtures"
+        result = self.run_assemble(output, allow_missing=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("chainhead.binding", self._corruption_ids(output))
 
     def test_live_environment_must_use_a_bootnode_enforcing_profile(self) -> None:
         document = {

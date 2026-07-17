@@ -70,8 +70,16 @@ class ReleaseChannelTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("02 §12", reason)
 
-    def test_wrong_schema_byte_fails(self) -> None:
-        raw = bytes([2]) + bytes(RELEASE_CHANNEL_MIN_LENGTH - 1)
+    def test_schema_bump_stays_valid_per_02_section12(self) -> None:
+        # "any other value ⇒ layout extended append-only, prefix still valid":
+        # a future schema-2 value must never block recording or releases.
+        raw = bytes([2]) + bytes(RELEASE_CHANNEL_MIN_LENGTH + 15)
+        ok, reason = validate_release_channel("0x" + raw.hex(), False)
+        self.assertTrue(ok, reason)
+        self.assertIn("schema 2", reason)
+
+    def test_schema_bump_still_requires_the_v1_prefix(self) -> None:
+        raw = bytes([2]) + bytes(40)
         self.assertFalse(validate_release_channel("0x" + raw.hex(), False)[0])
 
 

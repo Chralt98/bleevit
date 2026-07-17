@@ -29,9 +29,10 @@ USDC_LOCATION_HEX = "010300a10f043205e514"
 USDC_EXPECTED_DECIMALS = 6
 USDC_EXPECTED_MIN_BALANCE = 10_000
 
-# 02 §12: fixed-layout raw value, 168 bytes at v1.0 baseline, schema byte 1;
-# appended fields beyond offset 168 come with a schema bump, so longer values
-# stay valid while shorter ones can never be.
+# 02 §12: fixed-layout raw value, 168 bytes at v1.0 baseline. The schema byte
+# is 1 today, and "any other value ⇒ layout extended append-only, prefix still
+# valid" — so a bumped schema must never fail validation; only the frozen v1
+# prefix (length ≥ 168) is asserted.
 RELEASE_CHANNEL_MIN_LENGTH = 168
 RELEASE_CHANNEL_SCHEMA_BYTE = 1
 
@@ -96,7 +97,10 @@ def validate_release_channel(
             f"{RELEASE_CHANNEL_MIN_LENGTH}",
         )
     if raw[0] != RELEASE_CHANNEL_SCHEMA_BYTE:
-        return False, f"ReleaseChannel schema byte is {raw[0]}, expected 1"
+        # 02 §12: a non-1 schema byte means the layout was extended
+        # append-only beyond offset 168; the v1 prefix stays readable, so a
+        # future schema bump must not block fixture recording or releases.
+        return True, f"recorded (schema {raw[0]}, append-only extension of v1)"
     return True, "recorded"
 
 

@@ -17,7 +17,14 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from release_common import git_value, repo_root, sha256_file, source_date_epoch, write_json
+from release_common import (
+    git_value,
+    repo_root,
+    safe_filename,
+    sha256_file,
+    source_date_epoch,
+    write_json,
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +103,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-dir", type=Path, default=root / "release-work/runtime")
     parser.add_argument("--chain-spec-dir", type=Path, default=root / "deploy/chain-specs/out")
     parser.add_argument("--fixtures-dir", type=Path, default=root / "release-work/chainhead")
+    parser.add_argument(
+        "--surface-manifest",
+        type=Path,
+        default=Path(__file__).resolve().with_name("surface-manifest.json"),
+    )
     parser.add_argument("--zombienet-dir", type=Path, default=root / "zombienet")
     parser.add_argument("--chopsticks-dir", type=Path, default=root / "chopsticks")
     parser.add_argument(
@@ -328,6 +340,87 @@ def validate_run_evidence(
             errors.append(f"artifact_hashes[{relative!r}] is not a SHA-256 digest")
         elif sha256_file(path) != expected:
             errors.append(f"artifact hash mismatch for {relative}")
+    return errors
+
+
+def validate_fixture_binding(
+    report: dict[str, Any],
+    surface_manifest_path: Path,
+    metadata_path: Path,
+    fixtures_dir: Path,
+) -> list[str]:
+    """Bind a fixture report to this release's runtime and full critical surface.
+
+    Without this, a stale or truncated fixture directory whose report claims
+    `missing: []` would pass strict assembly while shipping transcripts from
+    another runtime or omitting most of the 15 §5(4) surface.
+    """
+    errors: list[str] = []
+    if report.get("schema") != "bleavit.chainhead-fixtures-report.v1":
+        errors.append("fixture report schema must be bleavit.chainhead-fixtures-report.v1")
+    if metadata_path.is_file():
+        metadata_actual = sha256_file(metadata_path)
+        if report.get("metadata_sha256") != metadata_actual:
+            errors.append(
+                f"fixture report metadata_sha256 {report.get('metadata_sha256')!r} does "
+                f"not match shipped metadata.scale sha256 {metadata_actual} — the "
+                "fixtures were recorded against a different runtime"
+            )
+    try:
+        manifest = load_json(surface_manifest_path)
+        expected_ids = {entry["id"] for entry in manifest["entries"]}
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+        return [*errors, f"cannot load surface manifest: {error}"]
+    recorded = report.get("recorded")
+    missing = report.get("missing")
+    if not isinstance(recorded, list) or not isinstance(missing, list):
+        return [*errors, "fixture report recorded/missing must be arrays"]
+    covered = {item for item in recorded if isinstance(item, str)}
+    covered |= {
+        item.get("surface")
+        for item in missing
+        if isinstance(item, dict) and isinstance(item.get("surface"), str)
+    }
+    if covered != expected_ids:
+        unreported = sorted(expected_ids - covered)
+        unknown = sorted(covered - expected_ids)
+        if unreported:
+            errors.append(
+                "fixture report does not cover the full critical surface; "
+                "unreported: " + ", ".join(unreported[:8])
+                + ("…" if len(unreported) > 8 else "")
+            )
+        if unknown:
+            errors.append(
+                "fixture report names surface absent from the manifest: "
+                + ", ".join(unknown[:8])
+                + ("…" if len(unknown) > 8 else "")
+            )
+    expected_files = {f"{safe_filename(identifier)}.json" for identifier in expected_ids}
+    actual_files = (
+        {
+            path.name
+            for path in fixtures_dir.glob("*.json")
+            if path.name != "fixtures-report.json"
+        }
+        if fixtures_dir.is_dir()
+        else set()
+    )
+    if actual_files != expected_files:
+        absent = sorted(expected_files - actual_files)
+        extra = sorted(actual_files - expected_files)
+        if absent:
+            errors.append(
+                "transcripts missing for manifest surface: "
+                + ", ".join(absent[:8])
+                + ("…" if len(absent) > 8 else "")
+            )
+        if extra:
+            errors.append(
+                "transcripts present for no manifest surface: "
+                + ", ".join(extra[:8])
+                + ("…" if len(extra) > 8 else "")
+            )
     return errors
 
 
@@ -576,6 +669,17 @@ def main() -> int:
         try:
             fixtures_report = load_json(fixtures_report_path)
             candidates.append(Candidate("chainhead-report", fixtures_report_path, str(fixtures_report_path)))
+            # The report is only trustworthy bound to this release: its
+            # schema, the runtime it recorded against, and the complete
+            # critical surface it must cover. A stale or truncated fixture
+            # directory is corruption, not a readiness gap.
+            for error in validate_fixture_binding(
+                fixtures_report,
+                args.surface_manifest,
+                args.runtime_dir / "metadata.scale",
+                args.fixtures_dir,
+            ):
+                add_corruption(corruptions, "chainhead.binding", error)
             for item in fixtures_report.get("missing", []):
                 if item.get("required"):
                     blocker = item.get("blocked_by")
