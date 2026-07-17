@@ -835,8 +835,7 @@ reason = "13 §2 / 05: the existing epoch test drives the stale boundary and ass
 key = "TickBatch"
 class = "dispatch-limit"
 behavior = "BoundedVec exceeds its limit"
-reason = "13 §2: TickBatch max+1 is rejected at SCALE call admission. The epoch pallet is not yet in the production RuntimeCall, so the pallet-level admission test remains primary until B10 wiring."
-owner = "B10"
+reason = "13 §2: an 11-pid tick batch is rejected at extrinsic admission — proven both at pallet Call decode and through the real runtime's UncheckedExtrinsic::decode (epoch live at index 61 since the B5-groundwork A8 wiring)."
 
 [[entry]]
 key = "ReapBatch"
