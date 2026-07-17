@@ -316,10 +316,14 @@ mod benches {
         let prover = account::<T>(3);
         let proof: BoundedVec<u8, ConstU32<MAX_PROOF_BYTES_BOUND>> =
             BoundedVec::truncate_from(proof_bytes);
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(prover), COMPONENT, EPOCH, SPEC, proof);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::OracleLine,
+        );
         assert!(Pallet::<T>::settled_component(COMPONENT, EPOCH, SPEC).is_some());
     }
 
@@ -359,6 +363,7 @@ mod benches {
         fill_recomputable::<T>(false);
         let watchtower = account::<T>(17);
         let report_hash = hash_report(COMPONENT, EPOCH, 1, value, evidence);
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(
@@ -370,6 +375,9 @@ mod benches {
             report_hash,
         );
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::OracleLine,
+        );
         assert_eq!(
             Rounds::<T>::get((COMPONENT, EPOCH, SPEC)).map(|r| r.acks),
             Some(MAX_WATCHTOWERS_BOUND as u8)
@@ -392,10 +400,14 @@ mod benches {
         fill_recomputable::<T>(false);
         frame_system::Pallet::<T>::set_block_number((ORC_WINDOW_BLOCKS + 2).into());
         let keeper = account::<T>(5);
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(keeper), n);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::OracleLine,
+        );
         assert_eq!(Rounds::<T>::iter().count() as u32, MAX_ROUNDS_BOUND - n);
     }
 
@@ -405,10 +417,14 @@ mod benches {
         fill_hydration::<T>(1, 16, 16, 0, false);
         frame_system::Pallet::<T>::set_block_number(RES_PROBE_INTERVAL.into());
         let keeper = account::<T>(1);
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(keeper));
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::OracleLine,
+        );
         assert_eq!(ReserveHealth::<T>::get().last_query_id, 1);
     }
 

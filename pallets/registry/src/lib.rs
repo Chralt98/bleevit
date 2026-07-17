@@ -141,6 +141,8 @@ pub trait BenchmarkHelper<RuntimeOrigin, AccountId> {
     fn register_watchtower(who: &AccountId);
     /// Install the real epoch/spec filing context for the benchmark epoch.
     fn prime_epoch(epoch: EpochId);
+    fn prime_keeper_rebate() {}
+    fn assert_keeper_rebate_paid(_: futarchy_primitives::keeper::CrankClass) {}
 }
 
 #[frame_support::pallet]

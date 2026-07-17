@@ -28,10 +28,14 @@ mod benches {
         let pid = 1;
         T::BenchmarkHelper::prime_execute(pid, c);
         let caller: T::AccountId = whitelisted_caller();
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller), pid);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::General,
+        );
         assert!(!Queue::<T>::contains_key(pid));
     }
 
@@ -57,10 +61,14 @@ mod benches {
         let pid = 1;
         T::BenchmarkHelper::prime_failed(pid);
         let caller: T::AccountId = whitelisted_caller();
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller), pid);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::General,
+        );
         assert!(!Queue::<T>::contains_key(pid));
     }
 
@@ -85,10 +93,14 @@ mod benches {
         let pid = 1;
         T::BenchmarkHelper::prime_stale(pid);
         let caller: T::AccountId = whitelisted_caller();
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller), pid);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::General,
+        );
         assert!(!Queue::<T>::contains_key(pid));
     }
 

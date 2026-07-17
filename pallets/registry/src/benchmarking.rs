@@ -137,10 +137,14 @@ mod benches {
         fill_other_live_epochs::<T, I>(&filer);
         fill_aggregates::<T, I>(registry_core::MAX_AGGREGATES as u32);
         let filing_id = T::MaxFilingsPerEpoch::get() - 1;
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(wt.clone()), EPOCH, filing_id);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::OracleLine,
+        );
         assert!(AckRecords::<T, I>::contains_key((
             EPOCH,
             filing_id,
@@ -160,10 +164,14 @@ mod benches {
         fill_aggregates::<T, I>(registry_core::MAX_AGGREGATES as u32);
         ack_all::<T, I>(&wt1, &wt2);
         frame_system::Pallet::<T>::set_block_number(PAST.into());
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(filer), EPOCH, REG_CLOSE_BATCH as u32);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::OracleLine,
+        );
         assert!(matches!(
             Filings::<T, I>::get(EPOCH, 0).unwrap().state,
             FilingState::Upheld
@@ -239,10 +247,14 @@ mod benches {
             .saturating_add(T::ArchiveDelay::get())
             .saturating_add(1u32.into());
         frame_system::Pallet::<T>::set_block_number(due);
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(filer), EPOCH);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::OracleLine,
+        );
         assert_eq!(Filings::<T, I>::iter_prefix(EPOCH).count(), 0);
     }
 

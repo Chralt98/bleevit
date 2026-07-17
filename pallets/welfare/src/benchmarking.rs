@@ -149,10 +149,14 @@ mod benches {
         T::BenchmarkHelper::prime_finalized_epoch(MAX_SNAPSHOTS as u32 + 1);
         T::BenchmarkHelper::prime_metric_inputs(MAX_COMPONENTS_PER_SPEC as u16);
         let caller: T::AccountId = whitelisted_caller();
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller), MAX_SNAPSHOTS as u32 + 1, 1);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::DecisionCritical,
+        );
         assert_eq!(Snapshots::<T>::iter().count(), MAX_SNAPSHOTS);
         Ok(())
     }
@@ -170,10 +174,14 @@ mod benches {
         T::BenchmarkHelper::prime_finalized_epoch(MAX_GATE_FLAGS as u32 + 1);
         T::BenchmarkHelper::prime_metric_inputs(MAX_COMPONENTS_PER_SPEC as u16);
         let caller: T::AccountId = whitelisted_caller();
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller), MAX_GATE_FLAGS as u32 + 1, 0, 1);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::General,
+        );
         assert_eq!(GateBreachFlags::<T>::iter().count(), MAX_GATE_FLAGS);
         Ok(())
     }

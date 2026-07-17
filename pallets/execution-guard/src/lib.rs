@@ -196,6 +196,8 @@ pub trait BenchmarkHelper<RuntimeOrigin> {
     fn prime_failed(pid: ProposalId);
     fn prime_pending_upgrade(bytes: u32) -> Vec<u8>;
     fn prime_stale(pid: ProposalId);
+    fn prime_keeper_rebate() {}
+    fn assert_keeper_rebate_paid(_: futarchy_primitives::keeper::CrankClass) {}
 }
 
 #[frame_support::pallet]

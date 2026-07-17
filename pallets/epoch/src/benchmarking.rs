@@ -321,10 +321,14 @@ mod benches {
         let pids = TickBatch::try_from(ids)
             .map_err(|_| BenchmarkError::Stop("benchmark tick batch exceeded"))?;
         let caller = T::BenchmarkHelper::account(250);
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller), pids);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::DecisionCritical,
+        );
         assert_eq!(crate::Proposals::<T>::count(), MAX_LIVE_PROPOSALS_BOUND);
         Ok(())
     }
@@ -360,10 +364,14 @@ mod benches {
             MAX_NON_TERMINAL_COHORTS,
         );
         Pallet::<T>::seed(state)?;
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller), pid);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::DecisionCritical,
+        );
         assert_eq!(
             crate::Proposals::<T>::get(pid).map(|proposal| proposal.state),
             Some(ProposalState::Queued)
@@ -409,10 +417,14 @@ mod benches {
             params.epoch_length,
         ));
         let caller = T::BenchmarkHelper::account(250);
+        T::BenchmarkHelper::prime_keeper_rebate();
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller), 0, n);
 
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::DecisionCritical,
+        );
         // A valid cohort has at most five proposals. Benchmark each charged
         // proposal item (including its four gate settlements); the sixth,
         // baseline-only item is cheaper, while values above six cannot touch

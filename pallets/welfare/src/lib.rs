@@ -127,6 +127,8 @@ pub trait BenchmarkHelper<RuntimeOrigin> {
     fn prime_finalized_epoch(epoch: EpochId);
     /// Populate every component the active benchmark MetricSpec reads.
     fn prime_metric_inputs(count: u16);
+    fn prime_keeper_rebate() {}
+    fn assert_keeper_rebate_paid(_: futarchy_primitives::keeper::CrankClass) {}
 }
 
 #[frame_support::pallet]

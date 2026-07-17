@@ -62,7 +62,7 @@ impl<T: frame_system::Config> pallet_execution_guard::WeightInfo for WeightInfo<
 	/// Proof: `ExecutionGuard::Expedited` (`max_values`: None, `max_size`: Some(25), added: 2500, mode: `MaxEncodedLen`)
 	/// Storage: `ExecutionGuard::LastUpgradeAuthorized` (r:1 w:1)
 	/// Proof: `ExecutionGuard::LastUpgradeAuthorized` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
-	/// Storage: `Constitution::Params` (r:30 w:0)
+	/// Storage: `Constitution::Params` (r:37 w:0)
 	/// Proof: `Constitution::Params` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `ExecutionGuard::HeldResources` (r:1 w:1)
 	/// Proof: `ExecutionGuard::HeldResources` (`max_values`: Some(1), `max_size`: Some(4098), added: 4593, mode: `MaxEncodedLen`)
@@ -136,6 +136,12 @@ impl<T: frame_system::Config> pallet_execution_guard::WeightInfo for WeightInfo<
 	/// Proof: `ExecutionGuard::CounterForRatifications` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	/// Storage: `ExecutionGuard::CounterForQueue` (r:1 w:1)
 	/// Proof: `ExecutionGuard::CounterForQueue` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
+	/// Storage: `FutarchyTreasury::State` (r:1 w:1)
+	/// Proof: `FutarchyTreasury::State` (`max_values`: Some(1), `max_size`: Some(25297), added: 25792, mode: `MaxEncodedLen`)
+	/// Storage: `ForeignAssets::Asset` (r:1 w:1)
+	/// Proof: `ForeignAssets::Asset` (`max_values`: None, `max_size`: Some(210), added: 2685, mode: `MaxEncodedLen`)
+	/// Storage: `ForeignAssets::Account` (r:2 w:2)
+	/// Proof: `ForeignAssets::Account` (`max_values`: None, `max_size`: Some(134), added: 2609, mode: `MaxEncodedLen`)
 	/// Storage: `ExecutionGuard::PendingUpgradeCheckpoint` (r:0 w:1)
 	/// Proof: `ExecutionGuard::PendingUpgradeCheckpoint` (`max_values`: Some(1), `max_size`: Some(64), added: 559, mode: `MaxEncodedLen`)
 	/// Storage: `System::AuthorizedUpgrade` (r:0 w:1)
@@ -143,15 +149,15 @@ impl<T: frame_system::Config> pallet_execution_guard::WeightInfo for WeightInfo<
 	/// The range of component `c` is `[1, 16]`.
 	fn execute(c: u32, ) -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `161978 + c * (9 ±0)`
+		//  Measured:  `172262 + c * (9 ±0)`
 		//  Estimated: `183055 + c * (1861 ±158)`
-		// Minimum execution time: 2_130_322_000 picoseconds.
-		Weight::from_parts(2_257_628_801, 0)
+		// Minimum execution time: 2_270_193_000 picoseconds.
+		Weight::from_parts(2_455_704_940, 0)
 			.saturating_add(Weight::from_parts(0, 183055))
-			// Standard Error: 487_984
-			.saturating_add(Weight::from_parts(16_736_742, 0).saturating_mul(c.into()))
-			.saturating_add(T::DbWeight::get().reads(260))
-			.saturating_add(T::DbWeight::get().writes(179))
+			// Standard Error: 375_830
+			.saturating_add(Weight::from_parts(14_051_778, 0).saturating_mul(c.into()))
+			.saturating_add(T::DbWeight::get().reads(271))
+			.saturating_add(T::DbWeight::get().writes(183))
 			.saturating_add(Weight::from_parts(0, 1861).saturating_mul(c.into()))
 	}
 	/// Storage: `ExecutionGuard::PendingUpgrade` (r:1 w:1)
@@ -203,11 +209,11 @@ impl<T: frame_system::Config> pallet_execution_guard::WeightInfo for WeightInfo<
 		// Proof Size summary in bytes:
 		//  Measured:  `22231`
 		//  Estimated: `91839`
-		// Minimum execution time: 443_521_000 picoseconds.
-		Weight::from_parts(236_788_090, 0)
+		// Minimum execution time: 427_161_000 picoseconds.
+		Weight::from_parts(97_312_021, 0)
 			.saturating_add(Weight::from_parts(0, 91839))
-			// Standard Error: 14
-			.saturating_add(Weight::from_parts(4_236, 0).saturating_mul(b.into()))
+			// Standard Error: 17
+			.saturating_add(Weight::from_parts(4_454, 0).saturating_mul(b.into()))
 			.saturating_add(T::DbWeight::get().reads(51))
 			.saturating_add(T::DbWeight::get().writes(47))
 	}
@@ -241,7 +247,7 @@ impl<T: frame_system::Config> pallet_execution_guard::WeightInfo for WeightInfo<
 	/// Proof: `Epoch::StaleEpochCutoff` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
 	/// Storage: `Epoch::BaselineCarry` (r:1 w:1)
 	/// Proof: `Epoch::BaselineCarry` (`max_values`: Some(1), `max_size`: Some(5), added: 500, mode: `MaxEncodedLen`)
-	/// Storage: `Constitution::Params` (r:29 w:0)
+	/// Storage: `Constitution::Params` (r:36 w:0)
 	/// Proof: `Constitution::Params` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `ConditionalLedger::Vaults` (r:1 w:1)
 	/// Proof: `ConditionalLedger::Vaults` (`max_values`: None, `max_size`: Some(184), added: 2659, mode: `MaxEncodedLen`)
@@ -283,19 +289,25 @@ impl<T: frame_system::Config> pallet_execution_guard::WeightInfo for WeightInfo<
 	/// Proof: `Epoch::CounterForProposals` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	/// Storage: `Epoch::CounterForCohorts` (r:1 w:1)
 	/// Proof: `Epoch::CounterForCohorts` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
+	/// Storage: `FutarchyTreasury::State` (r:1 w:1)
+	/// Proof: `FutarchyTreasury::State` (`max_values`: Some(1), `max_size`: Some(25297), added: 25792, mode: `MaxEncodedLen`)
+	/// Storage: `ForeignAssets::Asset` (r:1 w:1)
+	/// Proof: `ForeignAssets::Asset` (`max_values`: None, `max_size`: Some(210), added: 2685, mode: `MaxEncodedLen`)
+	/// Storage: `ForeignAssets::Account` (r:2 w:2)
+	/// Proof: `ForeignAssets::Account` (`max_values`: None, `max_size`: Some(134), added: 2609, mode: `MaxEncodedLen`)
 	/// Storage: `ExecutionGuard::AttestationBindings` (r:0 w:1)
 	/// Proof: `ExecutionGuard::AttestationBindings` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
 	/// Storage: `ExecutionGuard::Expedited` (r:0 w:1)
 	/// Proof: `ExecutionGuard::Expedited` (`max_values`: None, `max_size`: Some(25), added: 2500, mode: `MaxEncodedLen`)
 	fn expire_failed_execution() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `62349`
+		//  Measured:  `72633`
 		//  Estimated: `183055`
-		// Minimum execution time: 2_084_752_000 picoseconds.
-		Weight::from_parts(2_104_642_000, 0)
+		// Minimum execution time: 2_178_132_000 picoseconds.
+		Weight::from_parts(2_205_082_000, 0)
 			.saturating_add(Weight::from_parts(0, 183055))
-			.saturating_add(T::DbWeight::get().reads(245))
-			.saturating_add(T::DbWeight::get().writes(173))
+			.saturating_add(T::DbWeight::get().reads(256))
+			.saturating_add(T::DbWeight::get().writes(177))
 	}
 	/// Storage: `ExecutionGuard::Ratifications` (r:1 w:1)
 	/// Proof: `ExecutionGuard::Ratifications` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
@@ -327,8 +339,8 @@ impl<T: frame_system::Config> pallet_execution_guard::WeightInfo for WeightInfo<
 		// Proof Size summary in bytes:
 		//  Measured:  `22910`
 		//  Estimated: `91839`
-		// Minimum execution time: 414_951_000 picoseconds.
-		Weight::from_parts(423_410_000, 0)
+		// Minimum execution time: 410_390_000 picoseconds.
+		Weight::from_parts(417_110_000, 0)
 			.saturating_add(Weight::from_parts(0, 91839))
 			.saturating_add(T::DbWeight::get().reads(45))
 			.saturating_add(T::DbWeight::get().writes(43))
@@ -365,7 +377,7 @@ impl<T: frame_system::Config> pallet_execution_guard::WeightInfo for WeightInfo<
 	/// Proof: `Epoch::StaleEpochCutoff` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
 	/// Storage: `Epoch::BaselineCarry` (r:1 w:1)
 	/// Proof: `Epoch::BaselineCarry` (`max_values`: Some(1), `max_size`: Some(5), added: 500, mode: `MaxEncodedLen`)
-	/// Storage: `Constitution::Params` (r:29 w:0)
+	/// Storage: `Constitution::Params` (r:36 w:0)
 	/// Proof: `Constitution::Params` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `ConditionalLedger::Vaults` (r:1 w:1)
 	/// Proof: `ConditionalLedger::Vaults` (`max_values`: None, `max_size`: Some(184), added: 2659, mode: `MaxEncodedLen`)
@@ -405,18 +417,24 @@ impl<T: frame_system::Config> pallet_execution_guard::WeightInfo for WeightInfo<
 	/// Proof: `Epoch::CounterForProposals` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	/// Storage: `Epoch::CounterForCohorts` (r:1 w:1)
 	/// Proof: `Epoch::CounterForCohorts` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
+	/// Storage: `FutarchyTreasury::State` (r:1 w:1)
+	/// Proof: `FutarchyTreasury::State` (`max_values`: Some(1), `max_size`: Some(25297), added: 25792, mode: `MaxEncodedLen`)
+	/// Storage: `ForeignAssets::Asset` (r:1 w:1)
+	/// Proof: `ForeignAssets::Asset` (`max_values`: None, `max_size`: Some(210), added: 2685, mode: `MaxEncodedLen`)
+	/// Storage: `ForeignAssets::Account` (r:2 w:2)
+	/// Proof: `ForeignAssets::Account` (`max_values`: None, `max_size`: Some(134), added: 2609, mode: `MaxEncodedLen`)
 	/// Storage: `ExecutionGuard::AttestationBindings` (r:0 w:1)
 	/// Proof: `ExecutionGuard::AttestationBindings` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
 	/// Storage: `ExecutionGuard::Expedited` (r:0 w:1)
 	/// Proof: `ExecutionGuard::Expedited` (`max_values`: None, `max_size`: Some(25), added: 2500, mode: `MaxEncodedLen`)
 	fn reject_stale() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `62345`
+		//  Measured:  `72629`
 		//  Estimated: `183055`
-		// Minimum execution time: 2_096_522_000 picoseconds.
-		Weight::from_parts(2_108_122_000, 0)
+		// Minimum execution time: 2_186_793_000 picoseconds.
+		Weight::from_parts(2_213_122_000, 0)
 			.saturating_add(Weight::from_parts(0, 183055))
-			.saturating_add(T::DbWeight::get().reads(245))
-			.saturating_add(T::DbWeight::get().writes(173))
+			.saturating_add(T::DbWeight::get().reads(256))
+			.saturating_add(T::DbWeight::get().writes(177))
 	}
 }

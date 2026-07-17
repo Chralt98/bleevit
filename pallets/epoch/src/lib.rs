@@ -173,6 +173,8 @@ pub trait BenchmarkHelper<RuntimeOrigin, AccountId> {
     /// Saturate the real execution-guard aggregate before a decision enqueues.
     fn prime_guard_enqueue(pid: ProposalId);
     fn prime_settlement(epoch: EpochId);
+    fn prime_keeper_rebate() {}
+    fn assert_keeper_rebate_paid(_: futarchy_primitives::keeper::CrankClass) {}
 }
 
 /// `Get<EpochId>` projection for sibling pallets (treasury/registry/welfare).

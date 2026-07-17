@@ -26,12 +26,12 @@ use frame_system::{
     limits::{BlockLength, BlockWeights},
     EnsureRoot, EnsureSigned,
 };
-#[cfg(feature = "runtime-benchmarks")]
-use futarchy_primitives::EpochPhase;
 use futarchy_primitives::{
     bounds, chain_identity, currency, kernel, EpochId, FixedU64, ParamKey, ProposalClass,
     ProposalId, ProposalState, RuntimeVersionConstraint, H256,
 };
+#[cfg(feature = "runtime-benchmarks")]
+use futarchy_primitives::{keeper::CrankClass, EpochPhase};
 use parity_scale_codec::Decode;
 #[cfg(feature = "runtime-benchmarks")]
 use parity_scale_codec::Encode;
@@ -1091,9 +1091,13 @@ impl pallet_conditional_ledger::Config for Runtime {
     type PalletId = LedgerPalletId;
     type KeeperRebate = FutarchyTreasury;
     type WeightInfo = crate::weights::pallet_conditional_ledger::WeightInfo<Runtime>;
+    #[cfg(feature = "runtime-benchmarks")]
+    type BenchmarkHelper = RuntimeBenchmarkHelper;
 }
 impl pallet_market::Config for Runtime {
     type WeightInfo = crate::weights::pallet_market::WeightInfo<Runtime>;
+    #[cfg(feature = "runtime-benchmarks")]
+    type BenchmarkHelper = RuntimeBenchmarkHelper;
     type Fee = MarketFee;
     type ObsInterval = MarketObsInterval;
     type Kappa1e9 = MarketKappa;
@@ -1341,18 +1345,31 @@ impl pallet_oracle::ReportingContext for RuntimeReporting {
 impl pallet_oracle::Config for Runtime {
     type AdjudicationOrigin = pallet_origins::EnsureOracleResolution;
     type Reporting = RuntimeReporting;
-    // B4 pending probe-dispatch seam: `()` sends nothing, so every probe times
-    // out fail-static (07 §8, I-24 — absence is never healthy). Swapped for
-    // `bleavit_xcm::probe::XcmProbeDispatcher` when the stub XCM config below
-    // (`xcm_config`: Barrier/AssetTransactor/Trader/XcmSender = ()) is replaced
-    // by the bleavit-xcm components (the B4 runtime-integration follow-up).
-    type ProbeDispatch = ();
+    // Production remains fail-static until the B4 XCM dispatcher is wired.
+    // Benchmark Wasm uses a live no-op sender so the reserve-probe benchmark
+    // reaches its documented post-commit rebate path.
+    type ProbeDispatch = RuntimeProbeDispatch;
     type KeeperRebate = FutarchyTreasury;
     type MaxRoundCloseBatch = ConstU32<{ kernel::TICK_BATCH }>;
     type WeightInfo = crate::weights::pallet_oracle::WeightInfo<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
     type BenchmarkHelper = RuntimeBenchmarkHelper;
 }
+
+#[cfg(feature = "runtime-benchmarks")]
+pub struct BenchmarkProbeDispatch;
+#[cfg(feature = "runtime-benchmarks")]
+impl pallet_oracle::ProbeDispatch for BenchmarkProbeDispatch {
+    fn live() -> bool {
+        true
+    }
+
+    fn probe_due(_: u64) {}
+}
+#[cfg(feature = "runtime-benchmarks")]
+type RuntimeProbeDispatch = BenchmarkProbeDispatch;
+#[cfg(not(feature = "runtime-benchmarks"))]
+type RuntimeProbeDispatch = ();
 
 pub struct RegistryParams;
 impl pallet_registry::RegistryParams for RegistryParams {
@@ -1515,7 +1532,9 @@ impl pallet_futarchy_treasury::RebatePayout<AccountId> for TreasuryRebatePayout 
 /// `bleavit_xcm::coretime::XcmRenewalDispatcher` is wired with the stub XCM
 /// config swap (09 §4: an unwireable transfer must not consume the quote or
 /// mark the period funded; the keeper simply retries once wired).
+#[cfg(not(feature = "runtime-benchmarks"))]
 pub struct PendingRenewalDispatch;
+#[cfg(not(feature = "runtime-benchmarks"))]
 impl pallet_futarchy_treasury::RenewalDispatch for PendingRenewalDispatch {
     fn dispatch_renewal(
         _period_index: u32,
@@ -1526,13 +1545,30 @@ impl pallet_futarchy_treasury::RenewalDispatch for PendingRenewalDispatch {
         ))
     }
 }
+
+#[cfg(feature = "runtime-benchmarks")]
+pub struct BenchmarkRenewalDispatch;
+#[cfg(feature = "runtime-benchmarks")]
+impl pallet_futarchy_treasury::RenewalDispatch for BenchmarkRenewalDispatch {
+    fn dispatch_renewal(
+        _period_index: u32,
+        _amount: Balance,
+    ) -> frame_support::dispatch::DispatchResult {
+        Ok(())
+    }
+}
+#[cfg(feature = "runtime-benchmarks")]
+type RuntimeRenewalDispatch = BenchmarkRenewalDispatch;
+#[cfg(not(feature = "runtime-benchmarks"))]
+type RuntimeRenewalDispatch = PendingRenewalDispatch;
+
 impl pallet_futarchy_treasury::Config for Runtime {
     type TreasuryOrigin = pallet_origins::EnsureFutarchyTreasury;
     type Params = TreasuryParams;
     // The A8 runtime wiring landed: the live epoch clock drives the keeper
     // meter's per-epoch reset (08 §6.3).
     type CurrentEpoch = LiveEpochClock;
-    type RenewalDispatch = PendingRenewalDispatch;
+    type RenewalDispatch = RuntimeRenewalDispatch;
     type RebatePayout = TreasuryRebatePayout;
     type WeightInfo = crate::weights::pallet_futarchy_treasury::WeightInfo<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
@@ -2487,6 +2523,119 @@ impl pallet_execution_guard::Config for Runtime {
 pub struct RuntimeBenchmarkHelper;
 
 #[cfg(feature = "runtime-benchmarks")]
+const BENCHMARK_KEEPER_REBATE: Balance = currency::USDC;
+#[cfg(feature = "runtime-benchmarks")]
+const BENCHMARK_REBATE_LINE_BALANCE: Balance = 100 * currency::USDC;
+
+/// Prime every storage/custody dependency of `do_keeper_rebate` so benchmark
+/// dispatches measure the full successful payout path, never the zero-pay or
+/// exhausted-latch path.
+#[cfg(feature = "runtime-benchmarks")]
+pub(crate) fn prime_keeper_rebate_worst_case() {
+    let key = pallet_constitution::key16(b"keeper.rebate");
+    pallet_constitution::Params::<Runtime>::insert(
+        key,
+        pallet_constitution::ParamRecord {
+            key,
+            value: pallet_constitution::ParamValue::Balance(BENCHMARK_KEEPER_REBATE),
+            min: pallet_constitution::ParamValue::Balance(1),
+            max: pallet_constitution::ParamValue::Balance(Balance::MAX),
+            max_delta: None,
+            cooldown_epochs: 0,
+            last_changed_epoch: 0,
+            class: pallet_constitution::ParamClass::Param,
+            kernel_bounded: false,
+        },
+    );
+
+    pallet_futarchy_treasury::State::<Runtime>::mutate(|state| {
+        for line in [
+            pallet_futarchy_treasury::BudgetLine::Keeper,
+            pallet_futarchy_treasury::BudgetLine::Oracle,
+        ] {
+            if let Some((_, balance)) = state.lines.iter_mut().find(|(stored, _)| *stored == line) {
+                *balance = BENCHMARK_REBATE_LINE_BALANCE;
+            } else {
+                state
+                    .lines
+                    .try_push((line, BENCHMARK_REBATE_LINE_BALANCE))
+                    .expect("benchmark treasury has room for rebate lines");
+            }
+        }
+        state.keeper_meter = pallet_futarchy_treasury::KeeperMeter {
+            epoch: <LiveEpochClock as frame_support::traits::Get<EpochId>>::get(),
+            ..Default::default()
+        };
+    });
+
+    for pot in [treasury_keeper_account(), treasury_oracle_account()] {
+        let balance = <ForeignAssets as Inspect<AccountId>>::balance(USDC_ASSET_ID, &pot);
+        if balance < BENCHMARK_REBATE_LINE_BALANCE {
+            <ForeignAssets as Mutate<AccountId>>::mint_into(
+                USDC_ASSET_ID,
+                &pot,
+                BENCHMARK_REBATE_LINE_BALANCE - balance,
+            )
+            .expect("benchmark rebate pot funding must succeed");
+        }
+    }
+}
+
+#[cfg(feature = "runtime-benchmarks")]
+fn assert_keeper_rebate_was_paid(class: CrankClass) {
+    let state = pallet_futarchy_treasury::State::<Runtime>::get();
+    let line = match class {
+        CrankClass::OracleLine => pallet_futarchy_treasury::BudgetLine::Oracle,
+        CrankClass::DecisionCritical | CrankClass::General => {
+            pallet_futarchy_treasury::BudgetLine::Keeper
+        }
+    };
+    let line_balance = state
+        .lines
+        .iter()
+        .find_map(|(stored, balance)| (*stored == line).then_some(*balance));
+    assert_eq!(
+        line_balance,
+        Some(BENCHMARK_REBATE_LINE_BALANCE - BENCHMARK_KEEPER_REBATE),
+        "benchmark crank must debit the funded rebate line"
+    );
+    match class {
+        CrankClass::OracleLine => {}
+        CrankClass::DecisionCritical => {
+            assert_eq!(state.keeper_meter.spent, BENCHMARK_KEEPER_REBATE);
+            assert_eq!(state.keeper_meter.general_spent, 0);
+        }
+        CrankClass::General => {
+            assert_eq!(state.keeper_meter.spent, BENCHMARK_KEEPER_REBATE);
+            assert_eq!(state.keeper_meter.general_spent, BENCHMARK_KEEPER_REBATE);
+        }
+    }
+}
+
+#[cfg(feature = "runtime-benchmarks")]
+macro_rules! benchmark_keeper_rebate_hooks {
+    () => {
+        fn prime_keeper_rebate() {
+            prime_keeper_rebate_worst_case();
+        }
+
+        fn assert_keeper_rebate_paid(class: CrankClass) {
+            assert_keeper_rebate_was_paid(class);
+        }
+    };
+}
+
+#[cfg(feature = "runtime-benchmarks")]
+impl pallet_conditional_ledger::BenchmarkHelper for RuntimeBenchmarkHelper {
+    benchmark_keeper_rebate_hooks!();
+}
+
+#[cfg(feature = "runtime-benchmarks")]
+impl pallet_market::BenchmarkHelper for RuntimeBenchmarkHelper {
+    benchmark_keeper_rebate_hooks!();
+}
+
+#[cfg(feature = "runtime-benchmarks")]
 impl pallet_constitution::BenchmarkHelper<RuntimeOrigin> for RuntimeBenchmarkHelper {
     fn origin(authority: pallet_constitution::ConstitutionOrigin) -> RuntimeOrigin {
         match authority {
@@ -2520,6 +2669,8 @@ impl pallet_constitution::BenchmarkHelper<RuntimeOrigin> for RuntimeBenchmarkHel
 }
 #[cfg(feature = "runtime-benchmarks")]
 impl pallet_welfare::BenchmarkHelper<RuntimeOrigin> for RuntimeBenchmarkHelper {
+    benchmark_keeper_rebate_hooks!();
+
     fn metric_governance_origin() -> RuntimeOrigin {
         pallet_origins::Origin::ConstitutionalValues.into()
     }
@@ -2535,6 +2686,8 @@ impl pallet_welfare::BenchmarkHelper<RuntimeOrigin> for RuntimeBenchmarkHelper {
 }
 #[cfg(feature = "runtime-benchmarks")]
 impl pallet_oracle::BenchmarkHelper<RuntimeOrigin> for RuntimeBenchmarkHelper {
+    benchmark_keeper_rebate_hooks!();
+
     fn adjudication_origin() -> RuntimeOrigin {
         pallet_origins::Origin::OracleResolution.into()
     }
@@ -2574,6 +2727,8 @@ impl pallet_oracle::BenchmarkHelper<RuntimeOrigin> for RuntimeBenchmarkHelper {
 }
 #[cfg(feature = "runtime-benchmarks")]
 impl pallet_registry::BenchmarkHelper<RuntimeOrigin, AccountId> for RuntimeBenchmarkHelper {
+    benchmark_keeper_rebate_hooks!();
+
     fn resolution_origin() -> RuntimeOrigin {
         pallet_origins::Origin::OracleResolution.into()
     }
@@ -2624,6 +2779,8 @@ impl pallet_registry::BenchmarkHelper<RuntimeOrigin, AccountId> for RuntimeBench
 impl pallet_futarchy_treasury::BenchmarkHelper<RuntimeOrigin, AccountId>
     for RuntimeBenchmarkHelper
 {
+    benchmark_keeper_rebate_hooks!();
+
     fn treasury_origin() -> RuntimeOrigin {
         pallet_origins::Origin::FutarchyTreasury.into()
     }
@@ -2666,6 +2823,8 @@ impl pallet_attestor::BenchmarkHelper<RuntimeOrigin> for RuntimeBenchmarkHelper 
 }
 #[cfg(feature = "runtime-benchmarks")]
 impl pallet_epoch::BenchmarkHelper<RuntimeOrigin, AccountId> for RuntimeBenchmarkHelper {
+    benchmark_keeper_rebate_hooks!();
+
     fn prime_submit_epoch(epoch: EpochId) {
         // The benchmark runner dispatches calls in block one even when its raw
         // externalities begin at zero; establish the same block during setup so
@@ -2823,6 +2982,8 @@ impl pallet_epoch::BenchmarkHelper<RuntimeOrigin, AccountId> for RuntimeBenchmar
 }
 #[cfg(feature = "runtime-benchmarks")]
 impl pallet_execution_guard::BenchmarkHelper<RuntimeOrigin> for RuntimeBenchmarkHelper {
+    benchmark_keeper_rebate_hooks!();
+
     fn ratify_origin() -> RuntimeOrigin {
         pallet_origins::Origin::ConstitutionalValues.into()
     }

@@ -384,8 +384,12 @@ mod benchmarks {
             frame_system::pallet_prelude::BlockNumberFor::<T>::from(0u32),
         );
         frame_system::Pallet::<T>::set_block_number(T::ArchiveDelay::get() + 10u32.into());
+        T::BenchmarkHelper::prime_keeper_rebate();
         #[extrinsic_call]
         _(RawOrigin::Signed(caller.clone()), 1);
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::General,
+        );
     }
 
     #[benchmark]
@@ -398,8 +402,12 @@ mod benchmarks {
             frame_system::pallet_prelude::BlockNumberFor::<T>::from(0u32),
         );
         frame_system::Pallet::<T>::set_block_number(T::ArchiveDelay::get() + 10u32.into());
+        T::BenchmarkHelper::prime_keeper_rebate();
         #[extrinsic_call]
         _(RawOrigin::Signed(caller.clone()), 7);
+        T::BenchmarkHelper::assert_keeper_rebate_paid(
+            futarchy_primitives::keeper::CrankClass::General,
+        );
     }
 
     impl_benchmark_test_suite!(Pallet, crate::mock::new_test_ext(), crate::mock::Test);
