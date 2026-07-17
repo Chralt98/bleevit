@@ -52,18 +52,15 @@ mod benches {
     fn fund_budget_line() {
         Pallet::<T>::seed(&funded());
         let origin = T::BenchmarkHelper::treasury_origin();
+        let amount = 100_000 * USDC;
+        let custody_seeded = T::BenchmarkHelper::prime_pot_funding(amount);
+        assert!(custody_seeded.is_ok());
 
         #[extrinsic_call]
-        _(
-            origin as T::RuntimeOrigin,
-            BudgetLine::Keeper,
-            100_000 * USDC,
-        );
+        _(origin as T::RuntimeOrigin, BudgetLine::Keeper, amount);
 
-        assert_eq!(
-            Pallet::<T>::line_balance(BudgetLine::Keeper),
-            100_000 * USDC
-        );
+        assert_eq!(Pallet::<T>::line_balance(BudgetLine::Keeper), amount);
+        assert_eq!(T::RebatePayout::pot_balance(PayoutLine::Keeper), amount);
     }
 
     #[benchmark]
