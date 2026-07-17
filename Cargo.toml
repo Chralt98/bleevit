@@ -79,7 +79,7 @@ cumulus-test-relay-sproof-builder = { version = "=0.25.0" }
 frame-executive = { version = "=46.0.0", default-features = false }
 frame-metadata-hash-extension = { version = "=0.14.0", default-features = false }
 frame-system-rpc-runtime-api = { version = "=41.0.0", default-features = false }
-frame-try-runtime = { version = "=0.52.0", default-features = false }
+frame-try-runtime = { version = "=0.54.0", default-features = false }
 pallet-asset-tx-payment = { version = "=46.0.0", default-features = false }
 pallet-aura = { version = "=45.0.0", default-features = false }
 pallet-authorship = { version = "=46.0.0", default-features = false }
