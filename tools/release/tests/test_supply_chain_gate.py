@@ -42,17 +42,31 @@ raise SystemExit(0)
             osv_scanner.write_text(
                 """#!/usr/bin/env python3
 import json
-print(json.dumps({'results': []}))
-raise SystemExit(0)
+print(json.dumps({'results': [{'packages': [{
+    'package': {'name': 'demo', 'version': '1.2.3'},
+    'vulnerabilities': [{'id': 'GHSA-test-0000', 'aliases': [], 'summary': 'fixture'}],
+}]}]}))
+raise SystemExit(1)
 """,
                 encoding="utf-8",
             )
             osv_scanner.chmod(0o755)
-            # Empty waivers to match the empty scan: the committed waiver file
-            # would (correctly) read as stale against a stub that reports
-            # nothing. Keeps this test independent of what is waived today.
+            # A stub finding plus its matching waiver, rather than the committed
+            # file: this test covers the summary, and pointing it at the real
+            # waivers would couple it to whatever is waived today.
             ghsa_waivers = root / "ghsa-waivers.toml"
-            ghsa_waivers.write_text("", encoding="utf-8")
+            ghsa_waivers.write_text(
+                """\
+[[waiver]]
+id = "GHSA-test-0000"
+package = "demo"
+version = "1.2.3"
+reason = "fixture"
+blocked_by = "fixture pin"
+clears_when = "never"
+""",
+                encoding="utf-8",
+            )
             summary = root / "summary.json"
             environment = dict(os.environ)
             environment["BLEAVIT_AUDITOR"] = str(auditor)
@@ -69,8 +83,14 @@ raise SystemExit(0)
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             document = json.loads(summary.read_text(encoding="utf-8"))
-            self.assertEqual(document["schema"], "bleavit.supply-chain.v1")
+            self.assertEqual(document["schema"], "bleavit.supply-chain.v2")
             self.assertEqual(document["ignored_advisory_ids"], ["RUSTSEC-2026-0001"])
+            # SQ-135's disclosure property covers the GHSA-only waivers too:
+            # cargo-audit's ignore list alone understates the accepted risk.
+            self.assertEqual(
+                document["waived_ghsa_only"],
+                [{"id": "GHSA-test-0000", "package": "demo", "version": "1.2.3"}],
+            )
             self.assertEqual(document["workspaces"]["root"]["allowed_warning_count"], 3)
             self.assertEqual(document["workspaces"]["keeper"]["allowed_warning_count"], 0)
 

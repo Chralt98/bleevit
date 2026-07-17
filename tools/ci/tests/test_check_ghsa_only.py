@@ -75,7 +75,9 @@ def fake_scanner(directory: Path, document: dict) -> Path:
             #!/usr/bin/env python3
             import json
             print(json.dumps({document!r}))
-            raise SystemExit(1)  # osv-scanner exits non-zero when it finds anything
+            # 1 = scanned, findings present; 0 = scanned, none. Both mean the scan
+            # ran, which is what the checker requires.
+            raise SystemExit(1)
             """
         ),
         encoding="utf-8",
@@ -204,6 +206,40 @@ class GateTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 1, completed.stdout)
         self.assertIn("match no current finding", completed.stderr)
 
+    def test_waiver_does_not_carry_over_to_another_version(self) -> None:
+        """The yamux waiver's justification is about 0.12.1 specifically. A bump
+        to another still-vulnerable version must demand a fresh triage, not
+        inherit the old reasoning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            waivers = waiver_file(Path(tmp), MINIMAL_WAIVER)  # waives yamux 0.12.1
+            completed = run(report(("yamux", "0.12.0", [YAMUX])), waivers)
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn("UNWAIVED", completed.stdout)
+
+    def test_waiver_does_not_carry_over_to_another_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            waivers = waiver_file(Path(tmp), MINIMAL_WAIVER)  # waives yamux
+            completed = run(report(("other-crate", "0.12.1", [YAMUX])), waivers)
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn("UNWAIVED", completed.stdout)
+
+    def test_both_failure_classes_are_reported_together(self) -> None:
+        """A run that both leaves something untriaged and carries a dead waiver
+        should say so once, not reveal the second only after the first is fixed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            waivers = waiver_file(Path(tmp), MINIMAL_WAIVER)  # yamux 0.12.1: will go stale
+            completed = run(report(("other-crate", "9.9.9", [YAMUX])), waivers)
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn("with no waiver", completed.stderr)
+        self.assertIn("match no current finding", completed.stderr)
+
+    def test_duplicate_waiver_entries_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            waivers = waiver_file(Path(tmp), MINIMAL_WAIVER + MINIMAL_WAIVER)
+            completed = run(report(("yamux", "0.12.1", [YAMUX])), waivers)
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn("duplicate waiver", completed.stderr)
+
     def test_waiver_missing_a_required_field_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             waivers = waiver_file(
@@ -223,10 +259,10 @@ class GateTests(unittest.TestCase):
 class CommittedWaiverTests(unittest.TestCase):
     def test_committed_waivers_parse_and_carry_their_justification(self) -> None:
         waivers = checker.load_waivers(WAIVERS)
-        self.assertIn("GHSA-vxx9-2994-q338", waivers)
-        for identifier, waiver in waivers.items():
-            self.assertTrue(waiver["blocked_by"].strip(), identifier)
-            self.assertTrue(waiver["clears_when"].strip(), identifier)
+        self.assertIn(("GHSA-vxx9-2994-q338", "yamux", "0.12.1"), waivers)
+        for key, waiver in waivers.items():
+            self.assertTrue(waiver["blocked_by"].strip(), key)
+            self.assertTrue(waiver["clears_when"].strip(), key)
 
 
 class FailClosedTests(unittest.TestCase):
@@ -260,7 +296,40 @@ class FailClosedTests(unittest.TestCase):
                 check=False,
             )
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("produced no output", completed.stderr)
+        self.assertIn("refusing to", completed.stderr)
+
+    def test_a_failed_scan_is_never_read_as_a_clean_one(self) -> None:
+        """osv-scanner exit 127/128 (general error / no package sources) can be
+        accompanied by a JSON envelope. Accepting it would let a mistyped
+        lockfile path or a dead OSV API report zero findings and pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            scanner = directory / "osv-scanner"
+            scanner.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "print(json.dumps({'results': []}))\n"
+                "print('no package sources found', file=sys.stderr)\n"
+                "raise SystemExit(128)\n",
+                encoding="utf-8",
+            )
+            scanner.chmod(0o755)
+            lockfile = directory / "Cargo.lock"
+            lockfile.write_text("", encoding="utf-8")
+            waivers = waiver_file(directory, "")
+            completed = subprocess.run(
+                [
+                    sys.executable, str(SCRIPT),
+                    "--scanner", str(scanner),
+                    "--waivers", str(waivers),
+                    "--lockfile", str(lockfile),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("failed to scan", completed.stderr)
 
     def test_non_json_scanner_output_fails_the_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

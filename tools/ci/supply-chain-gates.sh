@@ -67,7 +67,7 @@ else
   osv="$repo_root/target/tools/bin/osv-scanner"
   if [[ ! -x "$osv" ]] || [[ "$(sha256sum "$osv" | cut -d' ' -f1)" != "$OSV_SCANNER_SHA256" ]]; then
     mkdir -p "$(dirname "$osv")"
-    curl -fsSL -o "$osv.tmp" \
+    curl --fail --silent --show-error --location --retry 3 --max-time 300 -o "$osv.tmp" \
       "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
     actual=$(sha256sum "$osv.tmp" | cut -d' ' -f1)
     if [[ "$actual" != "$OSV_SCANNER_SHA256" ]]; then
@@ -93,12 +93,15 @@ if [[ -n "$summary_out" ]]; then
     cd keeper
     "$auditor" audit --json --no-fetch >"$summary_tmp/keeper.json"
   )
-  python3 - "$summary_out" "$summary_tmp/root.json" "$summary_tmp/keeper.json" <<'PY'
+  python3 - "$summary_out" "$summary_tmp/root.json" "$summary_tmp/keeper.json" \
+    "${BLEAVIT_GHSA_WAIVERS:-$repo_root/tools/ci/ghsa-waivers.toml}" \
+    "$repo_root/tools/ci/check-ghsa-only.py" <<'PY'
+import importlib.util
 import json
 import sys
 from pathlib import Path
 
-output, root_report, keeper_report = map(Path, sys.argv[1:])
+output, root_report, keeper_report, ghsa_waivers, checker_path = map(Path, sys.argv[1:])
 
 
 def load(path):
@@ -128,9 +131,22 @@ keeper = load(keeper_report)
 ignored = root.get("settings", {}).get("ignore", [])
 if not isinstance(ignored, list) or any(not isinstance(item, str) for item in ignored):
     raise SystemExit("cargo-audit settings.ignore is not a string array")
+# SQ-135's disclosed-waiver property is "the FULL waived-ID list in every
+# release manifest". Since the GHSA-only leg carries its own waivers, listing
+# only the RustSec ignores would understate what the release is shipping
+# accepted risk on. Schema v2 adds them; the assembler validates both lists.
+spec = importlib.util.spec_from_file_location("check_ghsa_only", checker_path)
+checker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(checker)
+waived_ghsa_only = [
+    {"id": identifier, "package": package, "version": version}
+    for identifier, package, version in sorted(checker.load_waivers(ghsa_waivers))
+]
+
 summary = {
-    "schema": "bleavit.supply-chain.v1",
+    "schema": "bleavit.supply-chain.v2",
     "ignored_advisory_ids": sorted(ignored),
+    "waived_ghsa_only": waived_ghsa_only,
     "workspaces": {
         "root": warning_summary(root),
         "keeper": warning_summary(keeper),

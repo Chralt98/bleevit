@@ -97,18 +97,36 @@ def parse_waivers_toml_compat(text: str) -> list[dict]:
     return waivers
 
 
-def load_waivers(path: Path) -> dict[str, dict]:
+def waiver_key(identifier: str, package: str, version: str) -> tuple[str, str, str]:
+    """Waivers bind to (advisory, package, version), never to the advisory alone.
+
+    `package`/`version` are the triage's subject: the yamux waiver's whole
+    justification is that *0.12.1* is linked-but-never-instantiated. Keying on
+    the id alone would let that reasoning silently cover a later version, or the
+    same advisory reached through a different crate — an exemption applying
+    somewhere nobody assessed. Instead the version bump makes the waiver stale
+    and the gate demands a fresh triage.
+    """
+    return (identifier, package, version)
+
+
+def load_waivers(path: Path) -> dict[tuple[str, str, str], dict]:
     if tomllib is None:
         rows = parse_waivers_toml_compat(path.read_text(encoding="utf-8"))
     else:
         with path.open("rb") as fh:
             rows = tomllib.load(fh).get("waiver", [])
     required = {"id", "package", "version", "reason", "blocked_by", "clears_when"}
+    waivers: dict[tuple[str, str, str], dict] = {}
     for row in rows:
         missing = required - set(row)
         if missing:
             raise SystemExit(f"ghsa-waivers.toml: waiver {row.get('id', '?')} is missing {sorted(missing)}")
-    return {row["id"]: row for row in rows}
+        key = waiver_key(row["id"], row["package"], row["version"])
+        if key in waivers:
+            raise SystemExit(f"ghsa-waivers.toml: duplicate waiver for {key}")
+        waivers[key] = row
+    return waivers
 
 
 def rustsec_primary_ids(vulns: list[dict]) -> set[str]:
@@ -138,14 +156,27 @@ def rustsec_covered(vuln: dict, primaries: set[str]) -> bool:
     return any(alias in primaries for alias in (vuln.get("aliases") or []))
 
 
+# osv-scanner v2 exit codes. 0 and 1 both mean "the lockfile was scanned" — 1
+# only adds "and something was found", which is this checker's input, not its
+# verdict. Every other code is a failure to scan (127 general error, 128 no
+# package sources), and MUST NOT be read as "nothing found": that would turn an
+# unreachable OSV API or a mistyped lockfile path into a silently green security
+# gate. Verified against v2.4.0: a vulnerable lockfile exits 1 with JSON; a
+# missing, empty, or package-less lockfile exits 127 with no stdout at all.
+SCAN_OK = frozenset({0, 1})
+
+
 def scan(scanner: str, lockfile: Path) -> dict:
     proc = subprocess.run(
         [scanner, "scan", "source", f"--lockfile={lockfile}", "--format=json"],
         capture_output=True,
         text=True,
     )
-    # osv-scanner exits non-zero purely because it found vulnerabilities; that is
-    # this checker's input, not its verdict. Only a missing/!JSON stdout is fatal.
+    if proc.returncode not in SCAN_OK:
+        sys.exit(
+            f"osv-scanner failed to scan {lockfile} (exit {proc.returncode}); refusing to\n"
+            f"treat a failed scan as a clean one:\n{proc.stderr.strip()[-2000:]}"
+        )
     if not proc.stdout.strip():
         sys.exit(f"osv-scanner produced no output for {lockfile}:\n{proc.stderr}")
     try:
@@ -191,18 +222,21 @@ def main() -> int:
     for lockfile in args.lockfile:
         findings.extend(ghsa_only_findings(scan(args.scanner, lockfile), lockfile))
 
-    unwaived = [f for f in findings if f["id"] not in waivers]
-    matched = {f["id"] for f in findings}
+    matched = {waiver_key(f["id"], f["package"], f["version"]) for f in findings}
+    unwaived = [f for f in findings if waiver_key(f["id"], f["package"], f["version"]) not in waivers]
     stale = sorted(set(waivers) - matched)
 
     print(f"GHSA-only findings (invisible to cargo-audit): {len(findings)}")
     for f in sorted(findings, key=lambda f: (f["package"], f["id"])):
-        state = "UNWAIVED" if f["id"] in {u["id"] for u in unwaived} else "waived"
+        key = waiver_key(f["id"], f["package"], f["version"])
+        state = "UNWAIVED" if key not in waivers else "waived"
         print(f"  [{state}] {f['package']} {f['version']} — {f['id']} {f['aliases']}")
-        if state == "waived":
-            print(f"             blocked_by: {waivers[f['id']]['blocked_by']}")
-            print(f"             clears_when: {waivers[f['id']]['clears_when']}")
+        if key in waivers:
+            print(f"             blocked_by: {waivers[key]['blocked_by']}")
+            print(f"             clears_when: {waivers[key]['clears_when']}")
 
+    # Report both classes before returning: a run that fixed one and introduced
+    # the other should show both, not hide the second behind another red run.
     if unwaived:
         print(
             "\nFAIL: GHSA-only advisories with no waiver. cargo-audit cannot see these —\n"
@@ -212,17 +246,19 @@ def main() -> int:
         )
         for f in unwaived:
             print(f"  {f['package']} {f['version']} — {f['id']} {f['aliases']}: {f['summary']}", file=sys.stderr)
-        return 1
 
     if stale:
         print(
-            "\nFAIL: waivers that match no current finding. The advisory they excuse is\n"
-            "gone (dependency moved, or the advisory was withdrawn/re-keyed) — delete\n"
-            "the entry so the exemption cannot outlive its justification.",
+            "\nFAIL: waivers that match no current finding. Whatever they excuse is gone\n"
+            "or moved — the dependency changed version, the advisory was withdrawn or\n"
+            "re-keyed. Delete the entry, or re-triage it against what is there now, so\n"
+            "the exemption cannot outlive its justification.",
             file=sys.stderr,
         )
-        for wid in stale:
-            print(f"  {wid} ({waivers[wid]['package']} {waivers[wid]['version']})", file=sys.stderr)
+        for key in stale:
+            print(f"  {key[0]} ({key[1]} {key[2]})", file=sys.stderr)
+
+    if unwaived or stale:
         return 1
 
     print("\nOK: every GHSA-only advisory is triaged and every waiver still applies.")
