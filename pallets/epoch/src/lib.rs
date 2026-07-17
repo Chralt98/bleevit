@@ -24,6 +24,7 @@ mod tests;
 use core::marker::PhantomData;
 use frame_support::pallet_prelude::{DispatchError, DispatchResult};
 use futarchy_primitives::{
+    keeper::{CrankClass, KeeperRebateSink},
     Balance, BlockNumber, EpochId, FixedU64, MarketId, MarketSet, MetricSpecVersion, Proposal,
     ProposalClass, ProposalId, RejectReason, RuntimeVersionConstraint, H256,
 };
@@ -215,6 +216,8 @@ pub mod pallet {
         type ExecutionGuard: ExecutionGuardAccess;
         type Welfare: WelfareSettlement;
         type Ledger: LedgerResolution;
+        /// Fail-soft keeper rebate sink (08 §6). It must never affect a crank.
+        type KeeperRebate: KeeperRebateSink<Self::AccountId>;
         type GuardianOrigin: EnsureOrigin<Self::RuntimeOrigin>;
         type ExecutionGuardOrigin: EnsureOrigin<Self::RuntimeOrigin>;
         type VoidAuthority: EnsureOrigin<Self::RuntimeOrigin>;
@@ -588,12 +591,20 @@ pub mod pallet {
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::tick(pids.len() as u32))]
         pub fn tick(origin: OriginFor<T>, pids: TickBatch) -> DispatchResult {
-            let _ = ensure_signed(origin)?;
+            let who = ensure_signed(origin)?;
             let params = Self::live_params()?;
             let now = Self::now();
-            Self::mutate(|state, ledger| {
+            let mut advanced = false;
+            let result = Self::mutate(|state, ledger| {
                 state.horizon_k = params.horizon_k;
                 state.epoch.next_length = params.epoch_length;
+                let clock_before = (
+                    state.epoch.index,
+                    state.epoch.phase,
+                    state.epoch.phase_start_block,
+                    state.epoch.epoch_start_block,
+                    state.epoch.length,
+                );
                 Self::sync_clock(state, now)?;
                 for pid in pids {
                     let proposal = state.proposal_view(pid)?.clone();
@@ -638,6 +649,7 @@ pub mod pallet {
                         proposal.state,
                         ProposalState::Queued | ProposalState::FailedExecuted
                     );
+                    let events_before = state.events.len();
                     state.tick(
                         CoreOrigin::Keeper,
                         ledger,
@@ -672,6 +684,11 @@ pub mod pallet {
                         // T9 and therefore have no QualificationPins entry.
                         Self::release_qualification_pin(pid);
                     }
+                    advanced |= state
+                        .events
+                        .iter()
+                        .skip(events_before)
+                        .any(|event| !matches!(event, CoreEvent::NoOp));
                     let guard_owned_after = matches!(
                         state_after,
                         ProposalState::Queued | ProposalState::FailedExecuted
@@ -691,17 +708,31 @@ pub mod pallet {
                         })?;
                     }
                 }
+                advanced |= clock_before
+                    != (
+                        state.epoch.index,
+                        state.epoch.phase,
+                        state.epoch.phase_start_block,
+                        state.epoch.epoch_start_block,
+                        state.epoch.length,
+                    );
                 Ok(())
-            })
+            });
+            if result.is_ok() && advanced {
+                // B5 recalibrates this weight for the rebate sink's treasury writes.
+                T::KeeperRebate::rebate(&who, CrankClass::DecisionCritical);
+            }
+            result
         }
 
         #[pallet::call_index(3)]
         #[pallet::weight(T::WeightInfo::decide())]
         pub fn decide(origin: OriginFor<T>, pid: ProposalId) -> DispatchResult {
-            let _ = ensure_signed(origin)?;
+            let who = ensure_signed(origin)?;
             let params = Self::live_params()?;
             let now = Self::now();
-            frame_support::storage::with_storage_layer(|| {
+            let mut decision_advanced = false;
+            let result = frame_support::storage::with_storage_layer(|| {
                 let mut state = Self::load();
                 state.dead_man_armed = T::Guardian::dead_man_engaged();
                 state.ledger_frozen = T::Constitution::ledger_frozen();
@@ -713,6 +744,8 @@ pub mod pallet {
                     .proposal_view(pid)
                     .map_err(Self::map_core_error)?
                     .clone();
+                let decision_was_recorded = proposal.decision.is_some();
+                let extension_was_recorded = proposal.extended;
                 let markets = proposal.markets.ok_or(Error::<T>::BadDecisionInput)?;
                 let accept_full = T::Market::twap_full(markets.accept).unwrap_or(FixedU64(0));
                 let reject_full = T::Market::twap_full(markets.reject).unwrap_or(FixedU64(0));
@@ -815,6 +848,10 @@ pub mod pallet {
                         &params,
                     )
                     .map_err(Self::map_core_error)?;
+                decision_advanced = state.proposal_view(pid).is_ok_and(|recorded| {
+                    (!decision_was_recorded && recorded.decision.is_some())
+                        || (!extension_was_recorded && recorded.extended)
+                });
                 if outcome == DecisionOutcome::Adopt {
                     let queued = state.proposal_view(pid).map_err(Self::map_core_error)?;
                     let maturity = queued.maturity.ok_or(Error::<T>::BadState)?;
@@ -838,20 +875,25 @@ pub mod pallet {
                     Self::release_qualification_pin(pid);
                 }
                 Self::persist(state)
-            })
+            });
+            if result.is_ok() && decision_advanced {
+                // B5 recalibrates this weight for the rebate sink's treasury writes.
+                T::KeeperRebate::rebate(&who, CrankClass::DecisionCritical);
+            }
+            result
         }
 
         #[pallet::call_index(4)]
         #[pallet::weight(T::WeightInfo::settle_cohort(*batch))]
         pub fn settle_cohort(origin: OriginFor<T>, epoch: EpochId, batch: u32) -> DispatchResult {
-            let _ = ensure_signed(origin)?;
+            let who = ensure_signed(origin)?;
             ensure!(
                 batch > 0 && batch <= futarchy_primitives::kernel::SETTLE_COHORT_MAX_ITEMS,
                 Error::<T>::BatchTooLarge
             );
             let params = Self::live_params()?;
             let now = Self::now();
-            frame_support::storage::with_storage_layer(|| {
+            let result = frame_support::storage::with_storage_layer(|| {
                 let baseline =
                     T::Market::baseline_market(epoch).ok_or(Error::<T>::BadDecisionInput)?;
                 let baseline_twap =
@@ -883,7 +925,12 @@ pub mod pallet {
                     }
                 }
                 Self::persist(state)
-            })
+            });
+            if result.is_ok() {
+                // B5 recalibrates this weight for the rebate sink's treasury writes.
+                T::KeeperRebate::rebate(&who, CrankClass::DecisionCritical);
+            }
+            result
         }
 
         /// META/ConstitutionalValues refresh of the next-boundary epoch length.

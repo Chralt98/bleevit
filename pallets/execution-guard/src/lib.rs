@@ -214,6 +214,7 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use futarchy_primitives::{
+        keeper::{CrankClass, KeeperRebateSink},
         DispatchOutcomeCode, ExecutionRecord, RejectReason, INTEGRATION_CONTRACT_VERSION,
     };
     use parity_scale_codec::{Compact, Decode, DecodeWithMemTracking, Encode};
@@ -238,6 +239,8 @@ pub mod pallet {
         type ReleaseChannel: ReleaseChannelWriter;
         type RatifyOrigin: EnsureOrigin<Self::RuntimeOrigin>;
         type Dispatcher: BatchDispatcher<Self::RuntimeCall>;
+        /// Fail-soft keeper rebate sink (08 §6). It must never affect a crank.
+        type KeeperRebate: KeeperRebateSink<Self::AccountId>;
         /// Runtime-assembly bound for candidate Wasm. This is intentionally
         /// distinct from the 64 KiB proposal-call batch bound.
         #[pallet::constant]
@@ -511,10 +514,16 @@ pub mod pallet {
         #[pallet::weight(Pallet::<T>::execute_precharge())]
         pub fn execute(origin: OriginFor<T>, pid: ProposalId) -> DispatchResultWithPostInfo {
             let checks_only = T::WeightInfo::execute(MAX_CALLS_BOUND);
-            let _ = ensure_signed(origin)
+            let who = ensure_signed(origin)
                 .map_err(|error| Self::execute_error_with_weight(error.into(), checks_only))?;
             match with_storage_layer(|| Self::do_execute(pid)) {
                 Ok(charge) => {
+                    // B9 keeper rebate: the crank advanced state (a successful
+                    // execute always consumes the queue entry). Fail-soft — the
+                    // rebate can never affect the crank result (08 §6.3).
+                    if !Queue::<T>::contains_key(pid) {
+                        T::KeeperRebate::rebate(&who, CrankClass::General);
+                    }
                     let actual = Self::execute_actual_weight(charge);
                     debug_assert!(actual.all_lte(Self::execute_precharge()));
                     Ok(PostDispatchInfo {
@@ -547,8 +556,12 @@ pub mod pallet {
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::expire_failed_execution())]
         pub fn expire_failed_execution(origin: OriginFor<T>, pid: ProposalId) -> DispatchResult {
-            let _ = ensure_signed(origin)?;
-            with_storage_layer(|| Self::do_expire_failed_execution(pid))
+            let who = ensure_signed(origin)?;
+            let result = with_storage_layer(|| Self::do_expire_failed_execution(pid));
+            if result.is_ok() && !Queue::<T>::contains_key(pid) {
+                T::KeeperRebate::rebate(&who, CrankClass::General);
+            }
+            result
         }
 
         /// Sole ratify-track governance call (06 §2.2/§3.2).
@@ -568,8 +581,12 @@ pub mod pallet {
         #[pallet::call_index(4)]
         #[pallet::weight(T::WeightInfo::reject_stale())]
         pub fn reject_stale(origin: OriginFor<T>, pid: ProposalId) -> DispatchResult {
-            let _ = ensure_signed(origin)?;
-            with_storage_layer(|| Self::do_reject_stale(pid))
+            let who = ensure_signed(origin)?;
+            let result = with_storage_layer(|| Self::do_reject_stale(pid));
+            if result.is_ok() && !Queue::<T>::contains_key(pid) {
+                T::KeeperRebate::rebate(&who, CrankClass::General);
+            }
+            result
         }
     }
 

@@ -9,8 +9,10 @@ use frame_support::{
     dispatch::DispatchClass,
     parameter_types,
     traits::{
+        fungibles::{Inspect, Mutate},
+        tokens::Preservation,
         ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, EqualPrivilegeOnly,
-        InstanceFilter, Nothing, QueryPreimage, TransformOrigin, VariantCountOf,
+        InstanceFilter, Nothing, QueryPreimage, TransformOrigin, VariantCountOf, WithdrawReasons,
     },
     weights::{
         constants::{
@@ -45,10 +47,10 @@ use sp_runtime::{
 use crate::Welfare;
 use crate::{
     AccountId, AssetId, Aura, Balance, Balances, Block, CollatorSelection, ConditionalLedger,
-    ConsensusHook, Epoch, ExecutionGuard, ForeignAssets, Hash, MessageQueue, Migrations, Nonce,
-    PalletInfo, ParachainSystem, PolkadotXcm, Preimage, Referenda, Runtime, RuntimeCall,
-    RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask, Scheduler,
-    Session, SessionKeys, System, XcmpQueue, USDC_ASSET_ID, VERSION,
+    ConsensusHook, Epoch, ExecutionGuard, ForeignAssets, FutarchyTreasury, Hash, MessageQueue,
+    Migrations, Nonce, PalletInfo, ParachainSystem, PolkadotXcm, Preimage, Referenda, Runtime,
+    RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
+    Scheduler, Session, SessionKeys, System, XcmpQueue, USDC_ASSET_ID, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -127,6 +129,28 @@ impl pallet_balances::Config for Runtime {
     type FreezeIdentifier = RuntimeFreezeReason;
     type MaxFreezes = VariantCountOf<RuntimeFreezeReason>;
     type DoneSlashHandler = ();
+}
+
+parameter_types! {
+    pub const MinVestedTransfer: Balance = currency::VIT;
+    pub UnvestedFundsAllowedWithdrawReasons: WithdrawReasons =
+        WithdrawReasons::TRANSACTION_PAYMENT;
+}
+
+impl pallet_vesting::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type BlockNumberToBalance = sp_runtime::traits::ConvertInto;
+    type MinVestedTransfer = MinVestedTransfer;
+    type WeightInfo = pallet_vesting::weights::SubstrateWeight<Runtime>;
+    // The pallet applies the complement when installing its legacy balance lock.
+    // The fungible fee adapter ignores these lock reasons, so in practice unvested
+    // VIT cannot pay fees despite TRANSACTION_PAYMENT being the allowed reason.
+    type UnvestedFundsAllowedWithdrawReasons = UnvestedFundsAllowedWithdrawReasons;
+    // Schedules use para-blocks at the nominal 6 s cadence. Slower production can
+    // therefore unlock later, never earlier, which is conservative under R-7.
+    type BlockNumberProvider = frame_system::Pallet<Runtime>;
+    const MAX_VESTING_SCHEDULES: u32 = 8;
 }
 
 parameter_types! {
@@ -931,6 +955,7 @@ impl frame_support::traits::Get<u32> for LedgerArchiveDelay {
 parameter_types! {
     pub const LedgerPalletId: PalletId = PalletId(*b"bl/ledgr");
     pub const MarketPalletId: PalletId = PalletId(*b"bl/mrket");
+    pub const TreasuryPalletId: PalletId = PalletId(*b"bl/trsry");
     pub const IncidentPalletId: PalletId = PalletId(*b"bl/reg/i");
     pub const MilestonePalletId: PalletId = PalletId(*b"bl/reg/m");
     pub const EpochPalletId: PalletId = PalletId(*b"bl/epoch");
@@ -962,6 +987,15 @@ pub fn epoch_account() -> AccountId {
 }
 pub fn execution_guard_account() -> AccountId {
     ExecutionGuardPalletId::get().into_account_truncating()
+}
+/// 08 §1.1 KEEPER USDC custody pot, derived under the canonical `bl/trsry`
+/// pallet id just like the genesis treasury/community/incentive pots.
+pub fn treasury_keeper_account() -> AccountId {
+    TreasuryPalletId::get().into_sub_account_truncating(*b"KEEPER__")
+}
+/// 08 §1.1 ORACLE USDC custody pot.
+pub fn treasury_oracle_account() -> AccountId {
+    TreasuryPalletId::get().into_sub_account_truncating(*b"ORACLE__")
 }
 
 pub struct EnsureMarketAccount;
@@ -1055,6 +1089,7 @@ impl pallet_conditional_ledger::Config for Runtime {
     type ProtocolAccounts = ProtocolAccounts;
     type InsuranceAccount = InsuranceAccount;
     type PalletId = LedgerPalletId;
+    type KeeperRebate = FutarchyTreasury;
     type WeightInfo = crate::weights::pallet_conditional_ledger::WeightInfo<Runtime>;
 }
 impl pallet_market::Config for Runtime {
@@ -1065,6 +1100,10 @@ impl pallet_market::Config for Runtime {
     type MarketAdmin = EnsureEpochAccount;
     type ArchiveDelay = LedgerArchiveDelay;
     type PalletId = MarketPalletId;
+    type KeeperRebate = FutarchyTreasury;
+    // Pending A8 decision-window lookup: classify unknown windows as General,
+    // preserving the reserved tranche until the real adapter lands.
+    type InDecisionWindow = Nothing;
 }
 
 pub struct WelfareParams;
@@ -1205,6 +1244,7 @@ impl pallet_welfare::Config for Runtime {
     type MetricInputs = RuntimeMetricInputs;
     type Ledger = WelfareLedger;
     type CurrentEpoch = LiveEpochClock;
+    type KeeperRebate = FutarchyTreasury;
     type WeightInfo = crate::weights::pallet_welfare::WeightInfo<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
     type BenchmarkHelper = RuntimeBenchmarkHelper;
@@ -1218,7 +1258,7 @@ fn epoch_end(epoch: EpochId) -> Option<u32> {
     }
     // There is no epoch-indexed, bounded historical schedule source. Scanning
     // retained proposal schedules would make this signed path unbounded, so a
-    // past/future epoch has no admissible reporting window (SQ-107).
+    // past/future epoch has no admissible reporting window (SQ-132).
     None
 }
 
@@ -1301,6 +1341,13 @@ impl pallet_oracle::ReportingContext for RuntimeReporting {
 impl pallet_oracle::Config for Runtime {
     type AdjudicationOrigin = pallet_origins::EnsureOracleResolution;
     type Reporting = RuntimeReporting;
+    // B4 pending probe-dispatch seam: `()` sends nothing, so every probe times
+    // out fail-static (07 §8, I-24 — absence is never healthy). Swapped for
+    // `bleavit_xcm::probe::XcmProbeDispatcher` when the stub XCM config below
+    // (`xcm_config`: Barrier/AssetTransactor/Trader/XcmSender = ()) is replaced
+    // by the bleavit-xcm components (the B4 runtime-integration follow-up).
+    type ProbeDispatch = ();
+    type KeeperRebate = FutarchyTreasury;
     type MaxRoundCloseBatch = ConstU32<{ kernel::TICK_BATCH }>;
     type WeightInfo = crate::weights::pallet_oracle::WeightInfo<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
@@ -1359,7 +1406,7 @@ impl pallet_registry::EpochContext for RuntimeRegistryEpoch {
     fn milestone_target(_: EpochId) -> u32 {
         #[cfg(feature = "runtime-benchmarks")]
         {
-            // The production source is absent (SQ-107); benchmark Wasm supplies
+            // The production source is absent (SQ-132); benchmark Wasm supplies
             // a non-zero frozen target so Milestone aggregation takes its full
             // division/clamp path.
             return registry_core::MILESTONE_TARGET_POINTS;
@@ -1385,6 +1432,7 @@ macro_rules! registry_config {
             type ResolutionAuthority = pallet_origins::EnsureOracleResolution;
             type InsuranceAccount = InsuranceAccount;
             type PalletId = $id;
+            type KeeperRebate = FutarchyTreasury;
             // SQ-76: registry archive reuses the live ledger archive key.
             type ArchiveDelay = LedgerArchiveDelay;
             type MaxFilingsPerEpoch = ConstU32<{ kernel::REG_MAX_FILINGS_EPOCH }>;
@@ -1417,11 +1465,75 @@ impl pallet_futarchy_treasury::TreasuryParams for TreasuryParams {
     fn inflation_cap_bps() -> u32 {
         u32::from(percent_param(b"iss.inflation")) * 100
     }
+    fn keeper_budget_epoch() -> Balance {
+        balance_param(b"keeper.budget")
+    }
+    fn keeper_rebate() -> Balance {
+        // 13 §1 marks this as a benchmark-time formula, so genesis Params
+        // deliberately omits it. Unlike the other adapters, do not consult
+        // `genesis_params()` as a fallback: absent/wrong-kind means zero until
+        // B5 installs a calibrated raw row (conservative no-outflow default).
+        let key = pallet_constitution::key16(b"keeper.rebate");
+        match live_param(key) {
+            Some(pallet_constitution::ParamValue::Balance(value)) => value,
+            _ => 0,
+        }
+    }
+}
+
+pub struct TreasuryRebatePayout;
+impl pallet_futarchy_treasury::RebatePayout<AccountId> for TreasuryRebatePayout {
+    fn pay(
+        who: &AccountId,
+        amount: Balance,
+        line: pallet_futarchy_treasury::PayoutLine,
+    ) -> frame_support::pallet_prelude::DispatchResult {
+        let source = match line {
+            pallet_futarchy_treasury::PayoutLine::Keeper => treasury_keeper_account(),
+            pallet_futarchy_treasury::PayoutLine::Oracle => treasury_oracle_account(),
+        };
+        <ForeignAssets as Mutate<AccountId>>::transfer(
+            USDC_ASSET_ID,
+            &source,
+            who,
+            amount,
+            Preservation::Preserve,
+        )
+        .map(|_| ())
+    }
+
+    fn pot_balance(line: pallet_futarchy_treasury::PayoutLine) -> Balance {
+        let source = match line {
+            pallet_futarchy_treasury::PayoutLine::Keeper => treasury_keeper_account(),
+            pallet_futarchy_treasury::PayoutLine::Oracle => treasury_oracle_account(),
+        };
+        <ForeignAssets as Inspect<AccountId>>::balance(USDC_ASSET_ID, &source)
+    }
+}
+/// B4 pending renewal-dispatch seam: fail-closed (G-1) — every
+/// `execute_coretime_renewal` rolls back until the real
+/// `bleavit_xcm::coretime::XcmRenewalDispatcher` is wired with the stub XCM
+/// config swap (09 §4: an unwireable transfer must not consume the quote or
+/// mark the period funded; the keeper simply retries once wired).
+pub struct PendingRenewalDispatch;
+impl pallet_futarchy_treasury::RenewalDispatch for PendingRenewalDispatch {
+    fn dispatch_renewal(
+        _period_index: u32,
+        _amount: Balance,
+    ) -> frame_support::dispatch::DispatchResult {
+        Err(sp_runtime::DispatchError::Other(
+            "coretime renewal XCM dispatch not wired yet (B4 runtime integration)",
+        ))
+    }
 }
 impl pallet_futarchy_treasury::Config for Runtime {
     type TreasuryOrigin = pallet_origins::EnsureFutarchyTreasury;
     type Params = TreasuryParams;
+    // The A8 runtime wiring landed: the live epoch clock drives the keeper
+    // meter's per-epoch reset (08 §6.3).
     type CurrentEpoch = LiveEpochClock;
+    type RenewalDispatch = PendingRenewalDispatch;
+    type RebatePayout = TreasuryRebatePayout;
     type WeightInfo = crate::weights::pallet_futarchy_treasury::WeightInfo<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
     type BenchmarkHelper = RuntimeBenchmarkHelper;
@@ -2049,6 +2161,8 @@ impl pallet_epoch::Config for Runtime {
     type ExecutionGuardOrigin = EnsureExecutionGuardAccount;
     type VoidAuthority = pallet_origins::EnsureEmergencyPlaybook;
     type ConstitutionalValuesOrigin = pallet_origins::EnsureConstitutionalValues;
+    // B9 keeper rebates ride the treasury meter (08 §6.3).
+    type KeeperRebate = FutarchyTreasury;
     type WeightInfo = crate::weights::pallet_epoch::WeightInfo<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
     type BenchmarkHelper = RuntimeBenchmarkHelper;
@@ -2362,6 +2476,8 @@ impl pallet_execution_guard::Config for Runtime {
     type RatifyOrigin = pallet_origins::EnsureConstitutionalValues;
     type Dispatcher = crate::classifier::RuntimeDispatcher;
     type MaxRuntimeCodeBytes = ConstU32<2_097_152>;
+    // B9 keeper rebates ride the treasury meter (08 §6.3).
+    type KeeperRebate = FutarchyTreasury;
     type WeightInfo = crate::weights::pallet_execution_guard::WeightInfo<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
     type BenchmarkHelper = RuntimeBenchmarkHelper;

@@ -3,12 +3,12 @@ use crate::mock::ExecutionGuard as GuardPallet;
 use crate::mock::*;
 use crate::pallet::PendingUpgrade as PendingUpgradeStorage;
 use frame_support::{
-    assert_ok,
+    assert_noop, assert_ok,
     dispatch::{DispatchErrorWithPostInfo, GetDispatchInfo, Pays, PostDispatchInfo},
     traits::Hooks,
     weights::Weight,
 };
-use futarchy_primitives::{DispatchOutcomeCode, RejectReason};
+use futarchy_primitives::{keeper::CrankClass, DispatchOutcomeCode, RejectReason};
 use parity_scale_codec::Encode;
 use sp_runtime::{traits::Dispatchable, DispatchError};
 
@@ -174,6 +174,45 @@ fn post_dispatch_failure_still_charges_consumed_inner_weight() {
         assert_eq!(error.post_info.actual_weight, Some(expected));
         assert!(expected.all_lte(GuardPallet::execute_precharge()));
         assert!(Queue::<Test>::contains_key(1));
+    });
+}
+
+#[test]
+fn keeper_rebate_is_exactly_once_for_terminal_execute_and_zero_for_error() {
+    new_test_ext().execute_with(|| {
+        setup_param(1, 41);
+        RecordKeeperRebates::set(true);
+        assert_ok!(GuardPallet::execute(RuntimeOrigin::signed(keeper()), 1));
+        assert_eq!(KeeperRebates::get(), vec![(keeper(), CrankClass::General)]);
+
+        // A terminal item is no longer executable and cannot earn twice.
+        assert_noop!(
+            GuardPallet::execute(RuntimeOrigin::signed(keeper()), 1),
+            Error::<Test>::NotFound
+        );
+        assert_eq!(KeeperRebates::get(), vec![(keeper(), CrankClass::General)]);
+    });
+}
+
+#[test]
+fn prequeue_reap_never_rebates_the_epoch_authority_protocol_account() {
+    new_test_ext().execute_with(|| {
+        commit_payload(1, [1; 32]);
+        assert_ok!(GuardPallet::ratify(ratify_origin(), 1, 88));
+        RecordKeeperRebates::set(true);
+
+        assert_ok!(GuardPallet::reap_prequeue_ratification(
+            RuntimeOrigin::signed(epoch_account()),
+            1,
+        ));
+        assert!(KeeperRebates::get().is_empty());
+
+        // The cleanup API is idempotent; its successful no-op earns nothing.
+        assert_ok!(GuardPallet::reap_prequeue_ratification(
+            RuntimeOrigin::signed(epoch_account()),
+            1,
+        ));
+        assert!(KeeperRebates::get().is_empty());
     });
 }
 
@@ -1265,6 +1304,7 @@ fn g1_mid_batch_failure_rolls_back_nested_dispatch_but_persists_t18() {
             vec![CallDomain::Param],
         ));
         run_to_maturity(1);
+        RecordKeeperRebates::set(true);
         assert_ok!(GuardPallet::execute(RuntimeOrigin::signed(keeper()), 1));
 
         assert_eq!(pallet_test_dispatch::Value::<Test>::get(), 0);
@@ -1279,6 +1319,7 @@ fn g1_mid_batch_failure_rolls_back_nested_dispatch_but_persists_t18() {
             last_guard_event(),
             Some(Event::ExecutionFailed { pid: 1, .. })
         ));
+        assert!(KeeperRebates::get().is_empty());
     });
 }
 
@@ -1357,11 +1398,13 @@ fn t22_expiry_is_closed_during_retry_window_and_terminal_after_it() {
         let failed_at = Queue::<Test>::get(1)
             .and_then(|queued| queued.failed_at)
             .expect("T18");
+        RecordKeeperRebates::set(true);
         System::set_block_number(failed_at.saturating_add(RETRY_WINDOW).into());
         assert_noop!(
             GuardPallet::expire_failed_execution(RuntimeOrigin::signed(keeper()), 1),
             Error::<Test>::RetryWindowOpen
         );
+        assert!(KeeperRebates::get().is_empty());
         System::set_block_number(
             failed_at
                 .saturating_add(RETRY_WINDOW)
@@ -1379,6 +1422,12 @@ fn t22_expiry_is_closed_during_retry_window_and_terminal_after_it() {
             epoch_calls(),
             vec![EpochCall::Failed(1), EpochCall::RetryExhausted(1)]
         );
+        assert_eq!(KeeperRebates::get(), vec![(keeper(), CrankClass::General)]);
+        assert_noop!(
+            GuardPallet::expire_failed_execution(RuntimeOrigin::signed(keeper()), 1),
+            Error::<Test>::NotFound
+        );
+        assert_eq!(KeeperRebates::get(), vec![(keeper(), CrankClass::General)]);
         assert_ok!(GuardPallet::do_try_state());
     });
 }
@@ -1387,10 +1436,12 @@ fn t22_expiry_is_closed_during_retry_window_and_terminal_after_it() {
 fn reject_stale_is_permissionless_deterministic_and_terminal() {
     new_test_ext().execute_with(|| {
         setup_param(1, 1);
+        RecordKeeperRebates::set(true);
         assert_noop!(
             GuardPallet::reject_stale(RuntimeOrigin::signed(keeper()), 1),
             Error::<Test>::StaleQueue
         );
+        assert!(KeeperRebates::get().is_empty());
         CurrentSpecName::<Test>::put(spec(2));
         assert_ok!(GuardPallet::reject_stale(
             RuntimeOrigin::signed(keeper()),
@@ -1409,6 +1460,12 @@ fn reject_stale_is_permissionless_deterministic_and_terminal() {
                 reason: RejectReason::StaleQueue
             })
         ));
+        assert_eq!(KeeperRebates::get(), vec![(keeper(), CrankClass::General)]);
+        assert_noop!(
+            GuardPallet::reject_stale(RuntimeOrigin::signed(keeper()), 1),
+            Error::<Test>::NotFound
+        );
+        assert_eq!(KeeperRebates::get(), vec![(keeper(), CrankClass::General)]);
     });
 }
 
