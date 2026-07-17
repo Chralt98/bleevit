@@ -12,7 +12,7 @@ properties="tokenSymbol=VIT,tokenDecimals=12,ss58Format=7777"
 cargo build -p bleavit-runtime --release --features substrate-wasm-builder --locked
 
 if [[ ! -x "$builder" ]]; then
-  cargo install staging-chain-spec-builder --version 17.0.0 --locked --root target/tools
+  cargo install staging-chain-spec-builder --version 19.0.0 --locked --root target/tools
 fi
 
 mkdir -p "$out"
