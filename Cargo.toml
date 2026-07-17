@@ -28,6 +28,7 @@ members = [
   "pallets/futarchy-treasury",
   "pallets/guardian",
   "pallets/attestor",
+  "pallets/inflow-caps",
   "pallets/welfare",
   "pallets/epoch",
   "pallets/execution-guard",

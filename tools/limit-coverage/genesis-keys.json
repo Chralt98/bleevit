@@ -85,5 +85,9 @@
   "welfare.wA",
   "welfare.wP",
   "wt.quorum",
-  "wt.stake"
+  "wt.stake",
+  "xcm.dot_per_mb",
+  "xcm.dot_per_sec",
+  "xcm.usdc_per_mb",
+  "xcm.usdc_per_sec"
 ]

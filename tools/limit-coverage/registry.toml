@@ -666,14 +666,14 @@ reason = "13 §1 / rule 7; 15 §4.6: covered by the generated per-key set_param/
 key = "phase3.tvl_cap"
 class = "unwired"
 genesis = true
-reason = "13 §1 / SQ-110: production AssetTransactor is (), so no deployed XCM inflow reaches the cap adapter. Library-level bleavit-xcm coverage exists and re-arms as dispatch-limit when B10 wires the transactor."
+reason = "13 §1 / SQ-110/SQ-111 (resolved): the pallet-inflow-caps meter and PhaseInflowCaps adapter are live (B4-residual), but production AssetTransactor is still (), so no deployed XCM inflow reaches the cap adapter yet. Library-level bleavit-xcm + pallet coverage exists; re-arms as dispatch-limit when the post-SQ-101 B4 composition wires CappedInflows (ledger split leg: SQ-105)."
 owner = "B10"
 
 [[entry]]
 key = "phase3.dep_cap"
 class = "unwired"
 genesis = true
-reason = "13 §1 / SQ-111: production AssetTransactor is (), so no deployed XCM inflow reaches the per-account cap adapter. Library-level bleavit-xcm coverage exists and re-arms as dispatch-limit when B10 wires the transactor."
+reason = "13 §1 / SQ-110/SQ-111 (resolved): the per-account meter lives in pallet-inflow-caps with try-state + refusal tests (B4-residual), but production AssetTransactor is still (), so no deployed XCM inflow reaches it yet. Re-arms as dispatch-limit when the post-SQ-101 B4 composition wires CappedInflows."
 owner = "B10"
 
 [[entry]]
@@ -1028,3 +1028,27 @@ key = "Treasury coretime obligations"
 class = "unwired"
 reason = "13 §4 / A9/B4: bounded quote/funded-period helpers exist, but the production runtime still has no Coretime quote-note/prune integration."
 owner = "B10"
+
+[[entry]]
+key = "xcm.dot_per_sec"
+class = "param-bounds"
+genesis = true
+reason = "13 §1 / 09 §6.1: governed XCM trader rate (ref-time dimension); amendment bounds covered by the generated per-key set_param/amend_registry suite. Not a dispatch limit — the consumer is the GovernedWeightTrader's payer-adverse pricing, tested in bleavit-xcm and the runtime trader tests; the inbound pass path composes after SQ-101 (B4 composition follow-up)."
+
+[[entry]]
+key = "xcm.dot_per_mb"
+class = "param-bounds"
+genesis = true
+reason = "13 §1 / 09 §6.1: governed XCM trader rate (proof-size dimension); amendment bounds covered by the generated per-key suite. Not a dispatch limit — see xcm.dot_per_sec."
+
+[[entry]]
+key = "xcm.usdc_per_sec"
+class = "param-bounds"
+genesis = true
+reason = "13 §1 / 09 §6.1: governed XCM trader rate (ref-time dimension); amendment bounds covered by the generated per-key suite. Not a dispatch limit — see xcm.dot_per_sec."
+
+[[entry]]
+key = "xcm.usdc_per_mb"
+class = "param-bounds"
+genesis = true
+reason = "13 §1 / 09 §6.1: governed XCM trader rate (proof-size dimension); amendment bounds covered by the generated per-key suite. Not a dispatch limit — see xcm.dot_per_sec."
