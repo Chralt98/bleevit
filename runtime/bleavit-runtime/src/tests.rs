@@ -893,6 +893,66 @@ fn enqueue_treasury_call(
     Some(maturity)
 }
 
+/// Enqueue a Treasury execution from PRE-ENCODED preimage bytes (skipping the
+/// main-thread `encode()` of `enqueue_treasury_call`, which would recurse for a
+/// deeply-nested payload). Treasury needs no ratification/attestation, so
+/// `execute` reaches `decode_batch` after only the maturity check.
+fn enqueue_treasury_bytes(
+    pid: futarchy_primitives::ProposalId,
+    bytes: Vec<u8>,
+) -> Option<BlockNumber> {
+    let payload_len = u32::try_from(bytes.len()).ok()?;
+    let payload_hash = <Preimage as StorePreimage>::note(bytes.into()).ok()?;
+    let now = System::block_number();
+    let maturity = now.checked_add(
+        <crate::configs::ExecutionParams as pallet_execution_guard::Params>::exec_timelock(
+            ProposalClass::Treasury,
+        ),
+    )?;
+    let grace_end = maturity.checked_add(
+        <crate::configs::ExecutionParams as pallet_execution_guard::Params>::exec_grace(
+            ProposalClass::Treasury,
+        ),
+    )?;
+    let version_constraint = pallet_execution_guard::CurrentSpecName::<Runtime>::get()?;
+    let declared_domains = pallet_execution_guard::pallet::StoredDomains::try_from(vec![
+        pallet_execution_guard::CallDomain::Treasury,
+    ])
+    .ok()?;
+    seed_queued_epoch_proposal(
+        pid,
+        ProposalClass::Treasury,
+        payload_hash,
+        payload_len,
+        maturity,
+        grace_end,
+        version_constraint.clone(),
+    )
+    .ok()?;
+    assert_ok!(ExecutionGuard::enqueue(
+        RuntimeOrigin::signed(crate::configs::epoch_account()),
+        pallet_execution_guard::pallet::StoredQueuedExecution {
+            pid,
+            payload_hash: payload_hash.0,
+            payload_len,
+            class: ProposalClass::Treasury,
+            maturity,
+            grace_end,
+            version_constraint,
+            meters_declared: Default::default(),
+            ratify_ref: None,
+            ratification_passed: false,
+            attestation_id: None,
+            pre_upgrade_checkpoint: None,
+            cancelled: false,
+            declared_domains,
+            failed_at: None,
+        },
+        false,
+    ));
+    Some(maturity)
+}
+
 pub(crate) fn seed_parachain_upgrade_boundary(candidate_len: usize) {
     let max_code_size = u32::try_from(candidate_len).map_or(u32::MAX, |len| len.saturating_add(1));
     cumulus_pallet_parachain_system::ValidationData::<Runtime>::put(
@@ -2715,6 +2775,84 @@ fn nesting_budget_accepts_the_limit_and_fails_closed_beyond_it() {
                 frame_system::Error::<Runtime>::CallFiltered
             );
         }
+    });
+}
+
+/// Decode-bomb hardening (15 §4.5, SQ-225): the execution guard decodes
+/// preimage-sourced batches (`decode_batch`) whose element type `RuntimeCall`
+/// nests recursively. Without a depth limit an adversarial hash-committed
+/// preimage of one deeply-nested call (≤ `MAX_BYTES`) would recurse in `Decode`
+/// until the wasm stack-height trap / native stack abort — a G-1 violation in
+/// audit-scope-A code. `MAX_PAYLOAD_DECODE_DEPTH` bounds the decode so an
+/// over-deep batch fails closed to a decode error rather than trapping, while a
+/// spec-legal shallow batch still decodes.
+#[test]
+fn deep_preimage_batch_decode_fails_closed_at_the_depth_limit() {
+    use parity_scale_codec::DecodeLimit;
+
+    // Construct + encode the over-deep call on a large-stack helper thread:
+    // building/encoding it recurses, but the depth-limited decode under test
+    // does not (it bails at the limit before recursing that far).
+    let deep_bytes = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let mut nested = remark();
+            for _ in 0..(kernel::MAX_PAYLOAD_DECODE_DEPTH as usize + 200) {
+                nested = RuntimeCall::Utility(pallet_utility::Call::batch {
+                    calls: vec![nested],
+                });
+            }
+            // A `RuntimeBatch` (BoundedVec<RuntimeCall, 16>) SCALE-encodes as a
+            // one-element vector carrying the deeply-nested call.
+            vec![nested].encode()
+        })
+        .expect("spawn deep-encode thread")
+        .join()
+        .expect("encode deep call");
+
+    // (a) The codec mechanism: the real guard type rejects the over-deep batch.
+    let over_deep = pallet_execution_guard::RuntimeBatch::<Runtime>::decode_all_with_depth_limit(
+        kernel::MAX_PAYLOAD_DECODE_DEPTH,
+        &mut &deep_bytes[..],
+    );
+    assert!(
+        over_deep.is_err(),
+        "an over-deep preimage batch must fail closed at the depth limit, not trap"
+    );
+
+    // A legitimately shallow batch (within the `MAX_NESTED_LEVELS` filter bound)
+    // still decodes cleanly through the same depth-limited path.
+    let shallow_bytes = vec![RuntimeCall::Utility(pallet_utility::Call::batch {
+        calls: vec![remark()],
+    })]
+    .encode();
+    assert!(
+        pallet_execution_guard::RuntimeBatch::<Runtime>::decode_all_with_depth_limit(
+            kernel::MAX_PAYLOAD_DECODE_DEPTH,
+            &mut &shallow_bytes[..],
+        )
+        .is_ok(),
+        "a spec-legal shallow batch must still decode"
+    );
+
+    // (b) The PRODUCTION wiring (PR #92 bot P2): drive the same over-deep
+    // preimage through the guard's real `execute` → `decode_batch` path and
+    // assert it fails closed to `BadPreimage`. Treasury needs no
+    // ratification/attestation, so `decode_batch` is the operative gate here —
+    // this pins that `decode_batch` USES the depth limit (a revert to unbounded
+    // `Decode` would abort this test on the native stack instead of passing).
+    upgrade_ext().execute_with(|| {
+        const PID: futarchy_primitives::ProposalId = 9_256;
+        let maturity = enqueue_treasury_bytes(PID, deep_bytes.clone())
+            .expect("over-deep treasury payload enqueues (not decoded at enqueue time)");
+        System::set_block_number(maturity);
+        let execute_error = ExecutionGuard::execute(RuntimeOrigin::signed(account(92)), PID)
+            .expect_err("guard execute must reject the over-deep preimage");
+        assert_eq!(
+            execute_error.error,
+            pallet_execution_guard::Error::<Runtime>::BadPreimage.into(),
+            "the guard's decode_batch must fail closed on an over-deep preimage"
+        );
     });
 }
 
