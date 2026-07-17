@@ -1,11 +1,32 @@
 //! Runtime-call classification for the XCM rows of B1a's SafetyFilter (09 §6.1–§6.2).
 
+use alloc::vec::Vec;
+use frame_support::traits::Contains;
+use staging_xcm::latest::{Asset, Junction, Location};
+
 /// Origin disposition consumed by the runtime's outer SafetyFilter (09 §6.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum XcmCallDisposition {
     DeniedAllOrigins,
     SignedAllowed,
     TreasuryOnly,
+}
+
+/// Canonical outbound user-exit asset/origin filter (09 §6.2). Destination is
+/// independently pinned to Asset Hub by `classify_pallet_xcm_call`; this layer
+/// admits only a signed local AccountId32 and the frozen DOT/USDC assets.
+pub struct ReserveTransferFilter;
+
+impl Contains<(Location, Vec<Asset>)> for ReserveTransferFilter {
+    fn contains((origin, assets): &(Location, Vec<Asset>)) -> bool {
+        let signed_origin = matches!(origin.unpack(), (0, [Junction::AccountId32 { .. }]));
+        signed_origin
+            && !assets.is_empty()
+            && assets.iter().all(|asset| {
+                asset.id.0 == crate::identity::usdc_location()
+                    || asset.id.0 == crate::identity::dot_location()
+            })
+    }
 }
 
 /// Classifies every stable2606 `pallet_xcm::Call` variant (09 §6.1–§6.2).

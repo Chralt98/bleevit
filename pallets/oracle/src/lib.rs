@@ -81,10 +81,11 @@ mod tests;
 // The functional core is the semantic source of truth; re-export its surface
 // named (not glob — the pallet owns its own `Error`/`ReserveHealth` aliases).
 pub use oracle_core::{
-    round_bond, Error as CoreError, Event as CoreEvent, Oracle, OracleParams, ReportInput,
-    ReporterInfo, ReserveHealth as ReserveHealthValue, RoundKey, RoundState, SettlePath,
-    SettledComponent, WatchtowerInfo, MAX_ACK_RECORDS, MAX_COMPONENT_VALUES, MAX_REPORTERS,
-    MAX_ROUNDS, MAX_WATCHTOWERS, ORC_MAX_PROOF_BYTES, RES_PROBE_INTERVAL, RES_PROBE_TIMEOUT,
+    round_bond, stored_round_bond, Error as CoreError, Event as CoreEvent, Oracle, OracleParams,
+    ReportInput, ReporterInfo, ReserveHealth as ReserveHealthValue, RoundKey, RoundState,
+    SettlePath, SettledComponent, WatchtowerInfo, MAX_ACK_RECORDS, MAX_COMPONENT_VALUES,
+    MAX_REPORTERS, MAX_ROUNDS, MAX_WATCHTOWERS, ORC_MAX_PROOF_BYTES, ORC_ROUNDS,
+    RES_PROBE_INTERVAL, RES_PROBE_TIMEOUT,
 };
 
 use futarchy_primitives::{BlockNumber, EpochId, MetricId, MetricSpecVersion};
@@ -765,14 +766,12 @@ pub mod pallet {
                 epoch,
                 spec_version,
             };
-            let params = T::Params::get();
             Self::mutate_core(|o| {
-                o.adjudicate_with_params(
+                o.adjudicate(
                     origins_core::Origin::OracleResolution,
                     key,
                     value,
                     reporter_wrong,
-                    &params,
                 )
             })
         }
@@ -848,8 +847,7 @@ pub mod pallet {
                 epoch,
                 spec_version,
             };
-            let params = T::Params::get();
-            Self::mutate_core(|o| o.request_adjudication_with_params(key, referendum, &params))
+            Self::mutate_core(|o| o.request_adjudication(key, referendum))
         }
 
         /// Run the 07 §4 watchtower liveness sweep for a just-ended epoch. Not an
@@ -1280,9 +1278,8 @@ pub mod pallet {
                     ));
                 }
             }
-            let params = T::Params::get();
             oracle
-                .try_state_with_params(&params)
+                .try_state()
                 .map_err(|_| TryRuntimeError::Other("oracle core try_state failed (07 §13; I-18)"))
         }
 

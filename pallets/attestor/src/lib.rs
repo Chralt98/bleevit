@@ -264,7 +264,6 @@ pub mod pallet {
                     evidence_hash,
                     bond,
                     Self::now(),
-                    T::Params::get(),
                 )
                 .map_err(Self::map_core_error)?;
             Self::persist(&registry)?;
@@ -311,13 +310,8 @@ pub mod pallet {
             futarchy_primitives::kernel::ATT_QUORUM
         }
 
-        /// Per-member arithmetic bond (25,000 VIT; 13 §1).
-        #[pallet::constant_name(AttestorBond)]
-        fn attestor_bond() -> futarchy_primitives::Balance {
-            ATTESTOR_BOND
-        }
-
-        /// Challenge window (43,200 blocks / 72 h; 06 §7).
+        /// Kernel floor envelope for live `att.window`: 43,200 blocks / 72 h
+        /// (02 §9(2); 13 rule 7). This is not the live tunable value.
         #[pallet::constant_name(ChallengeWindowBlocks)]
         fn challenge_window_blocks() -> futarchy_primitives::BlockNumber {
             CHALLENGE_WINDOW_BLOCKS

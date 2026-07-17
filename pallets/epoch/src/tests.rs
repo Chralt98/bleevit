@@ -1704,7 +1704,6 @@ fn qualified_seed_state(
 #[test]
 fn pol_budget_shrinks_in_reverse_bond_priority_and_defers_dropped_slots() {
     new_test_ext().execute_with(|| {
-        // limit-coverage: pol.budget_epoch
         let bonds = [(1, 40), (2, 30), (3, 20), (4, 10)];
         assert_ok!(Epoch::seed(qualified_seed_state(&bonds)));
         let commitment = 11;

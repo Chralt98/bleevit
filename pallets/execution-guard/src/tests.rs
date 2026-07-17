@@ -659,14 +659,15 @@ fn ordered_checks_6_to_10_reject_capability_meter_lock_guardian_and_freezes() {
             Error::<Test>::GuardianHold
         );
     });
-    for freeze in 0..4 {
+    for freeze in 0..5 {
         new_test_ext().execute_with(|| {
             setup_param(1, 1);
             match freeze {
                 0 => HardGateBreach::<Test>::put(true),
                 1 => DeadManFreeze::<Test>::put(true),
                 2 => MigrationHalt::<Test>::put(true),
-                _ => LedgerFrozen::set(true),
+                3 => LedgerFrozen::set(true),
+                _ => ConstitutionDeadMan::set(true),
             }
             assert_noop!(
                 GuardPallet::execute(RuntimeOrigin::signed(keeper()), 1),

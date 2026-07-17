@@ -134,12 +134,32 @@ pub mod pallet {
     pub type Markets<T: Config> =
         CountedStorageMap<_, Blake2_128Concat, MarketId, MarketBook<T::AccountId>, OptionQuery>;
 
+    /// O(1) membership index for dynamically allocated book and fee custody
+    /// accounts. Refcounts make the index correct even when a runtime or test
+    /// deliberately reuses an account across books; the live entry count is
+    /// dispatch-bounded by `2 * MaxLiveMarkets`.
+    #[pallet::storage]
+    pub type MarketProtocolAccounts<T: Config> =
+        CountedStorageMap<_, Blake2_128Concat, T::AccountId, u16, OptionQuery>;
+
+    /// Proposal-to-book inverse used to observe one ledger terminal marker in
+    /// O(BooksPerProposal), rather than scanning all live markets.
+    #[pallet::storage]
+    pub type ProposalMarketIds<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        ProposalId,
+        BoundedVec<MarketId, ConstU32<{ bounds::BOOKS_PER_PROPOSAL }>>,
+        ValueQuery,
+    >;
+
     /// Epoch-to-Baseline-book lookup (02 §7.4, frozen name).
     #[pallet::storage]
     pub type BaselineMarketOf<T: Config> =
         StorageMap<_, Blake2_128Concat, EpochId, MarketId, OptionQuery>;
 
-    /// Block at which a book closed, used by the archive-delay reap gate.
+    /// Block at which a book closed, retained for the frozen integration
+    /// surface and lifecycle observability. Reap delay is settlement-anchored.
     #[pallet::storage]
     pub type ClosedAt<T: Config> =
         StorageMap<_, Blake2_128Concat, MarketId, BlockNumberFor<T>, OptionQuery>;
@@ -172,11 +192,43 @@ pub mod pallet {
     pub type DecisionWindows<T: Config> =
         StorageMap<_, Blake2_128Concat, MarketId, BoundedVec<TwapWindow, ConstU32<8>>, ValueQuery>;
 
+    /// Logical proposal consumers of registered windows. Baseline windows may
+    /// be shared by several proposals with identical boundaries; a sealed
+    /// window is prunable only after every listed decision has consumed it.
+    #[pallet::storage]
+    pub type DecisionWindowOwners<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        MarketId,
+        BoundedVec<
+            (ProposalId, BlockNumber, BlockNumber, BlockNumber),
+            ConstU32<{ bounds::MAX_LIVE_PROPOSALS * 8 }>,
+        >,
+        ValueQuery,
+    >;
+
     /// Idempotence marker for the one extra seed that brings a guardian rerun
     /// from its original POL allocation to the specified 2× allocation.
     #[pallet::storage]
     pub type RerunSeededMarkets<T: Config> =
         StorageMap<_, Blake2_128Concat, MarketId, (), OptionQuery>;
+
+    /// Durable market-side observation of the ledger terminal block. Unlike
+    /// the ledger's permissionlessly swept marker, this latch lives until the
+    /// corresponding market is reaped and therefore cannot resurrect POL.
+    #[pallet::storage]
+    pub type SettlementObservedAt<T: Config> =
+        StorageMap<_, Blake2_128Concat, MarketId, BlockNumberFor<T>, OptionQuery>;
+
+    /// Exact live POL obligations, sorted by market id. Lifecycle mutations
+    /// update this one bounded value transactionally, so the treasury mirror
+    /// needs one storage read instead of a 196-key `Markets` trie scan.
+    #[pallet::storage]
+    pub type LivePolCommitments<T: Config> = StorageValue<
+        _,
+        BoundedVec<(MarketId, Balance), ConstU32<{ bounds::MAX_LIVE_MARKETS }>>,
+        ValueQuery,
+    >;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -575,15 +627,16 @@ pub mod pallet {
                 matches!(book.phase, MarketPhase::Closed),
                 Error::<T>::NotReapable
             );
-            let closed = ClosedAt::<T>::get(market).ok_or(Error::<T>::NotReapable)?;
+            let terminal = SettlementObservedAt::<T>::get(market).ok_or(Error::<T>::NotReapable)?;
             ensure!(
                 frame_system::Pallet::<T>::block_number()
-                    >= closed.saturating_add(<T as Config>::ArchiveDelay::get()),
+                    >= terminal.saturating_add(<T as Config>::ArchiveDelay::get()),
                 Error::<T>::NotReapable
             );
             // Closing freezes prices, but the headroom remains an obligation until
-            // the corresponding ledger vault settles. Never let permissionless reap
-            // release that obligation early.
+            // the corresponding ledger vault settles. The durable market-side latch
+            // is the archive-delay anchor because the ledger marker may already have
+            // been permissionlessly swept.
             ensure!(
                 !Self::pol_obligation_live(market, &book),
                 Error::<T>::NotReapable
@@ -598,8 +651,22 @@ pub mod pallet {
                 ClosedAt::<T>::remove(market);
                 SeededMarkets::<T>::remove(market);
                 RerunSeededMarkets::<T>::remove(market);
+                SettlementObservedAt::<T>::remove(market);
+                Self::remove_pol_commitment(market);
+                Self::unregister_market_accounts(&book)?;
+                if let BookKind::Decision { proposal, .. } | BookKind::Gate { proposal, .. } =
+                    book.kind
+                {
+                    ProposalMarketIds::<T>::mutate(proposal, |ids| {
+                        ids.retain(|id| *id != market);
+                    });
+                    if ProposalMarketIds::<T>::get(proposal).is_empty() {
+                        ProposalMarketIds::<T>::remove(proposal);
+                    }
+                }
                 TwapCheckpoints::<T>::remove(market);
                 DecisionWindows::<T>::remove(market);
+                DecisionWindowOwners::<T>::remove(market);
                 T::PolCommitmentSync::sync_pol_commitments()?;
                 Self::deposit_event(Event::MarketReaped { market });
                 Ok(())
@@ -622,12 +689,26 @@ pub mod pallet {
             })
         }
 
+        /// O(1) lookup consumed by the conditional ledger's deposit exemption.
+        pub fn is_market_protocol_account(who: &T::AccountId) -> bool {
+            MarketProtocolAccounts::<T>::contains_key(who)
+        }
+
+        /// Return the exact, sorted commitment vector mirrored into treasury.
+        pub fn live_pol_commitments() -> Vec<Balance> {
+            LivePolCommitments::<T>::get()
+                .into_iter()
+                .map(|(_, amount)| amount)
+                .collect()
+        }
+
         /// Register exact full/trailing TWAP boundaries for one deciding pair.
         /// Duplicate registrations are idempotent; capacity exhaustion rejects
         /// the caller so epoch cannot open an ungradeable book.
         pub fn register_decision_window(
             origin: OriginFor<T>,
             id: MarketId,
+            proposal: ProposalId,
             start: BlockNumber,
             trailing_start: BlockNumber,
             end: BlockNumber,
@@ -650,30 +731,156 @@ pub mod pallet {
                 close_spot: None,
                 sealed: false,
             };
-            if DecisionWindows::<T>::get(id).iter().any(|window| {
+            let exact_exists = DecisionWindows::<T>::get(id).iter().any(|window| {
                 window.start == start
                     && window.trailing_start == trailing_start
                     && window.end == end
-            }) {
+            });
+            let owner = (proposal, start, trailing_start, end);
+            if DecisionWindowOwners::<T>::get(id).contains(&owner) {
                 return Ok(());
             }
-            let mut boundaries = DecisionWindows::<T>::get(id)
-                .iter()
-                .flat_map(|window| [window.start, window.trailing_start, window.end])
-                .collect::<Vec<_>>();
-            boundaries.extend([start, trailing_start, end]);
-            boundaries.sort_unstable();
-            boundaries.dedup();
-            ensure!(boundaries.len() <= 8, Error::<T>::TryStateViolation);
-            DecisionWindows::<T>::try_mutate(id, |windows| {
-                windows
-                    .try_push(candidate)
-                    .map_err(|_| Error::<T>::TryStateViolation)
+            frame_support::storage::with_storage_layer(|| -> DispatchResult {
+                if !exact_exists {
+                    let mut boundaries = DecisionWindows::<T>::get(id)
+                        .iter()
+                        .flat_map(|window| [window.start, window.trailing_start, window.end])
+                        .collect::<Vec<_>>();
+                    boundaries.extend([start, trailing_start, end]);
+                    boundaries.sort_unstable();
+                    boundaries.dedup();
+                    ensure!(boundaries.len() <= 8, Error::<T>::TryStateViolation);
+                    DecisionWindows::<T>::try_mutate(id, |windows| {
+                        windows
+                            .try_push(candidate)
+                            .map_err(|_| Error::<T>::TryStateViolation)
+                    })?;
+                    if u64::from(start) == book.last_observed_block {
+                        Self::insert_checkpoint(id, start, book.cumulative_price_blocks);
+                    }
+                }
+                DecisionWindowOwners::<T>::try_mutate(id, |owners| {
+                    owners
+                        .try_push(owner)
+                        .map_err(|_| Error::<T>::TryStateViolation)
+                })?;
+                Ok(())
             })?;
-            if u64::from(start) == book.last_observed_block {
-                Self::insert_checkpoint(id, start, book.cumulative_price_blocks);
-            }
             Ok(())
+        }
+
+        /// Shift every still-live logical consumer of one exact window after
+        /// a dead-man pause. Replacing the unsealed record atomically avoids a
+        /// transient ninth boundary when several proposals share a Baseline.
+        pub fn shift_decision_window(
+            origin: OriginFor<T>,
+            id: MarketId,
+            old_end: BlockNumber,
+            shift_by: BlockNumber,
+        ) -> DispatchResult {
+            T::MarketAdmin::ensure_origin(origin).map_err(|_| Error::<T>::BadOrigin)?;
+            let new_end = old_end
+                .checked_add(shift_by)
+                .ok_or(Error::<T>::ArithmeticOverflow)?;
+            ensure!(Markets::<T>::contains_key(id), Error::<T>::UnknownMarket);
+            frame_support::storage::with_storage_layer(|| -> DispatchResult {
+                let mut shifted = None;
+                DecisionWindows::<T>::try_mutate(id, |windows| -> DispatchResult {
+                    let old = windows.iter_mut().find(|window| window.end == old_end);
+                    if let Some(window) = old {
+                        ensure!(!window.sealed, Error::<T>::TryStateViolation);
+                        let old_boundaries = (window.start, window.trailing_start, window.end);
+                        window.end = new_end;
+                        shifted = Some((
+                            old_boundaries,
+                            (old_boundaries.0, old_boundaries.1, new_end),
+                        ));
+                    }
+                    Ok(())
+                })?;
+                let Some((old_boundaries, new_boundaries)) = shifted else {
+                    let already_shifted = DecisionWindows::<T>::get(id)
+                        .iter()
+                        .any(|window| window.end == new_end);
+                    ensure!(already_shifted, Error::<T>::TryStateViolation);
+                    return Ok(());
+                };
+                DecisionWindowOwners::<T>::mutate(id, |owners| {
+                    for (_, start, trailing_start, end) in owners.iter_mut().filter(|record| {
+                        record.1 == old_boundaries.0
+                            && record.2 == old_boundaries.1
+                            && record.3 == old_boundaries.2
+                    }) {
+                        *start = new_boundaries.0;
+                        *trailing_start = new_boundaries.1;
+                        *end = new_boundaries.2;
+                    }
+                });
+                Self::prune_unreferenced_checkpoints(id);
+                Ok(())
+            })
+        }
+
+        /// Record one terminal decision's consumption of every TWAP window it
+        /// used, including an earlier sealed extension attempt. A window and
+        /// its now-unreferenced boundaries are evicted only after the last
+        /// Baseline-sharing proposal has consumed them.
+        pub fn consume_decision_windows(
+            origin: OriginFor<T>,
+            id: MarketId,
+            proposal: ProposalId,
+        ) -> DispatchResult {
+            T::MarketAdmin::ensure_origin(origin).map_err(|_| Error::<T>::BadOrigin)?;
+            frame_support::storage::with_storage_layer(|| -> DispatchResult {
+                let owned = DecisionWindowOwners::<T>::get(id)
+                    .iter()
+                    .filter(|record| record.0 == proposal)
+                    .copied()
+                    .collect::<Vec<_>>();
+                ensure!(!owned.is_empty(), Error::<T>::TryStateViolation);
+                let windows = DecisionWindows::<T>::get(id);
+                ensure!(
+                    owned.iter().all(|record| windows.iter().any(|window| {
+                        window.start == record.1
+                            && window.trailing_start == record.2
+                            && window.end == record.3
+                            && window.sealed
+                    })),
+                    Error::<T>::TryStateViolation
+                );
+                DecisionWindowOwners::<T>::try_mutate(id, |owners| -> DispatchResult {
+                    let before = owners.len();
+                    owners.retain(|record| record.0 != proposal);
+                    ensure!(owners.len() < before, Error::<T>::TryStateViolation);
+                    Ok(())
+                })?;
+                let remaining = DecisionWindowOwners::<T>::get(id);
+                DecisionWindows::<T>::mutate(id, |windows| {
+                    windows.retain(|window| {
+                        remaining.iter().any(|record| {
+                            record.1 == window.start
+                                && record.2 == window.trailing_start
+                                && record.3 == window.end
+                        })
+                    });
+                });
+                Self::prune_unreferenced_checkpoints(id);
+                Ok(())
+            })
+        }
+
+        fn prune_unreferenced_checkpoints(id: MarketId) {
+            let windows = DecisionWindows::<T>::get(id);
+            TwapCheckpoints::<T>::mutate(id, |checkpoints| {
+                checkpoints.retain(|(block, _)| {
+                    windows.iter().any(|window| {
+                        [window.start, window.trailing_start, window.end].contains(block)
+                    })
+                });
+            });
+            if TwapCheckpoints::<T>::get(id).is_empty() {
+                TwapCheckpoints::<T>::remove(id);
+            }
         }
 
         /// Reopen a guardian-rerun book with positions intact and a fresh TWAP
@@ -697,8 +904,8 @@ pub mod pallet {
                 })?;
                 TwapCheckpoints::<T>::remove(id);
                 DecisionWindows::<T>::remove(id);
+                DecisionWindowOwners::<T>::remove(id);
                 RerunSeededMarkets::<T>::remove(id);
-                T::PolCommitmentSync::sync_pol_commitments()?;
                 Ok(())
             })
         }
@@ -775,6 +982,8 @@ pub mod pallet {
             );
             let accept_book = Markets::<T>::get(accept).ok_or(Error::<T>::UnknownMarket)?;
             let reject_book = Markets::<T>::get(reject).ok_or(Error::<T>::UnknownMarket)?;
+            Self::ensure_market_accounts_indexed(&accept_book)?;
+            Self::ensure_market_accounts_indexed(&reject_book)?;
             frame_support::storage::with_storage_layer(|| -> DispatchResult {
                 let mut ledger = PalletLedger::<T>::new();
                 let headroom = market_core::seed_branch_pair(
@@ -786,6 +995,7 @@ pub mod pallet {
                 .map_err(Error::<T>::from)?;
                 for id in [accept, reject] {
                     SeededMarkets::<T>::insert(id, ());
+                    Self::insert_pol_commitment(id, headroom)?;
                     Self::deposit_event(Event::Seeded {
                         market: id,
                         headroom,
@@ -814,6 +1024,8 @@ pub mod pallet {
             );
             let accept_book = Markets::<T>::get(accept).ok_or(Error::<T>::UnknownMarket)?;
             let reject_book = Markets::<T>::get(reject).ok_or(Error::<T>::UnknownMarket)?;
+            Self::ensure_market_accounts_indexed(&accept_book)?;
+            Self::ensure_market_accounts_indexed(&reject_book)?;
             frame_support::storage::with_storage_layer(|| -> DispatchResult {
                 let mut ledger = PalletLedger::<T>::new();
                 let headroom = market_core::seed_branch_pair(
@@ -833,6 +1045,7 @@ pub mod pallet {
                         Ok(())
                     })?;
                     RerunSeededMarkets::<T>::insert(id, ());
+                    Self::increase_pol_commitment(id, headroom)?;
                     Self::deposit_event(Event::Seeded {
                         market: id,
                         headroom,
@@ -860,6 +1073,7 @@ pub mod pallet {
                 Error::<T>::AlreadySeeded
             );
             let book = Markets::<T>::get(id).ok_or(Error::<T>::UnknownMarket)?;
+            Self::ensure_market_accounts_indexed(&book)?;
             frame_support::storage::with_storage_layer(|| -> DispatchResult {
                 let mut ledger = PalletLedger::<T>::new();
                 let headroom = market_core::seed_book(&book, &mut ledger, &treasury)
@@ -873,6 +1087,7 @@ pub mod pallet {
                     Ok(())
                 })?;
                 RerunSeededMarkets::<T>::insert(id, ());
+                Self::increase_pol_commitment(id, headroom)?;
                 Self::deposit_event(Event::Seeded {
                     market: id,
                     headroom,
@@ -899,6 +1114,23 @@ pub mod pallet {
                 .iter()
                 .find_map(|(block, cumulative)| (*block == end).then_some(*cumulative))?;
             market_core::twap_between(start_cumulative, end_cumulative, window)
+        }
+
+        /// Actual full/trailing widths of the registered window ending at
+        /// `end`. Dead-man recovery extends only the end boundary, so callers
+        /// must not substitute the current constitution defaults here.
+        pub fn registered_window_lengths(
+            id: MarketId,
+            end: BlockNumber,
+        ) -> Option<(BlockNumber, BlockNumber)> {
+            DecisionWindows::<T>::get(id)
+                .iter()
+                .find(|record| record.end == end)
+                .and_then(|record| {
+                    let full = record.end.checked_sub(record.start)?;
+                    let trailing = record.end.checked_sub(record.trailing_start)?;
+                    Some((full, trailing))
+                })
         }
 
         pub fn spot_at(id: MarketId, end: BlockNumber) -> Option<FixedU64> {
@@ -1133,6 +1365,15 @@ pub mod pallet {
                     }
                 }
 
+                Self::register_market_accounts(&account, &fees_account)?;
+                if let BookKind::Decision { proposal, .. } | BookKind::Gate { proposal, .. } = kind
+                {
+                    ProposalMarketIds::<T>::try_mutate(proposal, |ids| -> DispatchResult {
+                        ensure!(!ids.contains(&id), Error::<T>::DuplicateMarket);
+                        ids.try_push(id).map_err(|_| Error::<T>::TooManyMarkets)?;
+                        Ok(())
+                    })?;
+                }
                 Markets::<T>::insert(id, MarketBook::open(id, kind, account, fees_account, b));
                 Self::deposit_event(Event::MarketCreated {
                     market: id,
@@ -1141,7 +1382,6 @@ pub mod pallet {
                     epoch,
                     b,
                 });
-                T::PolCommitmentSync::sync_pol_commitments()?;
                 Ok(())
             })
         }
@@ -1156,6 +1396,7 @@ pub mod pallet {
                 !SeededMarkets::<T>::contains_key(id),
                 Error::<T>::AlreadySeeded
             );
+            Self::ensure_market_accounts_indexed(&book)?;
             // Internal (non-`#[pallet::call]`) path: FRAME's per-dispatch storage layer
             // wraps only public extrinsics, so an epoch-tick caller that swallows the
             // error would strand a partial seed (`seed_book` drives several ledger
@@ -1167,6 +1408,7 @@ pub mod pallet {
                 let headroom = market_core::seed_book(&book, &mut ledger, &treasury)
                     .map_err(Error::<T>::from)?;
                 SeededMarkets::<T>::insert(id, ());
+                Self::insert_pol_commitment(id, headroom)?;
                 Self::deposit_event(Event::Seeded {
                     market: id,
                     headroom,
@@ -1188,7 +1430,6 @@ pub mod pallet {
                 Markets::<T>::insert(id, book);
                 ClosedAt::<T>::insert(id, frame_system::Pallet::<T>::block_number());
                 Self::deposit_event(Event::MarketClosed { market: id });
-                T::PolCommitmentSync::sync_pol_commitments()?;
                 Ok(())
             })
         }
@@ -1211,29 +1452,157 @@ pub mod pallet {
             <T as Config>::PalletId::get().into_account_truncating()
         }
 
-        /// Reconcile the treasury mirror after the conditional ledger records a
-        /// proposal or Baseline settlement. The runtime calls this from its
-        /// settlement adapter, keeping both pallets independent of one another.
-        pub fn sync_pol_commitments_after_settlement() -> DispatchResult {
-            T::PolCommitmentSync::sync_pol_commitments()
+        /// Observe a proposal ledger terminal marker exactly once, release all
+        /// of its bounded book obligations, and mirror treasury in the same
+        /// transaction. The latch survives later ledger sweeping.
+        pub fn observe_proposal_terminal(proposal: ProposalId) -> DispatchResult {
+            let terminal = pallet_conditional_ledger::VaultTerminalAt::<T>::get(proposal)
+                .ok_or(Error::<T>::TryStateViolation)?;
+            frame_support::storage::with_storage_layer(|| -> DispatchResult {
+                let ids = ProposalMarketIds::<T>::get(proposal);
+                ensure!(!ids.is_empty(), Error::<T>::TryStateViolation);
+                for id in ids {
+                    let book = Markets::<T>::get(id).ok_or(Error::<T>::TryStateViolation)?;
+                    ensure!(
+                        matches!(book.kind,
+                            BookKind::Decision { proposal: owner, .. }
+                            | BookKind::Gate { proposal: owner, .. }
+                            if owner == proposal
+                        ),
+                        Error::<T>::TryStateViolation
+                    );
+                    if let Some(observed) = SettlementObservedAt::<T>::get(id) {
+                        ensure!(observed == terminal, Error::<T>::TryStateViolation);
+                    } else {
+                        SettlementObservedAt::<T>::insert(id, terminal);
+                    }
+                    Self::remove_pol_commitment(id);
+                }
+                T::PolCommitmentSync::sync_pol_commitments()
+            })
+        }
+
+        /// Baseline counterpart of `observe_proposal_terminal`.
+        pub fn observe_baseline_terminal(epoch: EpochId) -> DispatchResult {
+            let terminal = pallet_conditional_ledger::BaselineTerminalAt::<T>::get(epoch)
+                .ok_or(Error::<T>::TryStateViolation)?;
+            let id = BaselineMarketOf::<T>::get(epoch).ok_or(Error::<T>::TryStateViolation)?;
+            frame_support::storage::with_storage_layer(|| -> DispatchResult {
+                let book = Markets::<T>::get(id).ok_or(Error::<T>::TryStateViolation)?;
+                ensure!(
+                    matches!(book.kind, BookKind::Baseline { epoch: owner } if owner == epoch),
+                    Error::<T>::TryStateViolation
+                );
+                if let Some(observed) = SettlementObservedAt::<T>::get(id) {
+                    ensure!(observed == terminal, Error::<T>::TryStateViolation);
+                } else {
+                    SettlementObservedAt::<T>::insert(id, terminal);
+                }
+                Self::remove_pol_commitment(id);
+                T::PolCommitmentSync::sync_pol_commitments()
+            })
         }
 
         /// Whether a seeded book still carries its worst-case-loss obligation.
         /// Close only freezes the price path; the obligation ends at the ledger's
-        /// terminal settlement marker and is then removed transactionally by the
-        /// runtime settlement adapter.
+        /// terminal settlement marker and is then durably latched by the market
+        /// before the ledger marker can be swept.
         pub fn pol_obligation_live(id: MarketId, book: &MarketBook<T::AccountId>) -> bool {
             if !SeededMarkets::<T>::contains_key(id) {
                 return false;
             }
-            match book.kind {
-                BookKind::Decision { proposal, .. } | BookKind::Gate { proposal, .. } => {
-                    !pallet_conditional_ledger::VaultTerminalAt::<T>::contains_key(proposal)
-                }
-                BookKind::Baseline { epoch } => {
-                    !pallet_conditional_ledger::BaselineTerminalAt::<T>::contains_key(epoch)
-                }
+            let _ = book;
+            !SettlementObservedAt::<T>::contains_key(id)
+        }
+
+        fn register_market_accounts(
+            account: &T::AccountId,
+            fees_account: &T::AccountId,
+        ) -> DispatchResult {
+            for who in [account, fees_account] {
+                MarketProtocolAccounts::<T>::try_mutate(who, |references| -> DispatchResult {
+                    match references {
+                        Some(count) => {
+                            *count = count.checked_add(1).ok_or(Error::<T>::ArithmeticOverflow)?;
+                        }
+                        None => {
+                            let bound = bounds::MAX_LIVE_MARKETS
+                                .checked_mul(2)
+                                .ok_or(Error::<T>::ArithmeticOverflow)?;
+                            ensure!(
+                                MarketProtocolAccounts::<T>::count() < bound,
+                                Error::<T>::TooManyMarkets
+                            );
+                            *references = Some(1);
+                        }
+                    }
+                    Ok(())
+                })?;
             }
+            Ok(())
+        }
+
+        fn unregister_market_accounts(book: &MarketBook<T::AccountId>) -> DispatchResult {
+            for who in [&book.account, &book.fees_account] {
+                MarketProtocolAccounts::<T>::try_mutate_exists(
+                    who,
+                    |references| -> DispatchResult {
+                        let count = references.ok_or(Error::<T>::TryStateViolation)?;
+                        if count == 1 {
+                            *references = None;
+                        } else {
+                            *references =
+                                Some(count.checked_sub(1).ok_or(Error::<T>::TryStateViolation)?);
+                        }
+                        Ok(())
+                    },
+                )?;
+            }
+            Ok(())
+        }
+
+        fn ensure_market_accounts_indexed(book: &MarketBook<T::AccountId>) -> DispatchResult {
+            ensure!(
+                MarketProtocolAccounts::<T>::contains_key(&book.account)
+                    && MarketProtocolAccounts::<T>::contains_key(&book.fees_account),
+                Error::<T>::TryStateViolation
+            );
+            Ok(())
+        }
+
+        fn insert_pol_commitment(id: MarketId, amount: Balance) -> DispatchResult {
+            ensure!(amount > 0, Error::<T>::TryStateViolation);
+            LivePolCommitments::<T>::try_mutate(|commitments| -> DispatchResult {
+                ensure!(
+                    !commitments.iter().any(|(market, _)| *market == id),
+                    Error::<T>::AlreadySeeded
+                );
+                commitments
+                    .try_push((id, amount))
+                    .map_err(|_| Error::<T>::TooManyMarkets)?;
+                commitments.sort_by_key(|(market, _)| *market);
+                Ok(())
+            })
+        }
+
+        fn increase_pol_commitment(id: MarketId, amount: Balance) -> DispatchResult {
+            ensure!(amount > 0, Error::<T>::TryStateViolation);
+            LivePolCommitments::<T>::try_mutate(|commitments| {
+                let (_, stored) = commitments
+                    .iter_mut()
+                    .find(|(market, _)| *market == id)
+                    .ok_or(Error::<T>::TryStateViolation)?;
+                *stored = stored
+                    .checked_add(amount)
+                    .ok_or(Error::<T>::ArithmeticOverflow)?;
+                Ok(())
+            })
+        }
+
+        fn remove_pol_commitment(id: MarketId) {
+            LivePolCommitments::<T>::mutate(|commitments| {
+                commitments.retain(|(market, _)| *market != id);
+            });
         }
 
         fn params() -> MarketParams {
@@ -1433,7 +1802,7 @@ pub mod pallet {
         /// obligation (15 I-12: "differential vs MPFR; fuzz"), not a try-state check.
         pub fn do_try_state() -> Result<(), DispatchError> {
             let now: u64 = Self::now_u64();
-            for (_id, book) in Markets::<T>::iter() {
+            for (id, book) in Markets::<T>::iter() {
                 ensure!(book.b > 0, Error::<T>::TryStateViolation);
                 let domain = book
                     .b
@@ -1458,7 +1827,10 @@ pub mod pallet {
                         pallet_conditional_ledger::BaselineVaults::<T>::contains_key(epoch)
                     }
                 };
-                ensure!(vault_exists, Error::<T>::TryStateViolation);
+                ensure!(
+                    vault_exists || SettlementObservedAt::<T>::contains_key(id),
+                    Error::<T>::TryStateViolation
+                );
                 // I-13 (accumulator sanity): no future observation, and the
                 // price-weighted sum ≤ max-price × elapsed blocks.
                 ensure!(
@@ -1479,6 +1851,49 @@ pub mod pallet {
                 Markets::<T>::count() <= bounds::MAX_LIVE_MARKETS,
                 Error::<T>::TryStateViolation
             );
+            ensure!(
+                MarketProtocolAccounts::<T>::count() <= bounds::MAX_LIVE_MARKETS.saturating_mul(2),
+                Error::<T>::TryStateViolation
+            );
+            for (who, references) in MarketProtocolAccounts::<T>::iter() {
+                let expected = Markets::<T>::iter_values().try_fold(0_u16, |count, book| {
+                    let additions = u16::from(book.account == who)
+                        .checked_add(u16::from(book.fees_account == who))?;
+                    count.checked_add(additions)
+                });
+                ensure!(
+                    references > 0 && expected == Some(references),
+                    Error::<T>::TryStateViolation
+                );
+            }
+            for (id, book) in Markets::<T>::iter() {
+                Self::ensure_market_accounts_indexed(&book)?;
+                if let BookKind::Decision { proposal, .. } | BookKind::Gate { proposal, .. } =
+                    book.kind
+                {
+                    ensure!(
+                        ProposalMarketIds::<T>::get(proposal).contains(&id),
+                        Error::<T>::TryStateViolation
+                    );
+                }
+            }
+            for (proposal, ids) in ProposalMarketIds::<T>::iter() {
+                ensure!(!ids.is_empty(), Error::<T>::TryStateViolation);
+                let mut previous = None;
+                for id in ids {
+                    let book = Markets::<T>::get(id).ok_or(Error::<T>::TryStateViolation)?;
+                    ensure!(
+                        previous.is_none_or(|prior| prior < id)
+                            && matches!(book.kind,
+                                BookKind::Decision { proposal: owner, .. }
+                                | BookKind::Gate { proposal: owner, .. }
+                                if owner == proposal
+                            ),
+                        Error::<T>::TryStateViolation
+                    );
+                    previous = Some(id);
+                }
+            }
             for (epoch, market) in BaselineMarketOf::<T>::iter() {
                 let book = Markets::<T>::get(market).ok_or(Error::<T>::TryStateViolation)?;
                 ensure!(
@@ -1488,6 +1903,7 @@ pub mod pallet {
             }
             for (id, checkpoints) in TwapCheckpoints::<T>::iter() {
                 let _book = Markets::<T>::get(id).ok_or(Error::<T>::TryStateViolation)?;
+                let windows = DecisionWindows::<T>::get(id);
                 let mut previous = None;
                 let mut previous_cumulative = None;
                 for (block, cumulative) in checkpoints {
@@ -1503,6 +1919,12 @@ pub mod pallet {
                             && cumulative <= max_at_boundary,
                         Error::<T>::TryStateViolation
                     );
+                    ensure!(
+                        windows.iter().any(|window| {
+                            [window.start, window.trailing_start, window.end].contains(&block)
+                        }),
+                        Error::<T>::TryStateViolation
+                    );
                     previous = Some(block);
                     previous_cumulative = Some(cumulative);
                 }
@@ -1513,6 +1935,14 @@ pub mod pallet {
                     Error::<T>::TryStateViolation
                 );
                 for window in windows {
+                    ensure!(
+                        DecisionWindowOwners::<T>::get(id).iter().any(|record| {
+                            record.1 == window.start
+                                && record.2 == window.trailing_start
+                                && record.3 == window.end
+                        }),
+                        Error::<T>::TryStateViolation
+                    );
                     ensure!(
                         window.start < window.trailing_start
                             && window.trailing_start < window.end
@@ -1533,11 +1963,87 @@ pub mod pallet {
                     }
                 }
             }
+            for (id, owners) in DecisionWindowOwners::<T>::iter() {
+                ensure!(
+                    Markets::<T>::contains_key(id),
+                    Error::<T>::TryStateViolation
+                );
+                for (position, owner) in owners.iter().enumerate() {
+                    ensure!(
+                        !owners.iter().take(position).any(|seen| seen == owner)
+                            && DecisionWindows::<T>::get(id).iter().any(|window| {
+                                window.start == owner.1
+                                    && window.trailing_start == owner.2
+                                    && window.end == owner.3
+                            }),
+                        Error::<T>::TryStateViolation
+                    );
+                }
+            }
             for id in SeededMarkets::<T>::iter_keys() {
                 ensure!(
                     Markets::<T>::contains_key(id),
                     Error::<T>::TryStateViolation
                 );
+            }
+            let commitments = LivePolCommitments::<T>::get();
+            let mut previous_commitment = None;
+            for (id, amount) in &commitments {
+                let book = Markets::<T>::get(id).ok_or(Error::<T>::TryStateViolation)?;
+                let expected = if RerunSeededMarkets::<T>::contains_key(id) {
+                    let original_b = book.b.checked_div(2).ok_or(Error::<T>::TryStateViolation)?;
+                    market_core::seed_headroom(original_b)
+                        .ok()
+                        .and_then(|headroom| headroom.checked_mul(2))
+                } else {
+                    market_core::seed_headroom(book.b).ok()
+                };
+                ensure!(
+                    previous_commitment.is_none_or(|previous| previous < *id)
+                        && *amount > 0
+                        && expected == Some(*amount)
+                        && SeededMarkets::<T>::contains_key(id)
+                        && !SettlementObservedAt::<T>::contains_key(id),
+                    Error::<T>::TryStateViolation
+                );
+                previous_commitment = Some(*id);
+            }
+            for id in SeededMarkets::<T>::iter_keys() {
+                let indexed = commitments.iter().any(|(market, _)| *market == id);
+                ensure!(
+                    indexed != SettlementObservedAt::<T>::contains_key(id),
+                    Error::<T>::TryStateViolation
+                );
+            }
+            for (id, terminal) in SettlementObservedAt::<T>::iter() {
+                let book = Markets::<T>::get(id).ok_or(Error::<T>::TryStateViolation)?;
+                ensure!(
+                    terminal <= frame_system::Pallet::<T>::block_number()
+                        && !commitments.iter().any(|(market, _)| *market == id),
+                    Error::<T>::TryStateViolation
+                );
+                match book.kind {
+                    BookKind::Decision { proposal, .. } | BookKind::Gate { proposal, .. } => {
+                        let ledger_terminal =
+                            pallet_conditional_ledger::VaultTerminalAt::<T>::get(proposal);
+                        if pallet_conditional_ledger::Vaults::<T>::contains_key(proposal) {
+                            ensure!(ledger_terminal.is_some(), Error::<T>::TryStateViolation);
+                        }
+                        if let Some(ledger_terminal) = ledger_terminal {
+                            ensure!(ledger_terminal == terminal, Error::<T>::TryStateViolation);
+                        }
+                    }
+                    BookKind::Baseline { epoch } => {
+                        let ledger_terminal =
+                            pallet_conditional_ledger::BaselineTerminalAt::<T>::get(epoch);
+                        if pallet_conditional_ledger::BaselineVaults::<T>::contains_key(epoch) {
+                            ensure!(ledger_terminal.is_some(), Error::<T>::TryStateViolation);
+                        }
+                        if let Some(ledger_terminal) = ledger_terminal {
+                            ensure!(ledger_terminal == terminal, Error::<T>::TryStateViolation);
+                        }
+                    }
+                }
             }
             for id in RerunSeededMarkets::<T>::iter_keys() {
                 ensure!(

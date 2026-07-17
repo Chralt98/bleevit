@@ -27,6 +27,18 @@ pub const MAX_CAPABILITIES: usize = 64;
 pub const MAX_METERS: usize = 16;
 /// 13 rule 7 meta-bound: `amend_registry` may not set a cooldown above this.
 pub const META_MAX_COOLDOWN_EPOCHS: u32 = 8;
+/// Genesis defaults for the B10 POL budget reader, ordered PARAM/TREASURY/
+/// CODE/META as frozen by 02 §9. These remain tunable at runtime; the named
+/// constants are only the fail-closed terminal fallback when both live and
+/// genesis registry records are absent or kind-mismatched.
+pub const POL_B_DEFAULTS: [Balance; 4] = [
+    10_000_000_000,
+    25_000_000_000,
+    60_000_000_000,
+    100_000_000_000,
+];
+pub const POL_GATE_B_DEFAULT: Balance = 7_500_000_000;
+pub const POL_BUDGET_EPOCH_DEFAULT_PPB: u32 = 7_500_000;
 
 pub fn gate_v_min_pair(key: ParamKey) -> Option<ParamKey> {
     for (decision, gate) in [
@@ -1339,7 +1351,7 @@ pub fn genesis_params() -> Vec<ParamRecord> {
         ),
         row(
             b"pol.b.param",
-            ParamValue::Balance(10_000_000_000),
+            ParamValue::Balance(POL_B_DEFAULTS[0]),
             ParamValue::Balance(0),
             ParamValue::Balance(u128::MAX),
             Some(MaxDelta::Percent(25)),
@@ -1349,7 +1361,7 @@ pub fn genesis_params() -> Vec<ParamRecord> {
         ),
         row(
             b"pol.b.trs",
-            ParamValue::Balance(25_000_000_000),
+            ParamValue::Balance(POL_B_DEFAULTS[1]),
             ParamValue::Balance(0),
             ParamValue::Balance(u128::MAX),
             Some(MaxDelta::Percent(25)),
@@ -1359,7 +1371,7 @@ pub fn genesis_params() -> Vec<ParamRecord> {
         ),
         row(
             b"pol.b.code",
-            ParamValue::Balance(60_000_000_000),
+            ParamValue::Balance(POL_B_DEFAULTS[2]),
             ParamValue::Balance(0),
             ParamValue::Balance(u128::MAX),
             Some(MaxDelta::Percent(25)),
@@ -1369,7 +1381,7 @@ pub fn genesis_params() -> Vec<ParamRecord> {
         ),
         row(
             b"pol.b.meta",
-            ParamValue::Balance(100_000_000_000),
+            ParamValue::Balance(POL_B_DEFAULTS[3]),
             ParamValue::Balance(0),
             ParamValue::Balance(u128::MAX),
             Some(MaxDelta::Percent(25)),
@@ -1379,7 +1391,7 @@ pub fn genesis_params() -> Vec<ParamRecord> {
         ),
         row(
             b"pol.b_gate",
-            ParamValue::Balance(7_500_000_000),
+            ParamValue::Balance(POL_GATE_B_DEFAULT),
             ParamValue::Balance(0),
             ParamValue::Balance(u128::MAX),
             Some(MaxDelta::Percent(25)),
@@ -1389,7 +1401,7 @@ pub fn genesis_params() -> Vec<ParamRecord> {
         ),
         row(
             b"pol.budget_epoch",
-            ParamValue::Perbill(7_500_000),
+            ParamValue::Perbill(POL_BUDGET_EPOCH_DEFAULT_PPB),
             ParamValue::Perbill(0),
             ParamValue::Perbill(15_000_000),
             None,
@@ -1570,8 +1582,8 @@ pub fn genesis_params() -> Vec<ParamRecord> {
         row(
             b"orc.rounds",
             ParamValue::U8(3),
-            ParamValue::U8(2),
-            ParamValue::U8(4),
+            ParamValue::U8(kernel::ORC_ROUNDS_MIN),
+            ParamValue::U8(kernel::ORC_ROUNDS_MAX),
             None,
             2,
             ParamClass::Meta,

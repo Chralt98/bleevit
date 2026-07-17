@@ -5,7 +5,8 @@
 //! origin gates, rollback-safe error paths, and shell≡core differential.
 
 use crate::{
-    mock::*, BaselineMarketOf, ClosedAt, DecisionWindows, Error, Event, Markets, TwapCheckpoints,
+    mock::*, BaselineMarketOf, ClosedAt, DecisionWindowOwners, DecisionWindows, Error, Event,
+    MarketProtocolAccounts, Markets, SettlementObservedAt, TwapCheckpoints,
 };
 use frame_support::{assert_err, assert_noop, assert_ok, traits::fungibles::Inspect};
 use frame_system::RawOrigin;
@@ -66,6 +67,7 @@ fn settle_decision() {
         PROPOSAL,
         FixedU64(500_000_000),
     ));
+    assert_ok!(Market::observe_proposal_terminal(PROPOSAL));
 }
 
 fn settle_baseline() {
@@ -74,6 +76,7 @@ fn settle_baseline() {
         EPOCH,
         FixedU64(500_000_000),
     ));
+    assert_ok!(Market::observe_baseline_terminal(EPOCH));
 }
 
 fn position_balance(id: PositionId, who: AccountId) -> Balance {
@@ -856,23 +859,82 @@ fn reap_respects_archive_delay_then_removes_decision_book() {
         seed(MARKET_ID);
         System::set_block_number(5);
         assert_ok!(Market::close(signed(MARKET_ADMIN), MARKET_ID));
+        System::set_block_number(9);
         settle_decision();
         let delay = MarketArchiveDelay::get();
 
-        // One block short of `ClosedAt + ArchiveDelay`: reap must refuse and mutate nothing.
-        System::set_block_number(5 + delay - 1);
+        // The delay is anchored at the ledger terminal marker, not ClosedAt.
+        System::set_block_number(9 + delay - 1);
         assert_noop!(Market::reap(signed(BOB), MARKET_ID), E::NotReapable);
         assert!(Markets::<Test>::contains_key(MARKET_ID));
         assert!(ClosedAt::<Test>::contains_key(MARKET_ID));
 
         // Exactly at the boundary: the permissionless reap removes book and ClosedAt.
-        System::set_block_number(5 + delay);
+        System::set_block_number(9 + delay);
         assert_ok!(Market::reap(signed(BOB), MARKET_ID));
         assert!(!Markets::<Test>::contains_key(MARKET_ID));
         assert!(!ClosedAt::<Test>::contains_key(MARKET_ID));
         assert!(market_events()
             .iter()
             .any(|event| matches!(event, Event::MarketReaped { market } if *market == MARKET_ID)));
+        assert_try_state();
+    });
+}
+
+#[test]
+fn protocol_account_index_tracks_create_and_reap_and_try_state_detects_drift() {
+    new_test_ext().execute_with(|| {
+        assert!(!Market::is_market_protocol_account(&BOOK));
+        create_decision();
+        assert!(Market::is_market_protocol_account(&BOOK));
+        assert!(Market::is_market_protocol_account(&FEES));
+        assert_eq!(MarketProtocolAccounts::<Test>::get(BOOK), Some(1));
+        seed(MARKET_ID);
+        assert_eq!(MarketProtocolAccounts::<Test>::get(BOOK), Some(1));
+
+        System::set_block_number(5);
+        assert_ok!(Market::close(signed(MARKET_ADMIN), MARKET_ID));
+        settle_decision();
+        System::set_block_number(5 + MarketArchiveDelay::get());
+        assert_ok!(Market::reap(signed(BOB), MARKET_ID));
+        assert!(!Market::is_market_protocol_account(&BOOK));
+        assert!(!Market::is_market_protocol_account(&FEES));
+        assert_try_state();
+
+        MarketProtocolAccounts::<Test>::insert(BOOK, 1);
+        assert_err!(Market::do_try_state(), E::TryStateViolation);
+    });
+}
+
+#[test]
+fn ledger_reap_before_market_reap_keeps_pol_released_and_book_reapable() {
+    new_test_ext().execute_with(|| {
+        create_decision();
+        seed(MARKET_ID);
+        System::set_block_number(7);
+        assert_ok!(Market::close(signed(MARKET_ADMIN), MARKET_ID));
+        settle_decision();
+        assert_eq!(SettlementObservedAt::<Test>::get(MARKET_ID), Some(7));
+        assert!(Market::live_pol_commitments().is_empty());
+
+        System::set_block_number(7 + LedgerArchiveDelay::get() + 1);
+        for _ in 0..8 {
+            if pallet_conditional_ledger::Vaults::<Test>::get(PROPOSAL).is_none() {
+                break;
+            }
+            assert_ok!(Ledger::sweep_dust(signed(BOB), PROPOSAL));
+        }
+        assert!(pallet_conditional_ledger::Vaults::<Test>::get(PROPOSAL).is_none());
+        assert!(pallet_conditional_ledger::VaultTerminalAt::<Test>::get(PROPOSAL).is_none());
+        assert_eq!(SettlementObservedAt::<Test>::get(MARKET_ID), Some(7));
+        assert!(!Market::pol_obligation_live(
+            MARKET_ID,
+            &Markets::<Test>::get(MARKET_ID).expect("book remains")
+        ));
+        assert_try_state();
+
+        assert_ok!(Market::reap(signed(BOB), MARKET_ID));
+        assert!(!Markets::<Test>::contains_key(MARKET_ID));
         assert_try_state();
     });
 }
@@ -953,7 +1015,6 @@ fn crank_observe_records_on_grid_then_noops_within_interval() {
 
 #[test]
 fn ninth_twap_checkpoint_boundary_is_rejected_without_mutating_full_ring() {
-    // limit-coverage: TwapCheckpoints
     new_test_ext().execute_with(|| {
         create_decision();
         seed(MARKET_ID);
@@ -967,6 +1028,7 @@ fn ninth_twap_checkpoint_boundary_is_rejected_without_mutating_full_ring() {
             assert_ok!(Market::register_decision_window(
                 signed(MARKET_ADMIN),
                 MARKET_ID,
+                PROPOSAL,
                 0,
                 interval.saturating_mul(trailing_step),
                 interval.saturating_mul(trailing_step.saturating_add(1)),
@@ -989,6 +1051,7 @@ fn ninth_twap_checkpoint_boundary_is_rejected_without_mutating_full_ring() {
             Market::register_decision_window(
                 signed(MARKET_ADMIN),
                 MARKET_ID,
+                PROPOSAL,
                 0,
                 interval.saturating_mul(7),
                 interval.saturating_mul(8),
@@ -997,6 +1060,160 @@ fn ninth_twap_checkpoint_boundary_is_rejected_without_mutating_full_ring() {
         );
         assert_eq!(TwapCheckpoints::<Test>::get(MARKET_ID), checkpoints_before);
         assert_eq!(DecisionWindows::<Test>::get(MARKET_ID), windows_before);
+        assert_try_state();
+    });
+}
+
+#[test]
+fn baseline_prunes_only_after_last_terminal_consumer() {
+    new_test_ext().execute_with(|| {
+        create_baseline();
+        seed(BASELINE_ID);
+        for proposal in [10, 11] {
+            assert_ok!(Market::register_decision_window(
+                signed(MARKET_ADMIN),
+                BASELINE_ID,
+                proposal,
+                1,
+                2,
+                3,
+            ));
+        }
+        System::set_block_number(3);
+        assert_ok!(Market::seal_decision_window(
+            signed(MARKET_ADMIN),
+            BASELINE_ID,
+            3,
+        ));
+
+        assert_ok!(Market::consume_decision_windows(
+            signed(MARKET_ADMIN),
+            BASELINE_ID,
+            10,
+        ));
+        assert_eq!(DecisionWindows::<Test>::get(BASELINE_ID).len(), 1);
+        assert_eq!(DecisionWindowOwners::<Test>::get(BASELINE_ID).len(), 1);
+        assert!(!TwapCheckpoints::<Test>::get(BASELINE_ID).is_empty());
+
+        assert_ok!(Market::consume_decision_windows(
+            signed(MARKET_ADMIN),
+            BASELINE_ID,
+            11,
+        ));
+        assert!(DecisionWindows::<Test>::get(BASELINE_ID).is_empty());
+        assert!(DecisionWindowOwners::<Test>::get(BASELINE_ID).is_empty());
+        assert!(TwapCheckpoints::<Test>::get(BASELINE_ID).is_empty());
+        assert_try_state();
+    });
+}
+
+#[test]
+fn sequential_terminal_windows_prune_before_the_boundary_ring_fills() {
+    new_test_ext().execute_with(|| {
+        create_baseline();
+        seed(BASELINE_ID);
+        for proposal in 20_u64..24 {
+            let start = 1 + u32::try_from(proposal - 20).unwrap_or_default() * 3;
+            assert_ok!(Market::register_decision_window(
+                signed(MARKET_ADMIN),
+                BASELINE_ID,
+                proposal,
+                start,
+                start + 1,
+                start + 2,
+            ));
+            System::set_block_number(u64::from(start + 2));
+            assert_ok!(Market::seal_decision_window(
+                signed(MARKET_ADMIN),
+                BASELINE_ID,
+                start + 2,
+            ));
+            assert_ok!(Market::consume_decision_windows(
+                signed(MARKET_ADMIN),
+                BASELINE_ID,
+                proposal,
+            ));
+        }
+        assert!(DecisionWindows::<Test>::get(BASELINE_ID).is_empty());
+        assert!(TwapCheckpoints::<Test>::get(BASELINE_ID).is_empty());
+        assert_try_state();
+    });
+}
+
+#[test]
+fn full_cohort_extension_does_not_exhaust_window_owner_index() {
+    new_test_ext().execute_with(|| {
+        create_baseline();
+        seed(BASELINE_ID);
+        for proposal in 1_u64..=32 {
+            assert_ok!(Market::register_decision_window(
+                signed(MARKET_ADMIN),
+                BASELINE_ID,
+                proposal,
+                1,
+                2,
+                3,
+            ));
+            assert_ok!(Market::register_decision_window(
+                signed(MARKET_ADMIN),
+                BASELINE_ID,
+                proposal,
+                1,
+                2,
+                4,
+            ));
+        }
+        assert_eq!(DecisionWindowOwners::<Test>::get(BASELINE_ID).len(), 64);
+        assert_try_state();
+    });
+}
+
+#[test]
+fn pause_shift_extends_only_end_and_preserves_accumulated_evidence() {
+    new_test_ext().execute_with(|| {
+        create_decision();
+        seed(MARKET_ID);
+        assert_ok!(Market::register_decision_window(
+            signed(MARKET_ADMIN),
+            MARKET_ID,
+            PROPOSAL,
+            0,
+            1,
+            5,
+        ));
+        System::set_block_number(2);
+        assert_ok!(Market::crank_observe(signed(BOB), MARKET_ID));
+        let before = DecisionWindows::<Test>::get(MARKET_ID)[0];
+
+        System::set_block_number(6);
+        assert_ok!(Market::shift_decision_window(
+            signed(MARKET_ADMIN),
+            MARKET_ID,
+            5,
+            3,
+        ));
+        let after = DecisionWindows::<Test>::get(MARKET_ID)[0];
+        assert_eq!(after.start, before.start);
+        assert_eq!(after.trailing_start, before.trailing_start);
+        assert_eq!(after.end, 8);
+        assert_eq!(after.observations, before.observations);
+        assert_eq!(after.stale_events, before.stale_events);
+        assert_eq!(
+            after.contest_notional_blocks,
+            before.contest_notional_blocks
+        );
+        assert_eq!(
+            Market::registered_window_lengths(MARKET_ID, 8),
+            Some((8, 7))
+        );
+
+        System::set_block_number(8);
+        assert_ok!(Market::seal_decision_window(
+            signed(MARKET_ADMIN),
+            MARKET_ID,
+            8,
+        ));
+        assert!(Market::twap_at(MARKET_ID, 8, 8).is_some());
         assert_try_state();
     });
 }
@@ -1400,6 +1617,7 @@ fn registered_window_reads_exact_twap_close_spot_and_time_averaged_contest() {
         assert_ok!(Market::register_decision_window(
             signed(MARKET_ADMIN),
             MARKET_ID,
+            PROPOSAL,
             0,
             trailing,
             end,
@@ -1492,6 +1710,7 @@ fn contest_depth_accrues_forward_across_a_pre_observation_round_trip() {
         assert_ok!(Market::register_decision_window(
             signed(MARKET_ADMIN),
             MARKET_ID,
+            PROPOSAL,
             0,
             interval,
             end,
@@ -1543,6 +1762,7 @@ fn contest_depth_same_block_round_trip_before_observation_matches_empty_book() {
         assert_ok!(Market::register_decision_window(
             signed(MARKET_ADMIN),
             MARKET_ID,
+            PROPOSAL,
             0,
             interval,
             end,
@@ -1587,6 +1807,7 @@ fn contest_depth_held_for_the_whole_window_counts_fully() {
         assert_ok!(Market::register_decision_window(
             signed(MARKET_ADMIN),
             MARKET_ID,
+            PROPOSAL,
             start,
             trailing,
             end,
@@ -1632,6 +1853,7 @@ fn close_seals_end_checkpoint_after_an_end_minus_one_dust_trade() {
         assert_ok!(Market::register_decision_window(
             signed(MARKET_ADMIN),
             MARKET_ID,
+            PROPOSAL,
             0,
             trailing,
             end,
@@ -1705,6 +1927,7 @@ fn sealed_decision_window_ignores_a_later_trade_in_the_same_end_block() {
         assert_ok!(Market::register_decision_window(
             signed(MARKET_ADMIN),
             MARKET_ID,
+            PROPOSAL,
             0,
             trailing,
             end,
@@ -1787,6 +2010,7 @@ fn shared_baseline_decisions_read_one_sealed_value_across_an_interleaved_trade()
         assert_ok!(Market::register_decision_window(
             signed(MARKET_ADMIN),
             BASELINE_ID,
+            PROPOSAL,
             0,
             trailing,
             end,
@@ -1856,6 +2080,7 @@ fn observation_after_window_end_cannot_backfill_close_data() {
         assert_ok!(Market::register_decision_window(
             signed(MARKET_ADMIN),
             MARKET_ID,
+            PROPOSAL,
             0,
             trailing,
             end,

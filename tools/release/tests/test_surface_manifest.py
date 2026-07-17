@@ -339,6 +339,21 @@ class SurfaceManifestTests(unittest.TestCase):
                         "set_reserve_impaired — 08 §1.2 fail-static NAV is not enforced"
                     ),
                 },
+                {
+                    "id": "oracle.bond_custody_absent",
+                    "owner": "A9",
+                    "reason": (
+                        "SQ-232: oracle and attestor registration bonds have no "
+                        "economic custody — registration and slashing carry no capital cost"
+                    ),
+                },
+                {
+                    "id": "xcm.pallet_xcm_weights_placeholder",
+                    "owner": "B5",
+                    "reason": (
+                        "pallet_xcm still uses TestWeightInfo after claim_assets became Public"
+                    ),
+                },
             ],
         )
 

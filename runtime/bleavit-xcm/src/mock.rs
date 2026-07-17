@@ -14,7 +14,7 @@ use crate::{
 };
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{AsEnsureOriginWithArg, Contains, Everything, NeverEnsureOrigin, Nothing},
+    traits::{AsEnsureOriginWithArg, Everything, NeverEnsureOrigin, Nothing},
     weights::Weight,
 };
 use frame_system::EnsureSigned;
@@ -412,22 +412,6 @@ pub type TestRenewalDispatcher = XcmRenewalDispatcher<
     RelayWeightLimit,
 >;
 
-/// Mirrors B1a's outbound posture: a signed local account may reserve-transfer
-/// only the two pinned assets. The canonical Asset Hub destination restriction
-/// is independently enforced by `classify_pallet_xcm_call` (09 §6.2).
-pub struct TestReserveTransferFilter;
-impl Contains<(Location, Vec<Asset>)> for TestReserveTransferFilter {
-    fn contains((origin, assets): &(Location, Vec<Asset>)) -> bool {
-        let signed_origin = matches!(origin.unpack(), (0, [Junction::AccountId32 { .. }]));
-        signed_origin
-            && !assets.is_empty()
-            && assets.iter().all(|asset| {
-                asset.id.0 == crate::identity::usdc_location()
-                    || asset.id.0 == crate::identity::dot_location()
-            })
-    }
-}
-
 pub type LocalOriginConverter = (
     SovereignSignedViaLocation<TestLocationToAccountId, RuntimeOrigin>,
     SignedAccountId32AsNative<AnyNetwork, RuntimeOrigin>,
@@ -479,7 +463,7 @@ impl pallet_xcm::Config for Test {
     type XcmExecuteFilter = Everything;
     type XcmExecutor = XcmExecutor<XcmConfig>;
     type XcmTeleportFilter = Nothing;
-    type XcmReserveTransferFilter = TestReserveTransferFilter;
+    type XcmReserveTransferFilter = crate::filter::ReserveTransferFilter;
     type Weigher = FixedWeightBounds<UnitWeightCost, RuntimeCall, MaxInstructions>;
     type UniversalLocation = UniversalLocation;
     type RuntimeOrigin = RuntimeOrigin;

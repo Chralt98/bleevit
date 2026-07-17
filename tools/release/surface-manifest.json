@@ -12,6 +12,16 @@
       "id": "treasury.reserve_health_unwired",
       "owner": "B1a",
       "reason": "SQ-205: oracle ReserveHealth never reaches treasury set_reserve_impaired — 08 §1.2 fail-static NAV is not enforced"
+    },
+    {
+      "id": "oracle.bond_custody_absent",
+      "owner": "A9",
+      "reason": "SQ-232: oracle and attestor registration bonds have no economic custody — registration and slashing carry no capital cost"
+    },
+    {
+      "id": "xcm.pallet_xcm_weights_placeholder",
+      "owner": "B5",
+      "reason": "pallet_xcm still uses TestWeightInfo after claim_assets became Public"
     }
   ],
   "entries": [
@@ -234,7 +244,7 @@
           "Blake2_128Concat"
         ],
         "key": "(u16,u32,u16)",
-        "value": "oracle_core::RoundState{component:u16,epoch:u32,round:u8,spec_version:u16,reporter:[u8;32],value:futarchy_primitives::FixedU64(u64),evidence_hash:[u8;32],bond:u128,challenge_deadline:u32,extended:bool,challenger:Optionenum[None=0|Some=1([u8;32])],counter_value:Optionenum[None=0|Some=1(futarchy_primitives::FixedU64(u64))],acks:u8,report_hash:[u8;32],stake_at_risk:u128,cumulative_reporter_bond:u128,cumulative_challenger_bond:u128}"
+        "value": "oracle_core::RoundState{component:u16,epoch:u32,round:u8,spec_version:u16,reporter:[u8;32],value:futarchy_primitives::FixedU64(u64),evidence_hash:[u8;32],bond:u128,challenge_deadline:u32,extended:bool,challenger:Optionenum[None=0|Some=1([u8;32])],counter_value:Optionenum[None=0|Some=1(futarchy_primitives::FixedU64(u64))],acks:u8,report_hash:[u8;32],stake_at_risk:u128,cumulative_reporter_bond:u128,cumulative_challenger_bond:u128,round_one_bond:u128,round_cap:u8}"
       }
     },
     {

@@ -92,12 +92,21 @@ pub trait MarketAccess<AccountId> {
     /// Reset/reopen all proposal-owned books for an immediate guardian
     /// force-rerun. The shared Baseline is reopened if needed but never reset.
     fn force_rerun_markets(proposal: &Proposal<AccountId>) -> Result<(), DispatchError>;
+    /// Shift every still-open registered decision boundary by the consumed
+    /// dead-man pause duration before the resumed schedule is persisted.
+    fn resume_markets(
+        proposal: &Proposal<AccountId>,
+        previous_decide_at: BlockNumber,
+    ) -> Result<(), DispatchError>;
     /// Seal the proposal books after a final decision. The shared Baseline is
     /// closed by the adapter only when its last proposal has decided.
     fn close_markets(proposal: &Proposal<AccountId>) -> Result<(), DispatchError>;
     /// Seal this proposal's exact frozen decision boundary on every book,
     /// including its shared Baseline window.
     fn seal_decision_window(proposal: &Proposal<AccountId>) -> Result<(), DispatchError>;
+    /// Bidirectional try-state seam: every live Trading/Extended proposal must
+    /// still own its exact registered window on every deciding book.
+    fn decision_windows_live(proposal: &Proposal<AccountId>) -> bool;
     fn baseline_market(epoch: EpochId) -> Option<MarketId>;
     fn twap_full(market: MarketId) -> Option<FixedU64>;
     fn twap_full_at(market: MarketId, end: BlockNumber) -> Option<FixedU64>;
@@ -1781,6 +1790,17 @@ pub mod pallet {
         ) -> Result<(), CoreError> {
             let paused_at = state.dead_man_paused_at;
             let recovery_before = state.recovery_epoch;
+            let open_before = state
+                .proposals
+                .iter()
+                .filter(|proposal| {
+                    matches!(
+                        proposal.state,
+                        ProposalState::Trading | ProposalState::Extended
+                    )
+                })
+                .map(|proposal| (proposal.id, proposal.decide_at))
+                .collect::<Vec<_>>();
             state.sync_phase(now);
             if let Some(paused_at) = paused_at {
                 // Recovery starts while bit 6 remains latched, so the consumed
@@ -1793,6 +1813,18 @@ pub mod pallet {
                             ProposalState::Trading | ProposalState::Extended
                         )
                     }) {
+                        let previous_decide_at = open_before
+                            .iter()
+                            .find_map(|(pid, decide_at)| {
+                                (*pid == proposal.id).then_some(*decide_at)
+                            })
+                            .ok_or(CoreError::TryStateViolation)?;
+                        ensure!(
+                            previous_decide_at.checked_add(paused_for) == Some(proposal.decide_at),
+                            CoreError::ArithmeticOverflow
+                        );
+                        T::Market::resume_markets(proposal, previous_decide_at)
+                            .map_err(|_| CoreError::Ledger)?;
                         ProposalSchedules::<T>::try_mutate(proposal.id, |schedule| {
                             if let Some(schedule) = schedule {
                                 schedule.decide_at = schedule
@@ -2465,6 +2497,15 @@ pub mod pallet {
                 if pid != proposal.id {
                     return Err(TryRuntimeError::Other(
                         "epoch proposal map key does not match value",
+                    ));
+                }
+                if matches!(
+                    proposal.state,
+                    ProposalState::Trading | ProposalState::Extended
+                ) && !T::Market::decision_windows_live(&proposal)
+                {
+                    return Err(TryRuntimeError::Other(
+                        "epoch live proposal lacks a registered market window",
                     ));
                 }
                 let schedule = ProposalSchedules::<T>::get(pid).ok_or(TryRuntimeError::Other(

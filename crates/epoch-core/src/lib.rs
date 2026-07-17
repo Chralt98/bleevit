@@ -814,8 +814,9 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
     ///
     /// `commitments` carries the exact per-proposal live-Params prediction from
     /// the runtime boundary. An unavailable or overflowing prediction is treated
-    /// as unfundable (G-1). Removal is always from the reverse bond-priority end,
-    /// so the funded slate is a prefix of the qualified ranking.
+    /// as unfundable (G-1) and removed before budget ranking. The remaining
+    /// removal is from the reverse bond-priority end, so the funded slate is a
+    /// prefix of the fundable qualified ranking.
     pub fn shrink_qualified_slots(
         &mut self,
         origin: Origin,
@@ -838,6 +839,22 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         });
         let requested = u32::try_from(funded.len()).map_err(|_| Error::ArithmeticOverflow)?;
         let mut dropped = Vec::new();
+
+        // An unavailable prediction cannot be funded at any rank. Remove these
+        // entries first so a high-bond unavailable proposal cannot force the
+        // needless removal of every cheaper, fully priced proposal below it.
+        funded.retain(|(_, pid)| {
+            let commitment = commitments
+                .iter()
+                .find_map(|(candidate, amount)| (*candidate == *pid).then_some(*amount))
+                .flatten();
+            if commitment.is_some() {
+                true
+            } else {
+                dropped.push(*pid);
+                false
+            }
+        });
 
         loop {
             let total = funded.iter().try_fold(0_u128, |sum, (_, pid)| {
@@ -2380,6 +2397,39 @@ mod tests {
         assert_eq!(
             s.decide_engine(1, &input, &floor),
             Ok(DecisionOutcome::Reject(RejectReason::SecuritySizing))
+        );
+    }
+    #[test]
+    fn shrink_drops_unavailable_commitment_before_lower_bond_fundable_slots() {
+        let mut state = EpochState::<[u8; 32]>::new();
+        state.epoch.phase = EpochPhase::Seed;
+        for (pid, bond) in [(1, 300), (2, 200), (3, 100)] {
+            let mut proposal = prop(pid, ProposalState::Qualified);
+            proposal.bond = bond;
+            state.proposals.push(proposal);
+        }
+
+        let dropped = state
+            .shrink_qualified_slots(
+                Origin::Keeper,
+                100,
+                &[(1, None), (2, Some(60)), (3, Some(40))],
+            )
+            .unwrap();
+
+        assert_eq!(dropped, vec![1]);
+        assert_eq!(state.proposal(1).unwrap().state, ProposalState::Submitted);
+        assert_eq!(state.proposal(1).unwrap().epoch, 1);
+        assert_eq!(state.proposal(2).unwrap().state, ProposalState::Qualified);
+        assert_eq!(state.proposal(3).unwrap().state, ProposalState::Qualified);
+        assert_eq!(
+            state.events.last(),
+            Some(&Event::SlotsShrunk {
+                epoch: 0,
+                requested: 3,
+                funded: 2,
+                dropped: vec![1],
+            })
         );
     }
     #[test]

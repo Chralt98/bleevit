@@ -570,11 +570,6 @@ pub mod pallet {
         fn guardian_bond() -> futarchy_primitives::Balance {
             GUARDIAN_BOND
         }
-        /// 06 §5.4: retrospective-review deadline (2 epochs).
-        #[pallet::constant_name(ReviewDeadlineEpochs)]
-        fn review_deadline_epochs() -> EpochId {
-            REVIEW_DEADLINE_EPOCHS
-        }
     }
 
     #[pallet::genesis_config]

@@ -143,6 +143,10 @@ pub trait Attestations {
 pub trait GuardianState {
     fn rerun_held(pid: ProposalId) -> bool;
     fn ledger_freeze_active() -> bool;
+    /// Live constitution dead-man latch. This is intentionally read-only:
+    /// copying it into the guard's local storage would make a recovered
+    /// incident self-latching on the next aggregate persistence.
+    fn dead_man_freeze_active() -> bool;
 }
 
 /// Live constitution parameters. Queue timestamps are frozen once, at enqueue;
@@ -1166,7 +1170,9 @@ pub mod pallet {
             // (10) gate/freezes. Only the queue-time-frozen expedited lane may
             // treat its triggering ledger/migration freeze as satisfied.
             ensure!(
-                !HardGateBreach::<T>::get() && !DeadManFreeze::<T>::get(),
+                !HardGateBreach::<T>::get()
+                    && !DeadManFreeze::<T>::get()
+                    && !T::Guardian::dead_man_freeze_active(),
                 Error::<T>::FreezeActive
             );
             let triggering_freeze =

@@ -410,37 +410,32 @@ reason = "13 §1; 15 §4.6: dispatch-path limit coverage."
 key = "orc.bond_floor"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the oracle consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "orc.bond_bps"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the oracle consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "orc.rounds"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the oracle consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "orc.window"
 class = "dispatch-limit"
 genesis = true
 error = "Oracle::WindowClosed"
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / 07 §5: the marked test covers the kernel-constant consumer; the generated suite covers the amendment dispatch path only until B10 binds live Params."
+reason = "13 §1 / 07 §5: the marked test drives the live-Params consumer (amend-then-observe boundary movement); the generated suite covers the amendment dispatch path."
 
 [[entry]]
 key = "orc.rep_stake"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the oracle consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "dis.merit_min"
@@ -452,15 +447,13 @@ reason = "13 §1: derived B_1(c,m) at the dispute engine; intentionally unseeded
 key = "wt.quorum"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the oracle consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "wt.stake"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the oracle consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "orc.n_min"
@@ -485,36 +478,31 @@ key = "res.probe_int"
 class = "dispatch-limit"
 genesis = true
 error = "Oracle::ProbeTooEarly"
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / 07 §8: the marked test covers the kernel-constant consumer; the generated suite covers the amendment dispatch path only until B10 binds live Params."
+reason = "13 §1 / 07 §8: the marked test drives the live-Params consumer (amend-then-observe boundary movement); the generated suite covers the amendment dispatch path."
 
 [[entry]]
 key = "res.probe_to"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its reserve-probe kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the reserve-probe consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "res.probe_amount"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its reserve-probe kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the reserve-probe consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "res.fail_thr"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its reserve-probe kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the reserve-probe consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "res.recover_thr"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; oracle-core still consumes its reserve-probe kernel constant until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the reserve-probe consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "grd.bond"
@@ -642,23 +630,20 @@ reason = "13 §1: unseeded operating-budget value — [VERIFY]-gated on Phase-2/
 key = "grd.review_dl"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; guardian-core still consumes REVIEW_DEADLINE_EPOCHS until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the guardian review-deadline consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "att.bond"
 class = "param-bounds"
 genesis = true
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / rule 7: the generated suite covers the amendment dispatch path only; attestor-core still consumes ATTESTOR_BOND until B10."
+reason = "13 §1 / rule 7: amendment bounds covered by the generated per-key suite; the attestor bond consumer reads live Params (genesis-default fallback) since B10."
 
 [[entry]]
 key = "att.window"
 class = "dispatch-limit"
 genesis = true
 error = "Attestor::ChallengeWindowClosed"
-consumer_binding = "kernel-constant (B10)"
-reason = "13 §1 / 06 §7: the marked test covers the kernel-constant consumer; the generated suite covers the amendment dispatch path only until B10 binds live Params."
+reason = "13 §1 / 06 §7: the marked test drives the live-Params consumer (amend-then-observe boundary movement); the generated suite covers the amendment dispatch path."
 
 [[entry]]
 key = "ledger.min_split"
@@ -1033,19 +1018,19 @@ reason = "13 §4: upsert-keyed finite BudgetLine enum has fewer variants than th
 key = "Treasury pending outflows"
 class = "dispatch-limit"
 error = "Treasury::TooManyObligations"
-reason = "13 §4 / 08 §1.2: execution-guard persist re-derives and mirrors every queued treasury outflow; its 32-entry Queue is structurally below this 64-entry bound, with the 65th wired-helper rejection covered."
+reason = "13 §4 / 08 §1.2: execution-guard persist re-derives and mirrors every queued treasury outflow; its 32-entry Queue is structurally below this 64-entry bound, with the 65th wired-helper rejection covered. The 65th outflow is structurally unreachable in production because the queue is bounded to 32; the test exercises the guard by direct state construction."
 
 [[entry]]
 key = "Treasury POL commitments"
 class = "dispatch-limit"
 error = "Treasury::TooManyObligations"
-reason = "13 §4 / 08 §1.2: market seed, settlement and reap transactionally mirror exact per-book headroom, with the 197th wired-helper rejection covered."
+reason = "13 §4 / 08 §1.2: market seed, settlement and reap transactionally mirror exact per-book headroom, with the 197th wired-helper rejection covered. The 197th commitment is structurally unreachable in production because live books are bounded to 196; the test exercises the guard by direct state construction."
 
 [[entry]]
 key = "Treasury coretime obligations"
 class = "unwired"
-reason = "13 §4 / 09 §4: both 8-entry helper behaviors are covered, but production still lacks an authenticated Coretime quote/freshness source and asset-denomination conversion from the USDC budget line to the DOT XCM route; note/prune cannot be wired without inventing protocol semantics."
-owner = "B10"
+reason = "13 §4 / 09 §4: both 8-entry helper behaviors are covered (bounds + eviction tested), but production still lacks an authenticated Coretime quote/freshness source and the USDC-budget-line-to-DOT-route denomination rule (PLAN SQ-234/SQ-235); note/prune cannot be wired without inventing protocol semantics — re-owned to B12 at the B10 close."
+owner = "B12"
 
 [[entry]]
 key = "xcm.dot_per_sec"

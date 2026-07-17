@@ -8,3 +8,5 @@
 # runtime/bleavit-runtime/src/weights/pallet_constitution.rs set_param: storage proof grew after adding validation
 # runtime/bleavit-runtime/src/weights/pallet_retired.rs *: pallet retired by approved migration
 #
+runtime/bleavit-runtime/src/weights/pallet_welfare.rs record_snapshot: B10 dead-man detector — record_snapshot now maintains the SnapshotDeadline marker (epoch-schedule read + prior-snapshot correspondence), regenerated with the 05 §4.8 snapshot-overdue machinery
+runtime/bleavit-runtime/src/weights/pallet_welfare.rs register_spec: B10 dead-man detector — register_spec now derives the first snapshot due-block from the epoch schedule at spec activation, regenerated with the 05 §4.8 snapshot-overdue machinery

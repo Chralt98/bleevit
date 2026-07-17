@@ -391,6 +391,8 @@ fn report_happy_path_opens_round_with_scaled_bond() {
         // 07 §6.2: `B_1 = max(10k, 250 bps × StakeAtRisk)` — the mock's 400k
         // scaled hits the floor exactly (`= 10_000_000_000`).
         assert_eq!(round.bond, bond(1));
+        assert_eq!(round.round_one_bond, bond(1));
+        assert_eq!(round.round_cap, ORC_ROUNDS);
         // 07 §5.2: 72 h (`orc.window`) challenge window from the report block.
         assert_eq!(round.challenge_deadline, 1 + ORC_WINDOW_BLOCKS);
         assert!(!round.extended);
@@ -1402,10 +1404,24 @@ fn request_adjudication_before_round_three_is_window_open() {
 }
 
 #[test]
-fn amended_round_cap_moves_terminal_adjudication_boundary() {
+fn amended_round_cap_moves_terminal_boundary_for_next_game_only() {
     new_test_ext().execute_with(|| {
         register_reporter(1);
         assert_ok!(do_report(1, E, reported_value(), h(9)));
+
+        let mut amended = ParamsValue::get();
+        amended.rounds = 2;
+        ParamsValue::set(amended);
+        assert_ok!(do_report(1, E + 1, reported_value(), h(19)));
+        assert_eq!(
+            Rounds::<Test>::get((C, E, V)).map(|round| round.round_cap),
+            Some(ORC_ROUNDS)
+        );
+        assert_eq!(
+            Rounds::<Test>::get((C, E + 1, V)).map(|round| round.round_cap),
+            Some(2)
+        );
+
         assert_ok!(Oracle::challenge(
             RuntimeOrigin::signed(acc(4)),
             C,
@@ -1414,14 +1430,22 @@ fn amended_round_cap_moves_terminal_adjudication_boundary() {
             counter_value(),
             h(10)
         ));
-
-        let mut amended = ParamsValue::get();
-        amended.rounds = 2;
-        ParamsValue::set(amended);
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(5)),
+            C,
+            E + 1,
+            V,
+            counter_value(),
+            h(20)
+        ));
         set_block(1 + ORC_WINDOW_BLOCKS);
         assert_ok!(Oracle::crank_round_close(RuntimeOrigin::signed(acc(9)), 20));
         assert_eq!(
             Rounds::<Test>::get((C, E, V)).map(|round| round.round),
+            Some(2)
+        );
+        assert_eq!(
+            Rounds::<Test>::get((C, E + 1, V)).map(|round| round.round),
             Some(2)
         );
         assert_ok!(Oracle::challenge(
@@ -1432,7 +1456,108 @@ fn amended_round_cap_moves_terminal_adjudication_boundary() {
             counter_value(),
             h(11)
         ));
-        assert_ok!(Oracle::request_adjudication(C, E, V, 77));
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(5)),
+            C,
+            E + 1,
+            V,
+            counter_value(),
+            h(21)
+        ));
+
+        assert_noop!(
+            Oracle::request_adjudication(C, E, V, 77),
+            Error::<Test>::WindowOpen
+        );
+        assert_ok!(Oracle::request_adjudication(C, E + 1, V, 78));
+
+        set_block(1 + 2 * ORC_WINDOW_BLOCKS);
+        assert_ok!(Oracle::crank_round_close(RuntimeOrigin::signed(acc(9)), 20));
+        assert_eq!(
+            Rounds::<Test>::get((C, E, V)).map(|round| round.round),
+            Some(3)
+        );
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(4)),
+            C,
+            E,
+            V,
+            counter_value(),
+            h(12)
+        ));
+        assert_ok!(Oracle::request_adjudication(C, E, V, 79));
+        assert_ok!(Oracle::do_try_state());
+    });
+}
+
+#[test]
+fn mid_game_bond_amendment_does_not_reprice_later_rounds() {
+    new_test_ext().execute_with(|| {
+        register_reporter(1);
+        let opening = ParamsValue::get();
+        let opening_bond = round_bond(StakeAtRiskValue::get(), 1, &opening)
+            .expect("default game schedule is representable");
+        assert_ok!(do_report(1, E, reported_value(), h(9)));
+
+        let amended = OracleParams {
+            bond_floor: opening_bond.saturating_mul(2),
+            bond_bps: 1_000,
+            ..opening
+        };
+        ParamsValue::set(amended);
+        assert_ok!(do_report(1, E + 1, reported_value(), h(19)));
+        let next_game = Rounds::<Test>::get((C, E + 1, V)).expect("next game opens");
+        assert_eq!(
+            next_game.round_one_bond,
+            round_bond(StakeAtRiskValue::get(), 1, &amended)
+                .expect("amended game schedule is representable")
+        );
+
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(4)),
+            C,
+            E,
+            V,
+            counter_value(),
+            h(10)
+        ));
+        set_block(1 + ORC_WINDOW_BLOCKS);
+        assert_ok!(Oracle::crank_round_close(RuntimeOrigin::signed(acc(9)), 20));
+        let round_two = Rounds::<Test>::get((C, E, V)).expect("old game escalates");
+        assert_eq!(round_two.round, 2);
+        assert_eq!(round_two.round_one_bond, opening_bond);
+        assert_eq!(round_two.bond, opening_bond.saturating_mul(2));
+        assert_ok!(Oracle::do_try_state());
+
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(4)),
+            C,
+            E,
+            V,
+            counter_value(),
+            h(11)
+        ));
+        set_block(1 + 2 * ORC_WINDOW_BLOCKS);
+        assert_ok!(Oracle::crank_round_close(RuntimeOrigin::signed(acc(9)), 20));
+        let round_three = Rounds::<Test>::get((C, E, V)).expect("old game reaches its cap");
+        assert_eq!(round_three.round, 3);
+        assert_eq!(round_three.bond, opening_bond.saturating_mul(4));
+        assert_ok!(Oracle::do_try_state());
+    });
+}
+
+#[test]
+fn try_state_survives_schedule_params_amendment_for_open_game() {
+    new_test_ext().execute_with(|| {
+        register_reporter(1);
+        assert_ok!(do_report(1, E, reported_value(), h(9)));
+        ParamsValue::set(OracleParams {
+            rounds: 2,
+            bond_floor: 100_000_000_000,
+            bond_bps: 1_000,
+            ..OracleParams::DEFAULT
+        });
+        assert_ok!(Oracle::do_try_state());
     });
 }
 
@@ -2275,16 +2400,38 @@ fn valid_round(round: u8) -> RoundState {
         stake_at_risk: stake,
         cumulative_reporter_bond: bond(round),
         cumulative_challenger_bond: 0,
+        round_one_bond: bond(1),
+        round_cap: ORC_ROUNDS,
     }
 }
 
 #[test]
 fn try_state_rejects_an_out_of_range_round() {
-    // 07 §13 machine invariant: every live round is in `1..=R_max`.
+    // 07 §13 machine invariant: every live round is in its frozen cap.
     new_test_ext().execute_with(|| {
         assert_ok!(Oracle::do_try_state());
         let mut bad = valid_round(1);
         bad.round = 5; // out of `1..=3`
+        Rounds::<Test>::insert((C, E, V), bad);
+        assert!(Oracle::do_try_state().is_err());
+    });
+}
+
+#[test]
+fn try_state_rejects_a_bond_outside_the_frozen_schedule() {
+    new_test_ext().execute_with(|| {
+        let mut bad = valid_round(2);
+        bad.bond = bad.bond.saturating_add(1);
+        Rounds::<Test>::insert((C, E, V), bad);
+        assert!(Oracle::do_try_state().is_err());
+    });
+}
+
+#[test]
+fn try_state_rejects_a_round_cap_outside_the_kernel_envelope() {
+    new_test_ext().execute_with(|| {
+        let mut bad = valid_round(1);
+        bad.round_cap = futarchy_primitives::kernel::ORC_ROUNDS_MAX.saturating_add(1);
         Rounds::<Test>::insert((C, E, V), bad);
         assert!(Oracle::do_try_state().is_err());
     });

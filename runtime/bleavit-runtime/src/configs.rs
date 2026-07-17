@@ -829,7 +829,7 @@ impl pallet_xcm::Config for Runtime {
     type XcmExecuteFilter = Nothing;
     type XcmExecutor = xcm_config::TrapRecoveryExecutor;
     type XcmTeleportFilter = Nothing;
-    type XcmReserveTransferFilter = Nothing;
+    type XcmReserveTransferFilter = bleavit_xcm::filter::ReserveTransferFilter;
     type Weigher = staging_xcm_builder::FixedWeightBounds<
         xcm_config::UnitWeightCost,
         RuntimeCall,
@@ -1103,12 +1103,15 @@ fn live_param(key: ParamKey) -> Option<pallet_constitution::ParamValue> {
     pallet_constitution::Params::<Runtime>::get(key).map(|record| record.value)
 }
 pub(crate) fn balance_param(name: &[u8]) -> Balance {
+    balance_param_or(name, 0)
+}
+fn balance_param_or(name: &[u8], default: Balance) -> Balance {
     let key = pallet_constitution::key16(name);
     match live_param(key) {
         Some(pallet_constitution::ParamValue::Balance(value)) => value,
         _ => match default_param(key) {
             Some(pallet_constitution::ParamValue::Balance(value)) => value,
-            _ => 0,
+            _ => default,
         },
     }
 }
@@ -1175,54 +1178,84 @@ impl pallet_conditional_ledger::InflowCapGate<AccountId> for RuntimeLedgerInflow
     }
 }
 fn fixed_param(name: &[u8]) -> u64 {
+    fixed_param_or(name, 0)
+}
+fn fixed_param_or(name: &[u8], default: u64) -> u64 {
     let key = pallet_constitution::key16(name);
     match live_param(key) {
         Some(pallet_constitution::ParamValue::Fixed(value)) => value.0,
         _ => match default_param(key) {
             Some(pallet_constitution::ParamValue::Fixed(value)) => value.0,
-            _ => 0,
+            _ => default,
         },
     }
 }
 fn u32_param(name: &[u8]) -> u32 {
+    u32_param_or(name, 0)
+}
+fn u32_param_or(name: &[u8], default: u32) -> u32 {
     let key = pallet_constitution::key16(name);
     match live_param(key) {
         Some(pallet_constitution::ParamValue::U32(value)) => value,
         _ => match default_param(key) {
             Some(pallet_constitution::ParamValue::U32(value)) => value,
-            _ => 0,
+            _ => default,
         },
     }
 }
 fn perbill_param(name: &[u8]) -> u32 {
+    perbill_param_or(name, 0)
+}
+fn perbill_param_or(name: &[u8], default: u32) -> u32 {
     let key = pallet_constitution::key16(name);
     match live_param(key) {
         Some(pallet_constitution::ParamValue::Perbill(value)) => value,
         _ => match default_param(key) {
             Some(pallet_constitution::ParamValue::Perbill(value)) => value,
-            _ => 0,
+            _ => default,
         },
     }
 }
 fn percent_param(name: &[u8]) -> u8 {
+    percent_param_or(name, 0)
+}
+fn percent_param_or(name: &[u8], default: u8) -> u8 {
     let key = pallet_constitution::key16(name);
     match live_param(key) {
         Some(pallet_constitution::ParamValue::Percent(value)) => value,
         _ => match default_param(key) {
             Some(pallet_constitution::ParamValue::Percent(value)) => value,
-            _ => 0,
+            _ => default,
         },
     }
 }
 fn u8_param(name: &[u8]) -> u8 {
+    u8_param_or(name, 0)
+}
+fn u8_param_or(name: &[u8], default: u8) -> u8 {
     let key = pallet_constitution::key16(name);
     match live_param(key) {
         Some(pallet_constitution::ParamValue::U8(value)) => value,
         _ => match default_param(key) {
             Some(pallet_constitution::ParamValue::U8(value)) => value,
-            _ => 0,
+            _ => default,
         },
     }
+}
+
+fn perbill_bps_param_or(name: &[u8], default_bps: u32) -> u32 {
+    const PPB_PER_BPS: u32 = 100_000;
+    let key = pallet_constitution::key16(name);
+    let parts = match live_param(key) {
+        Some(pallet_constitution::ParamValue::Perbill(value)) => Some(value),
+        _ => match default_param(key) {
+            Some(pallet_constitution::ParamValue::Perbill(value)) => Some(value),
+            _ => None,
+        },
+    };
+    parts.map_or(default_bps, |value| {
+        (value / PPB_PER_BPS).saturating_add(u32::from(value % PPB_PER_BPS != 0))
+    })
 }
 
 /// Live 07 §§4–8 oracle/reserve parameters. The constitution stores
@@ -1231,19 +1264,20 @@ fn u8_param(name: &[u8]) -> u8 {
 pub struct RuntimeOracleParams;
 impl pallet_oracle::OracleParamsProvider for RuntimeOracleParams {
     fn get() -> pallet_oracle::OracleParams {
+        let defaults = pallet_oracle::OracleParams::DEFAULT;
         pallet_oracle::OracleParams {
-            window: u32_param(b"orc.window"),
-            rounds: u8_param(b"orc.rounds"),
-            bond_floor: balance_param(b"orc.bond_floor"),
-            bond_bps: perbill_param(b"orc.bond_bps") / 100_000,
-            reporter_stake: balance_param(b"orc.rep_stake"),
-            watchtower_stake: balance_param(b"wt.stake"),
-            watchtower_quorum: u8_param(b"wt.quorum"),
-            probe_interval: u32_param(b"res.probe_int"),
-            probe_timeout: u32_param(b"res.probe_to"),
-            fail_threshold: u8_param(b"res.fail_thr"),
-            recover_threshold: u8_param(b"res.recover_thr"),
-            probe_amount: balance_param(b"res.probe_amount"),
+            window: u32_param_or(b"orc.window", defaults.window),
+            rounds: u8_param_or(b"orc.rounds", defaults.rounds),
+            bond_floor: balance_param_or(b"orc.bond_floor", defaults.bond_floor),
+            bond_bps: perbill_bps_param_or(b"orc.bond_bps", defaults.bond_bps),
+            reporter_stake: balance_param_or(b"orc.rep_stake", defaults.reporter_stake),
+            watchtower_stake: balance_param_or(b"wt.stake", defaults.watchtower_stake),
+            watchtower_quorum: u8_param_or(b"wt.quorum", defaults.watchtower_quorum),
+            probe_interval: u32_param_or(b"res.probe_int", defaults.probe_interval),
+            probe_timeout: u32_param_or(b"res.probe_to", defaults.probe_timeout),
+            fail_threshold: u8_param_or(b"res.fail_thr", defaults.fail_threshold),
+            recover_threshold: u8_param_or(b"res.recover_thr", defaults.recover_threshold),
+            probe_amount: balance_param_or(b"res.probe_amount", defaults.probe_amount),
         }
     }
 }
@@ -1252,9 +1286,10 @@ impl pallet_oracle::OracleParamsProvider for RuntimeOracleParams {
 pub struct RuntimeAttestorParams;
 impl pallet_attestor::AttestorParamsProvider for RuntimeAttestorParams {
     fn get() -> pallet_attestor::AttestorParams {
+        let defaults = pallet_attestor::AttestorParams::DEFAULT;
         pallet_attestor::AttestorParams {
-            bond: balance_param(b"att.bond"),
-            challenge_window: u32_param(b"att.window"),
+            bond: balance_param_or(b"att.bond", defaults.bond),
+            challenge_window: u32_param_or(b"att.window", defaults.challenge_window),
         }
     }
 }
@@ -1264,7 +1299,7 @@ impl pallet_attestor::AttestorParamsProvider for RuntimeAttestorParams {
 pub struct GuardianReviewDeadline;
 impl Get<EpochId> for GuardianReviewDeadline {
     fn get() -> EpochId {
-        u32_param(b"grd.review_dl")
+        u32_param_or(b"grd.review_dl", pallet_guardian::REVIEW_DEADLINE_EPOCHS)
     }
 }
 
@@ -1525,14 +1560,10 @@ impl Contains<AccountId> for ProtocolAccounts {
             execution_guard_account(),
         ];
         accounts.contains(who)
-            // Market books and fee pots are deterministic protocol custody
-            // accounts too. They are allocated dynamically, so recognize the
-            // accounts from the live book set (hard-capped at 196 by I-21)
-            // instead of pretending the unused shared BOOK/FEES accounts cover
-            // them. This keeps seed-created positions deposit-exempt exactly as
-            // the ledger protocol-account rule requires.
-            || pallet_market::Markets::<Runtime>::iter_values()
-                .any(|book| book.account == *who || book.fees_account == *who)
+            // Dynamically allocated book and fee custody accounts use the
+            // market pallet's refcounted O(1) membership index. Creation/reap
+            // maintain its 2*MaxLiveMarkets bound transactionally.
+            || pallet_market::Pallet::<Runtime>::is_market_protocol_account(who)
     }
 }
 parameter_types! { pub InsuranceAccount: AccountId = insurance_account(); }
@@ -1841,6 +1872,7 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
                 pallet_market::Pallet::<Runtime>::register_decision_window(
                     epoch_signed_origin(),
                     id,
+                    proposal.id,
                     start,
                     trailing_start,
                     end,
@@ -1869,6 +1901,7 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             pallet_market::Pallet::<Runtime>::register_decision_window(
                 epoch_signed_origin(),
                 markets.baseline,
+                proposal.id,
                 start,
                 trailing_start,
                 end,
@@ -1903,6 +1936,7 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             pallet_market::Pallet::<Runtime>::register_decision_window(
                 epoch_signed_origin(),
                 id,
+                proposal.id,
                 start,
                 trailing_start,
                 end,
@@ -1986,6 +2020,7 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
                 pallet_market::Pallet::<Runtime>::register_decision_window(
                     epoch_signed_origin(),
                     id,
+                    proposal.id,
                     start,
                     trailing_start,
                     end,
@@ -2048,6 +2083,7 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             pallet_market::Pallet::<Runtime>::register_decision_window(
                 epoch_signed_origin(),
                 id,
+                proposal.id,
                 start,
                 trailing_start,
                 proposal.decide_at,
@@ -2056,6 +2092,7 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
         pallet_market::Pallet::<Runtime>::register_decision_window(
             epoch_signed_origin(),
             markets.baseline,
+            proposal.id,
             start,
             trailing_start,
             proposal.decide_at,
@@ -2095,6 +2132,7 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             pallet_market::Pallet::<Runtime>::register_decision_window(
                 epoch_signed_origin(),
                 id,
+                proposal.id,
                 start,
                 trailing_start,
                 proposal.decide_at,
@@ -2107,10 +2145,45 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
         pallet_market::Pallet::<Runtime>::register_decision_window(
             epoch_signed_origin(),
             markets.baseline,
+            proposal.id,
             start,
             trailing_start,
             proposal.decide_at,
         )
+    }
+
+    fn resume_markets(
+        proposal: &futarchy_primitives::Proposal<AccountId>,
+        previous_decide_at: BlockNumber,
+    ) -> Result<(), DispatchError> {
+        #[cfg(feature = "runtime-benchmarks")]
+        {
+            let _ = (proposal, previous_decide_at);
+            return Ok(());
+        }
+        let markets = proposal
+            .markets
+            .ok_or(DispatchError::Other("resumed market set missing"))?;
+        let paused_for =
+            proposal
+                .decide_at
+                .checked_sub(previous_decide_at)
+                .ok_or(DispatchError::Arithmetic(
+                    sp_runtime::ArithmeticError::Underflow,
+                ))?;
+        let mut ids = Vec::from([markets.accept, markets.reject, markets.baseline]);
+        if let Some(gates) = markets.gates {
+            ids.extend(gates);
+        }
+        for id in ids {
+            pallet_market::Pallet::<Runtime>::shift_decision_window(
+                epoch_signed_origin(),
+                id,
+                previous_decide_at,
+                paused_for,
+            )?;
+        }
+        Ok(())
     }
 
     fn close_markets(
@@ -2129,6 +2202,11 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             proposal_books.extend(gates);
         }
         for id in proposal_books {
+            pallet_market::Pallet::<Runtime>::consume_decision_windows(
+                epoch_signed_origin(),
+                id,
+                proposal.id,
+            )?;
             pallet_market::Pallet::<Runtime>::close(epoch_signed_origin(), id)?;
         }
         let baseline_still_live = pallet_epoch::Proposals::<Runtime>::iter_values().any(|other| {
@@ -2142,6 +2220,11 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
                         | futarchy_primitives::ProposalState::Extended
                 )
         });
+        pallet_market::Pallet::<Runtime>::consume_decision_windows(
+            epoch_signed_origin(),
+            markets.baseline,
+            proposal.id,
+        )?;
         if !baseline_still_live {
             pallet_market::Pallet::<Runtime>::close(epoch_signed_origin(), markets.baseline)?;
         }
@@ -2173,6 +2256,21 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
         Ok(())
     }
 
+    fn decision_windows_live(proposal: &futarchy_primitives::Proposal<AccountId>) -> bool {
+        let Some(markets) = proposal.markets else {
+            return false;
+        };
+        let mut ids = Vec::from([markets.accept, markets.reject, markets.baseline]);
+        if let Some(gates) = markets.gates {
+            ids.extend(gates);
+        }
+        ids.into_iter().all(|id| {
+            pallet_market::DecisionWindowOwners::<Runtime>::get(id)
+                .iter()
+                .any(|owner| owner.0 == proposal.id && owner.3 == proposal.decide_at)
+        })
+    }
+
     fn baseline_market(epoch: EpochId) -> Option<futarchy_primitives::MarketId> {
         #[cfg(feature = "runtime-benchmarks")]
         {
@@ -2188,7 +2286,8 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             return Some(benchmark_quote(market));
         }
         let end = market_window_end(market)?;
-        pallet_market::Pallet::<Runtime>::twap_at(market, end, u32_param(b"dec.window"))
+        let (full, _) = pallet_market::Pallet::<Runtime>::registered_window_lengths(market, end)?;
+        pallet_market::Pallet::<Runtime>::twap_at(market, end, full)
     }
 
     fn twap_full_at(market: futarchy_primitives::MarketId, end: BlockNumber) -> Option<FixedU64> {
@@ -2197,7 +2296,8 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             let _ = end;
             return Some(benchmark_quote(market));
         }
-        pallet_market::Pallet::<Runtime>::twap_at(market, end, u32_param(b"dec.window"))
+        let (full, _) = pallet_market::Pallet::<Runtime>::registered_window_lengths(market, end)?;
+        pallet_market::Pallet::<Runtime>::twap_at(market, end, full)
     }
 
     fn twap_trailing_at(
@@ -2210,7 +2310,10 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             let _ = (end, window);
             return Some(benchmark_quote(market));
         }
-        pallet_market::Pallet::<Runtime>::twap_at(market, end, window)
+        let _ = window;
+        let (_, trailing) =
+            pallet_market::Pallet::<Runtime>::registered_window_lengths(market, end)?;
+        pallet_market::Pallet::<Runtime>::twap_at(market, end, trailing)
     }
 
     fn spot_at(market: futarchy_primitives::MarketId, end: BlockNumber) -> Option<FixedU64> {
@@ -2256,6 +2359,11 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
         let Some(contest) = contest_floor_for_grade(market, end, role, class, params) else {
             return false;
         };
+        let Some((full_window, _)) =
+            pallet_market::Pallet::<Runtime>::registered_window_lengths(market, end)
+        else {
+            return false;
+        };
         let (coverage, convergence, pol_floor, sanity) = match role {
             pallet_epoch::BookRole::Decision => (
                 params.coverage_pct,
@@ -2271,7 +2379,7 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             ),
             pallet_epoch::BookRole::Gate => {
                 let near_boundary =
-                    pallet_market::Pallet::<Runtime>::twap_at(market, end, params.decision_window)
+                    pallet_market::Pallet::<Runtime>::twap_at(market, end, full_window)
                         .is_some_and(|twap| {
                             twap.0 < kernel::DECISION_SANITY_MIN_1E9
                                 || twap.0 > kernel::DECISION_SANITY_MAX_1E9
@@ -2295,7 +2403,7 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
         pallet_market::Pallet::<Runtime>::decision_grade_at(
             market,
             end,
-            params.decision_window,
+            full_window,
             coverage,
             convergence,
             contest,
@@ -2317,7 +2425,6 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
         #[cfg(not(feature = "runtime-benchmarks"))]
         pallet_epoch::Proposals::<Runtime>::get(pid).and_then(|proposal| {
             let markets = proposal.markets?;
-            let window = u32_param(b"dec.window");
             let mut total = 0_u128;
             for id in [markets.accept, markets.reject] {
                 if !pallet_market::SeededMarkets::<Runtime>::contains_key(id) {
@@ -2325,6 +2432,10 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
                 }
                 let book = pallet_market::Markets::<Runtime>::get(id)?;
                 let pol = pallet_market::core_market::maker_loss_floor(book.b)?;
+                let (window, _) = pallet_market::Pallet::<Runtime>::registered_window_lengths(
+                    id,
+                    proposal.decide_at,
+                )?;
                 let contest = pallet_market::Pallet::<Runtime>::average_contest_at(
                     id,
                     proposal.decide_at,
@@ -2381,32 +2492,10 @@ impl Contains<futarchy_primitives::MarketId> for RuntimeInDecisionWindow {
 }
 
 fn live_pol_commitments() -> Result<Vec<Balance>, DispatchError> {
-    let mut books = pallet_market::Markets::<Runtime>::iter()
-        .filter(|(id, book)| pallet_market::Pallet::<Runtime>::pol_obligation_live(*id, book))
-        .collect::<Vec<_>>();
-    books.sort_by_key(|(id, _)| *id);
-    books
-        .into_iter()
-        .map(|(id, book)| {
-            // A rerun is funded by two separately ceil-rounded original-size
-            // seeds. Reconstruct that exact deposited headroom; ceil(2b·ln2)
-            // can otherwise be one base unit lower than 2·ceil(b·ln2).
-            if pallet_market::RerunSeededMarkets::<Runtime>::contains_key(id) {
-                let original_b = book.b.checked_div(2).ok_or(DispatchError::Other(
-                    "live POL commitment arithmetic failed",
-                ))?;
-                pallet_market::core_market::seed_headroom(original_b)
-                    .ok()
-                    .and_then(|headroom| headroom.checked_mul(2))
-                    .ok_or(DispatchError::Other(
-                        "live POL commitment arithmetic failed",
-                    ))
-            } else {
-                pallet_market::core_market::seed_headroom(book.b)
-                    .map_err(|_| DispatchError::Other("live POL commitment arithmetic failed"))
-            }
-        })
-        .collect()
+    // One bounded storage-value read. The market lifecycle maintains exact,
+    // market-id-sorted amounts transactionally at seed/rerun/terminal/reap;
+    // this replaces the former 196-key `Markets` scan on every sync caller.
+    Ok(pallet_market::Pallet::<Runtime>::live_pol_commitments())
 }
 
 /// Mirror every seeded, still-live book into NAV. Baseline books are included
@@ -2450,12 +2539,8 @@ impl pallet_epoch::OracleAccess for RuntimeEpochOracle {
         pallet_oracle::Rounds::<Runtime>::iter().any(|(_, round)| {
             round.spec_version == spec
                 && round.challenger.is_some()
-                && pallet_oracle::round_bond(
-                    round.stake_at_risk,
-                    1,
-                    &<RuntimeOracleParams as pallet_oracle::OracleParamsProvider>::get(),
-                )
-                .map_or(true, |floor| round.bond >= floor)
+                && pallet_oracle::stored_round_bond(round.round_one_bond, 1, round.round_cap)
+                    .map_or(true, |floor| round.bond >= floor)
         })
     }
 }
@@ -2975,7 +3060,11 @@ impl pallet_epoch::PolBudget<AccountId> for RuntimePolBudget {
         #[cfg(not(feature = "runtime-benchmarks"))]
         {
             let nav = crate::FutarchyTreasury::nav().spendable_nav;
-            Perbill::from_parts(perbill_param(b"pol.budget_epoch")).mul_floor(nav)
+            Perbill::from_parts(perbill_param_or(
+                b"pol.budget_epoch",
+                pallet_constitution::POL_BUDGET_EPOCH_DEFAULT_PPB,
+            ))
+            .mul_floor(nav)
         }
     }
 
@@ -2983,10 +3072,18 @@ impl pallet_epoch::PolBudget<AccountId> for RuntimePolBudget {
         proposal: &futarchy_primitives::Proposal<AccountId>,
     ) -> Option<pallet_epoch::PolSeedPlan> {
         let b = match proposal.class {
-            futarchy_primitives::ProposalClass::Param => balance_param(b"pol.b.param"),
-            futarchy_primitives::ProposalClass::Treasury => balance_param(b"pol.b.trs"),
-            futarchy_primitives::ProposalClass::Code => balance_param(b"pol.b.code"),
-            futarchy_primitives::ProposalClass::Meta => balance_param(b"pol.b.meta"),
+            futarchy_primitives::ProposalClass::Param => {
+                balance_param_or(b"pol.b.param", pallet_constitution::POL_B_DEFAULTS[0])
+            }
+            futarchy_primitives::ProposalClass::Treasury => {
+                balance_param_or(b"pol.b.trs", pallet_constitution::POL_B_DEFAULTS[1])
+            }
+            futarchy_primitives::ProposalClass::Code => {
+                balance_param_or(b"pol.b.code", pallet_constitution::POL_B_DEFAULTS[2])
+            }
+            futarchy_primitives::ProposalClass::Meta => {
+                balance_param_or(b"pol.b.meta", pallet_constitution::POL_B_DEFAULTS[3])
+            }
             futarchy_primitives::ProposalClass::Constitutional => return None,
         };
         let decision = pallet_market::core_market::seed_headroom(b)
@@ -2999,7 +3096,7 @@ impl pallet_epoch::PolBudget<AccountId> for RuntimePolBudget {
             AccountId,
         >>::treasury_gate_required(proposal);
         if gate_required {
-            let gate_b = balance_param(b"pol.b_gate");
+            let gate_b = balance_param_or(b"pol.b_gate", pallet_constitution::POL_GATE_B_DEFAULT);
             let gates = pallet_market::core_market::seed_headroom(gate_b)
                 .ok()?
                 .checked_mul(4)?;
@@ -3094,7 +3191,10 @@ impl pallet_epoch::LedgerResolution for RuntimeEpochLedger {
     }
 
     fn void(pid: futarchy_primitives::ProposalId) -> DispatchResult {
-        ConditionalLedger::void(epoch_signed_origin(), pid)
+        frame_support::storage::with_storage_layer(|| {
+            ConditionalLedger::void(epoch_signed_origin(), pid)?;
+            pallet_market::Pallet::<Runtime>::observe_proposal_terminal(pid)
+        })
     }
 }
 
@@ -3333,12 +3433,14 @@ impl pallet_welfare::MetricInputs for RuntimeMetricInputs {
 pub struct WelfareLedger;
 impl pallet_welfare::LedgerSettlement for WelfareLedger {
     fn settle_scalar(pid: u64, score: FixedU64) -> frame_support::dispatch::DispatchResult {
-        ConditionalLedger::settle_scalar(
-            RuntimeOrigin::signed(welfare_settlement_account()),
-            pid,
-            score,
-        )?;
-        pallet_market::Pallet::<Runtime>::sync_pol_commitments_after_settlement()
+        frame_support::storage::with_storage_layer(|| {
+            ConditionalLedger::settle_scalar(
+                RuntimeOrigin::signed(welfare_settlement_account()),
+                pid,
+                score,
+            )?;
+            pallet_market::Pallet::<Runtime>::observe_proposal_terminal(pid)
+        })
     }
     fn settle_gate(
         pid: u64,
@@ -3357,12 +3459,14 @@ impl pallet_welfare::LedgerSettlement for WelfareLedger {
         )
     }
     fn settle_baseline(epoch: EpochId, score: FixedU64) -> frame_support::dispatch::DispatchResult {
-        ConditionalLedger::settle_baseline(
-            RuntimeOrigin::signed(welfare_settlement_account()),
-            epoch,
-            score,
-        )?;
-        pallet_market::Pallet::<Runtime>::sync_pol_commitments_after_settlement()
+        frame_support::storage::with_storage_layer(|| {
+            ConditionalLedger::settle_baseline(
+                RuntimeOrigin::signed(welfare_settlement_account()),
+                epoch,
+                score,
+            )?;
+            pallet_market::Pallet::<Runtime>::observe_baseline_terminal(epoch)
+        })
     }
 }
 
@@ -3811,7 +3915,7 @@ impl pallet_guardian::GuardianEffectDispatcher for RuntimeGuardianEffects {
                     justification_hash,
                 )?;
                 let deadline = pallet_epoch::CurrentEpoch::<Runtime>::get()
-                    .checked_add(u32_param(b"grd.review_dl"))
+                    .checked_add(GuardianReviewDeadline::get())
                     .ok_or(DispatchError::Arithmetic(
                         sp_runtime::ArithmeticError::Overflow,
                     ))?;
@@ -4180,6 +4284,11 @@ impl pallet_execution_guard::GuardianState for RuntimeGuardianState {
     fn ledger_freeze_active() -> bool {
         crate::Guardian::playbook_active(pallet_guardian::PlaybookId::LedgerFreeze)
     }
+    fn dead_man_freeze_active() -> bool {
+        pallet_constitution::PhaseFlags::<Runtime>::get()
+            & pallet_constitution::PhaseFlagsValue::DEAD_MAN_ENGAGED
+            != 0
+    }
 }
 
 pub struct ExecutionParams;
@@ -4532,9 +4641,9 @@ impl cumulus_pallet_parachain_system::OnSystemEvent for ExecutionGuardSystemEven
         // executive services the MBM cursor for this block. Comparing with
         // the prior marker is O(1) storage and bounded by CursorMaxLen.
         track_migration_progress();
-        let snapshot_overdue = pallet_welfare::Pallet::<Runtime>::snapshot_overdue(
-            frame_system::Pallet::<Runtime>::block_number(),
-        );
+        let now = frame_system::Pallet::<Runtime>::block_number();
+        let snapshot_overdue = pallet_welfare::Pallet::<Runtime>::snapshot_overdue(now)
+            && !snapshot_close_blocked_by_pause();
         // The pallet seam accepts only the plain relay number (I-24); detector
         // failure leaves the already-latched status quo untouched.
         let _ = pallet_epoch::Pallet::<Runtime>::observe_dead_man(
@@ -4597,6 +4706,16 @@ impl cumulus_pallet_parachain_system::OnSystemEvent for ExecutionGuardSystemEven
     ) -> Weight {
         Weight::zero()
     }
+}
+
+/// A snapshot for the current/future epoch cannot legally be recorded while
+/// the dead-man clock blocks that epoch's close. Suppress only that impossible
+/// cause; an already-overdue earlier epoch remains an active incident.
+fn snapshot_close_blocked_by_pause() -> bool {
+    pallet_epoch::DeadMan::<Runtime>::get().paused_at.is_some()
+        && pallet_welfare::SnapshotDeadline::<Runtime>::get().is_some_and(|progress| {
+            progress.due_epoch >= pallet_epoch::EpochOf::<Runtime>::get().index
+        })
 }
 
 impl pallet_execution_guard::Config for Runtime {

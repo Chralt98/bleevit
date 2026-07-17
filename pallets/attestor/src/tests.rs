@@ -402,7 +402,7 @@ fn challenge_is_signed_only_and_checks_id_bond_window_and_single_open_case() {
 }
 
 #[test]
-fn amended_attestor_bond_moves_challenge_floor_and_new_member_bond_snapshot() {
+fn amended_attestor_bond_changes_only_new_member_challenge_floor_and_snapshot() {
     new_test_ext().execute_with(|| {
         assert_ok!(Attestor::attest(
             RuntimeOrigin::signed(acct(1)),
@@ -421,7 +421,7 @@ fn amended_attestor_bond_moves_challenge_floor_and_new_member_bond_snapshot() {
                 RuntimeOrigin::signed(acct(9)),
                 0,
                 hash(3),
-                CHALLENGE_BOND,
+                CHALLENGE_BOND.saturating_sub(1),
             ),
             Error::<Test>::ChallengeBondTooSmall
         );
@@ -429,7 +429,7 @@ fn amended_attestor_bond_moves_challenge_floor_and_new_member_bond_snapshot() {
             RuntimeOrigin::signed(acct(9)),
             0,
             hash(3),
-            ATTESTOR_BOND,
+            CHALLENGE_BOND,
         ));
         assert_ok!(Attestor::resolve_challenge(ratify_origin(), 0, false));
         let core_account: futarchy_primitives::AccountId = acct(1).into();
@@ -462,6 +462,15 @@ fn amended_attestor_bond_moves_challenge_floor_and_new_member_bond_snapshot() {
             hash(4),
             hash(5),
         ));
+        assert_noop!(
+            Attestor::challenge_attestation(
+                RuntimeOrigin::signed(acct(9)),
+                1,
+                hash(6),
+                CHALLENGE_BOND,
+            ),
+            Error::<Test>::ChallengeBondTooSmall
+        );
         assert_ok!(Attestor::challenge_attestation(
             RuntimeOrigin::signed(acct(9)),
             1,
@@ -488,7 +497,7 @@ fn amended_attestor_bond_moves_challenge_floor_and_new_member_bond_snapshot() {
 }
 
 #[test]
-fn odd_attestor_bond_rounds_live_floor_and_false_loss_up() {
+fn odd_bonds_round_challenge_floor_and_both_forfeits_up() {
     new_test_ext().execute_with(|| {
         AttestorParamsValue::set(AttestorParams {
             bond: 3,
@@ -541,15 +550,15 @@ fn odd_attestor_bond_rounds_live_floor_and_false_loss_up() {
             hash(6),
             3,
         ));
-        // The caller-supplied challenge bond is not `att.bond`; preserve its
-        // existing floor-divided forfeiture semantics.
+        // The caller-supplied challenge bond is not `att.bond`, but the same
+        // claimant-adverse 50% ceiling applies to either losing side.
         assert_ok!(Attestor::resolve_challenge(ratify_origin(), 1, true));
         assert!(matches!(
             attestor_events().last(),
             Some(Event::ChallengeResolved {
                 attestation_id: 1,
                 upheld: true,
-                slashed: 1,
+                slashed: 2,
                 ..
             })
         ));

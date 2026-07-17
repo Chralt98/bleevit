@@ -111,6 +111,8 @@ fn fill_future_rounds<T: Config>(first_component: MetricId) {
                 acks: 0,
                 report_hash: hash_report(component, EPOCH, 1, value, evidence),
                 stake_at_risk: oracle_core::ORC_REPORTER_STAKE,
+                round_one_bond: oracle_core::ORC_BOND_FLOOR,
+                round_cap: oracle_core::ORC_ROUNDS,
             },
         );
     }

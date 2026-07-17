@@ -123,6 +123,7 @@ pub enum SeamCall {
     OpenMarkets(ProposalId, bool, Option<PolSeedPlan>),
     ExtendMarkets(ProposalId),
     ForceRerunMarkets(ProposalId),
+    ResumeMarkets(ProposalId, BlockNumber, BlockNumber),
     CloseMarkets(ProposalId),
     Enqueue {
         pid: ProposalId,
@@ -382,12 +383,27 @@ impl MarketAccess<AccountId32> for TestMarket {
         SeamCalls::push(SeamCall::ForceRerunMarkets(proposal.id))
     }
 
+    fn resume_markets(
+        proposal: &Proposal<AccountId32>,
+        previous_decide_at: BlockNumber,
+    ) -> Result<(), DispatchError> {
+        SeamCalls::push(SeamCall::ResumeMarkets(
+            proposal.id,
+            previous_decide_at,
+            proposal.decide_at,
+        ))
+    }
+
     fn close_markets(proposal: &Proposal<AccountId32>) -> Result<(), DispatchError> {
         SeamCalls::push(SeamCall::CloseMarkets(proposal.id))
     }
 
     fn seal_decision_window(_proposal: &Proposal<AccountId32>) -> Result<(), DispatchError> {
         Ok(())
+    }
+
+    fn decision_windows_live(_proposal: &Proposal<AccountId32>) -> bool {
+        true
     }
 
     fn baseline_market(epoch: EpochId) -> Option<MarketId> {

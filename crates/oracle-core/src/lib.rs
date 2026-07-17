@@ -32,6 +32,8 @@ pub const REPORT_WINDOW_BLOCKS: BlockNumber = 28_800;
 pub const RES_PROBE_INTERVAL: BlockNumber = 14_400;
 pub const RES_PROBE_TIMEOUT: BlockNumber = 600;
 pub const ORC_ROUNDS: u8 = 3;
+pub const ORC_ROUND_CAP_MIN: u8 = futarchy_primitives::kernel::ORC_ROUNDS_MIN;
+pub const ORC_ROUND_CAP_MAX: u8 = futarchy_primitives::kernel::ORC_ROUNDS_MAX;
 pub const ORC_BOND_FLOOR: Balance = 10_000_000_000;
 pub const ORC_BOND_BPS: u32 = 250;
 pub const ORC_REPORTER_STAKE: Balance = 100_000_000_000;
@@ -160,6 +162,13 @@ pub struct RoundState {
     pub stake_at_risk: Balance,
     pub cumulative_reporter_bond: Balance,
     pub cumulative_challenger_bond: Balance,
+    /// Round-one bond snapshotted when the game opens. Every later `B_r` is
+    /// checked doubling from this value, so live amendments cannot reprice an
+    /// in-flight dispute (07 §6.1/§13).
+    pub round_one_bond: Balance,
+    /// `orc.rounds` snapshotted when the game opens. Terminal adjudication is
+    /// always gated by this per-game cap, never the live parameter.
+    pub round_cap: u8,
 }
 
 #[derive(Clone, Copy, Debug, Decode, Default, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -453,6 +462,10 @@ impl Oracle {
         );
         ensure!(self.rounds.len() < MAX_ROUNDS, Error::RoundLimit);
         let bond = round_bond(input.stake_at_risk, 1, params)?;
+        // Reject a game whose complete frozen schedule cannot be represented;
+        // otherwise a legally-open round could become uncloseable on a later
+        // checked doubling (G-1).
+        stored_round_bond(bond, params.rounds, params.rounds)?;
         let report_hash = hash_report(
             input.component,
             input.epoch,
@@ -478,6 +491,8 @@ impl Oracle {
             stake_at_risk: input.stake_at_risk,
             cumulative_reporter_bond: bond,
             cumulative_challenger_bond: 0,
+            round_one_bond: bond,
+            round_cap: params.rounds,
         });
         self.events.push(Event::Reported {
             component: input.component,
@@ -677,10 +692,15 @@ impl Oracle {
                     let carried = self.last_valid_value(component, epoch);
                     self.neutral_at(i, carried, 1)?;
                 }
-            } else if self.rounds[i].round < params.rounds {
-                self.rounds[i].round += 1;
-                self.rounds[i].bond =
-                    round_bond(self.rounds[i].stake_at_risk, self.rounds[i].round, params)?;
+            } else if self.rounds[i].round < self.rounds[i].round_cap {
+                let next_round = self.rounds[i].round.checked_add(1).ok_or(Error::Overflow)?;
+                let next_bond = stored_round_bond(
+                    self.rounds[i].round_one_bond,
+                    next_round,
+                    self.rounds[i].round_cap,
+                )?;
+                self.rounds[i].round = next_round;
+                self.rounds[i].bond = next_bond;
                 self.rounds[i].challenge_deadline = now.saturating_add(params.window);
                 self.rounds[i].acks = 0;
                 // A fresh round has a new `report_hash`, so the prior round's
@@ -763,15 +783,13 @@ impl Oracle {
         self.settle_at(idx, value, SettlePath::Recomputed, false)
     }
 
-    pub fn request_adjudication_with_params(
-        &mut self,
-        key: RoundKey,
-        referendum: u32,
-        params: &OracleParams,
-    ) -> Result<(), Error> {
+    pub fn request_adjudication(&mut self, key: RoundKey, referendum: u32) -> Result<(), Error> {
         let (component, epoch) = (key.component, key.epoch);
         let idx = self.find_round(key).ok_or(Error::RoundNotFound)?;
-        ensure!(self.rounds[idx].round >= params.rounds, Error::WindowOpen);
+        ensure!(
+            self.rounds[idx].round >= self.rounds[idx].round_cap,
+            Error::WindowOpen
+        );
         ensure!(self.rounds[idx].challenger.is_some(), Error::QuorumPending);
         self.events.push(Event::AdjudicationRequested {
             component,
@@ -781,13 +799,12 @@ impl Oracle {
         Ok(())
     }
 
-    pub fn adjudicate_with_params(
+    pub fn adjudicate(
         &mut self,
         origin: Origin,
         key: RoundKey,
         value: FixedU64,
         reporter_wrong: bool,
-        params: &OracleParams,
     ) -> Result<(), Error> {
         ensure!(origin == Origin::OracleResolution, Error::BadOrigin);
         // The adjudicated value must land on the 05 §4.4 grid like any other
@@ -800,7 +817,10 @@ impl Oracle {
         // A fresh or unchallenged round is not adjudicable, so the
         // `OracleResolution` origin cannot bypass the escalation ladder and
         // settle an arbitrary round (Codex F10).
-        ensure!(self.rounds[idx].round >= params.rounds, Error::WindowOpen);
+        ensure!(
+            self.rounds[idx].round >= self.rounds[idx].round_cap,
+            Error::WindowOpen
+        );
         ensure!(self.rounds[idx].challenger.is_some(), Error::QuorumPending);
         if reporter_wrong {
             self.record_reporter_offense(self.rounds[idx].reporter)?;
@@ -925,7 +945,7 @@ impl Oracle {
         Ok(())
     }
 
-    pub fn try_state_with_params(&self, params: &OracleParams) -> Result<(), Error> {
+    pub fn try_state(&self) -> Result<(), Error> {
         ensure!(
             self.reporters.len() <= MAX_REPORTERS,
             Error::TooManyReporters
@@ -949,9 +969,13 @@ impl Oracle {
             ensure!(self.is_watchtower(who), Error::NotRegistered);
         }
         for r in &self.rounds {
-            ensure!((1..=params.rounds).contains(&r.round), Error::RoundNotFound);
             ensure!(
-                r.bond >= round_bond(r.stake_at_risk, r.round, params)?,
+                (ORC_ROUND_CAP_MIN..=ORC_ROUND_CAP_MAX).contains(&r.round_cap),
+                Error::RoundNotFound
+            );
+            ensure!((1..=r.round_cap).contains(&r.round), Error::RoundNotFound);
+            ensure!(
+                r.bond == stored_round_bond(r.round_one_bond, r.round, r.round_cap)?,
                 Error::BondBelowMinimum
             );
             // A live round for an already settled key would let a second
@@ -1187,6 +1211,10 @@ pub fn round_bond(
     round: u8,
     params: &OracleParams,
 ) -> Result<Balance, Error> {
+    ensure!(
+        (ORC_ROUND_CAP_MIN..=ORC_ROUND_CAP_MAX).contains(&params.rounds),
+        Error::RoundNotFound
+    );
     ensure!((1..=params.rounds).contains(&round), Error::RoundNotFound);
     let scaled = stake_at_risk
         .checked_mul(params.bond_bps as Balance)
@@ -1199,7 +1227,31 @@ pub fn round_bond(
     b1.checked_mul(multiplier).ok_or(Error::Overflow)
 }
 
+/// Derive a game's current bond exclusively from its snapshotted round-one
+/// bond and round cap (07 §6.1/§13). This is deliberately independent of
+/// every live constitution parameter.
+pub fn stored_round_bond(
+    round_one_bond: Balance,
+    round: u8,
+    round_cap: u8,
+) -> Result<Balance, Error> {
+    ensure!(
+        (ORC_ROUND_CAP_MIN..=ORC_ROUND_CAP_MAX).contains(&round_cap),
+        Error::RoundNotFound
+    );
+    ensure!((1..=round_cap).contains(&round), Error::RoundNotFound);
+    let multiplier = 1u128
+        .checked_shl(u32::from(round.saturating_sub(1)))
+        .ok_or(Error::Overflow)?;
+    round_one_bond
+        .checked_mul(multiplier)
+        .ok_or(Error::Overflow)
+}
+
 pub fn can_admit_attested_component(delta_s_max_bps: u32, params: &OracleParams) -> bool {
+    if !(ORC_ROUND_CAP_MIN..=ORC_ROUND_CAP_MAX).contains(&params.rounds) {
+        return false;
+    }
     let Some(round_multiplier) = 1u32.checked_shl(u32::from(params.rounds)) else {
         return false;
     };
@@ -1287,13 +1339,6 @@ mod tests {
         fn register_reporter(&mut self, who: AccountId, now: BlockNumber) -> Result<(), Error>;
         fn register_watchtower(&mut self, who: AccountId, now: BlockNumber) -> Result<(), Error>;
         fn crank_round_close(&mut self, now: BlockNumber, batch: usize) -> Result<(), Error>;
-        fn adjudicate(
-            &mut self,
-            origin: Origin,
-            key: RoundKey,
-            value: FixedU64,
-            reporter_wrong: bool,
-        ) -> Result<(), Error>;
         fn crank_reserve_probe(&mut self, now: BlockNumber) -> Result<u64, Error>;
         fn reserve_probe_result(
             &mut self,
@@ -1302,7 +1347,6 @@ mod tests {
             passed: bool,
         ) -> Result<(), Error>;
         fn crank_probe_timeout(&mut self, now: BlockNumber) -> Result<(), Error>;
-        fn try_state(&self) -> Result<(), Error>;
     }
 
     impl DefaultOracleParams for Oracle {
@@ -1316,23 +1360,6 @@ mod tests {
 
         fn crank_round_close(&mut self, now: BlockNumber, batch: usize) -> Result<(), Error> {
             Oracle::crank_round_close_with_params(self, now, batch, &OracleParams::DEFAULT)
-        }
-
-        fn adjudicate(
-            &mut self,
-            origin: Origin,
-            key: RoundKey,
-            value: FixedU64,
-            reporter_wrong: bool,
-        ) -> Result<(), Error> {
-            Oracle::adjudicate_with_params(
-                self,
-                origin,
-                key,
-                value,
-                reporter_wrong,
-                &OracleParams::DEFAULT,
-            )
         }
 
         fn crank_reserve_probe(&mut self, now: BlockNumber) -> Result<u64, Error> {
@@ -1356,10 +1383,6 @@ mod tests {
 
         fn crank_probe_timeout(&mut self, now: BlockNumber) -> Result<(), Error> {
             Oracle::crank_probe_timeout_with_params(self, now, &OracleParams::DEFAULT)
-        }
-
-        fn try_state(&self) -> Result<(), Error> {
-            Oracle::try_state_with_params(self, &OracleParams::DEFAULT)
         }
     }
 
@@ -2075,13 +2098,12 @@ mod tests {
     }
 
     #[test]
-    fn round_state_fields_match_contract_02_section_7_2() {
+    fn round_state_schedule_snapshots_are_trailing_scale_fields() {
         use scale_info::TypeDef;
-        // 02 §7.2 (contract v3) freezes `RoundState`'s field names and SCALE order;
-        // the triple key + these fields are the reconciled oracle surface (SQ-58).
-        // Lock them so the code can never silently re-diverge from the frozen
-        // contract again (rule 5) — the divergence SQ-58 was raised about.
-        const CONTRACT_FIELDS: [&str; 17] = [
+        // Preserve the existing SCALE prefix and append the per-game schedule
+        // snapshots. Appending keeps every pre-existing field's order stable
+        // while making mid-game repricing structurally impossible.
+        const ROUND_STATE_FIELDS: [&str; 19] = [
             "component",
             "epoch",
             "round",
@@ -2099,13 +2121,15 @@ mod tests {
             "stake_at_risk",
             "cumulative_reporter_bond",
             "cumulative_challenger_bond",
+            "round_one_bond",
+            "round_cap",
         ];
         let type_info = RoundState::type_info();
         let names: Vec<&str> = match &type_info.type_def {
             TypeDef::Composite(c) => c.fields.iter().filter_map(|f| f.name).collect(),
             _ => panic!("RoundState must encode as a SCALE composite type"),
         };
-        assert_eq!(names, CONTRACT_FIELDS);
+        assert_eq!(names, ROUND_STATE_FIELDS);
     }
 
     #[test]

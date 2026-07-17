@@ -13,14 +13,14 @@ pub type AttestationId = u32;
 pub const MIN_MEMBERS: usize = futarchy_primitives::kernel::ATT_MIN_MEMBERS as usize;
 pub const QUORUM: usize = futarchy_primitives::kernel::ATT_QUORUM as usize;
 pub const ATTESTOR_BOND: Balance = 25_000_000_000_000_000;
-pub const CHALLENGE_WINDOW_BLOCKS: BlockNumber = 43_200;
+pub const CHALLENGE_WINDOW_BLOCKS: BlockNumber = futarchy_primitives::kernel::ORC_WINDOW_BLOCKS;
 pub const CHALLENGE_BOND: Balance = ATTESTOR_BOND / 2;
 pub const FALSE_EJECTION_THRESHOLD: u8 = 2;
 
 /// Live constitution values consumed by the attestor state machine.
 ///
-/// The constants above remain the genesis defaults exposed through runtime
-/// metadata. Runtime callers hydrate this plain frame-free value from
+/// The constants above remain the genesis defaults. Runtime callers hydrate
+/// this plain frame-free value from
 /// `pallet-constitution::Params` before every operation that consumes a
 /// tunable (13 reading rule 2).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,10 +34,6 @@ impl AttestorParams {
         bond: ATTESTOR_BOND,
         challenge_window: CHALLENGE_WINDOW_BLOCKS,
     };
-
-    pub const fn challenge_bond(self) -> Balance {
-        half_ceil(self.bond)
-    }
 }
 
 /// Fifty percent of governed `att.bond`, rounded against the claimant (R-7).
@@ -255,12 +251,20 @@ impl AttestorRegistry {
         evidence_hash: H256,
         bond: Balance,
         now: BlockNumber,
-        params: AttestorParams,
     ) -> Result<(), Error> {
-        ensure!(
-            bond >= params.challenge_bond(),
-            Error::ChallengeBondTooSmall
-        );
+        let attestor = self
+            .attestations
+            .iter()
+            .find(|attestation| attestation.id == id)
+            .map(|attestation| attestation.attestor)
+            .ok_or(Error::AttestationNotFound)?;
+        let stored_bond = self
+            .members
+            .iter()
+            .find(|member| member.account == attestor)
+            .map(|member| member.bond)
+            .ok_or(Error::NotMember)?;
+        ensure!(bond >= half_ceil(stored_bond), Error::ChallengeBondTooSmall);
         let att = self
             .attestations
             .iter_mut()
@@ -307,7 +311,7 @@ impl AttestorRegistry {
             self.attestations[idx].attestor
         };
         let slashed = if attestation_upheld {
-            bond / 2
+            half_ceil(bond)
         } else {
             let stored_bond = self
                 .members
@@ -503,7 +507,7 @@ mod tests {
         let mut r = AttestorRegistry::new(members(), params()).unwrap();
         let a = r.attest(acct(1), 9, [7; 32], [8; 32], 0, params()).unwrap();
         r.attest(acct(2), 9, [7; 32], [8; 32], 0, params()).unwrap();
-        r.challenge_attestation(acct(9), a, [5; 32], CHALLENGE_BOND, 1, params())
+        r.challenge_attestation(acct(9), a, [5; 32], CHALLENGE_BOND, 1)
             .unwrap();
         assert!(!r.has_quorum(9, [7; 32], CHALLENGE_WINDOW_BLOCKS + 1));
         r.resolve_challenge(AttestorOrigin::RatifyTrack, a, true)
@@ -514,12 +518,12 @@ mod tests {
     fn false_attestation_slashes_and_ejects_on_second_loss() {
         let mut r = AttestorRegistry::new(members(), params()).unwrap();
         let a = r.attest(acct(1), 1, [1; 32], [2; 32], 0, params()).unwrap();
-        r.challenge_attestation(acct(9), a, [3; 32], CHALLENGE_BOND, 1, params())
+        r.challenge_attestation(acct(9), a, [3; 32], CHALLENGE_BOND, 1)
             .unwrap();
         r.resolve_challenge(AttestorOrigin::RatifyTrack, a, false)
             .unwrap();
         let b = r.attest(acct(1), 2, [1; 32], [2; 32], 2, params()).unwrap();
-        r.challenge_attestation(acct(9), b, [3; 32], CHALLENGE_BOND, 3, params())
+        r.challenge_attestation(acct(9), b, [3; 32], CHALLENGE_BOND, 3)
             .unwrap();
         r.resolve_challenge(AttestorOrigin::RatifyTrack, b, false)
             .unwrap();
@@ -530,7 +534,7 @@ mod tests {
         let mut r = AttestorRegistry::new(members(), params()).unwrap();
         let a = r.attest(acct(1), 1, [1; 32], [2; 32], 0, params()).unwrap();
         assert_eq!(
-            r.challenge_attestation(acct(9), a, [3; 32], CHALLENGE_BOND - 1, 1, params()),
+            r.challenge_attestation(acct(9), a, [3; 32], CHALLENGE_BOND - 1, 1),
             Err(Error::ChallengeBondTooSmall)
         );
         assert_eq!(
@@ -540,7 +544,6 @@ mod tests {
                 [3; 32],
                 CHALLENGE_BOND,
                 CHALLENGE_WINDOW_BLOCKS + 1,
-                params(),
             ),
             Err(Error::ChallengeWindowClosed)
         );
@@ -554,7 +557,7 @@ mod tests {
         r.attest(acct(2), 9, [7; 32], [8; 32], 0, params()).unwrap(); // id 0, deadline = CWB
         r.attest(acct(1), 9, [7; 32], [8; 32], 100, params())
             .unwrap(); // id 1, deadline = 100+CWB
-        r.challenge_attestation(acct(9), 1, [5; 32], CHALLENGE_BOND, 101, params())
+        r.challenge_attestation(acct(9), 1, [5; 32], CHALLENGE_BOND, 101)
             .unwrap();
         r.resolve_challenge(AttestorOrigin::RatifyTrack, 1, true)
             .unwrap(); // upheld early
@@ -574,12 +577,12 @@ mod tests {
         let mut r = AttestorRegistry::new(members(), params()).unwrap();
         // Eject acct(1) via two adjudicated-false attestations.
         let a = r.attest(acct(1), 1, [1; 32], [2; 32], 0, params()).unwrap();
-        r.challenge_attestation(acct(9), a, [3; 32], CHALLENGE_BOND, 1, params())
+        r.challenge_attestation(acct(9), a, [3; 32], CHALLENGE_BOND, 1)
             .unwrap();
         r.resolve_challenge(AttestorOrigin::RatifyTrack, a, false)
             .unwrap();
         let b = r.attest(acct(1), 2, [1; 32], [2; 32], 2, params()).unwrap();
-        r.challenge_attestation(acct(9), b, [3; 32], CHALLENGE_BOND, 3, params())
+        r.challenge_attestation(acct(9), b, [3; 32], CHALLENGE_BOND, 3)
             .unwrap();
         r.resolve_challenge(AttestorOrigin::RatifyTrack, b, false)
             .unwrap();

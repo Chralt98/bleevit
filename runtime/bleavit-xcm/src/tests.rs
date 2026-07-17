@@ -3,7 +3,7 @@ use crate::{
     barrier::{AcceptedXcmOrigins, DenyTransact},
     caps::CappedInflows,
     coretime::coretime_renewal_program,
-    filter::{classify_pallet_xcm_call, XcmCallDisposition},
+    filter::{classify_pallet_xcm_call, ReserveTransferFilter, XcmCallDisposition},
     health::HealthTrackingRouter,
     identity::{
         asset_hub_location, bleavit_as_seen_from_asset_hub, coretime_location, dot_location,
@@ -1216,6 +1216,27 @@ fn filter_group_every_stable2606_call_variant_has_the_conservative_disposition()
         classify_pallet_xcm_call(&claim),
         XcmCallDisposition::SignedAllowed
     );
+}
+
+#[test]
+fn reserve_transfer_filter_accepts_only_local_signed_dot_or_usdc() {
+    let signed = Location::new(
+        0,
+        [Junction::AccountId32 {
+            network: None,
+            id: [7; 32],
+        }],
+    );
+    let allowed = vec![asset(dot_location(), 1), asset(usdc_location(), 2)];
+    assert!(ReserveTransferFilter::contains(&(signed.clone(), allowed,)));
+    assert!(!ReserveTransferFilter::contains(&(
+        Location::new(1, [Junction::Parachain(CORETIME_PARA_ID)]),
+        vec![asset(dot_location(), 1)],
+    )));
+    assert!(!ReserveTransferFilter::contains(&(
+        signed,
+        vec![asset(Location::new(1, [Junction::Parachain(9_999)]), 1)],
+    )));
 }
 
 #[test]

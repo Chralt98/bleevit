@@ -376,8 +376,17 @@ fn project_inner(call: &RuntimeCall, budget: &mut ProjectionBudget) -> FilterCal
             // account can recover only its own local-origin trap, while remote
             // traps require an inbound ClaimAsset from that exact origin.
             pallet_xcm::Call::claim_assets { .. } => leaf(CallDomain::Public),
-            // B4: all other pallet-xcm calls remain nobody until reserve lanes,
-            // caps, and the user exit path are wired and tested.
+            pallet_xcm::Call::limited_reserve_transfer_assets { .. } => {
+                match bleavit_xcm::filter::classify_pallet_xcm_call(call) {
+                    bleavit_xcm::filter::XcmCallDisposition::SignedAllowed => {
+                        leaf(CallDomain::Public)
+                    }
+                    bleavit_xcm::filter::XcmCallDisposition::DeniedAllOrigins
+                    | bleavit_xcm::filter::XcmCallDisposition::TreasuryOnly => denied(),
+                }
+            }
+            // Every remaining pallet-xcm call stays nobody: arbitrary XCM,
+            // teleport and generic transfer escape hatches remain closed.
             pallet_xcm::Call::send { .. }
             | pallet_xcm::Call::teleport_assets { .. }
             | pallet_xcm::Call::reserve_transfer_assets { .. }
@@ -386,7 +395,6 @@ fn project_inner(call: &RuntimeCall, budget: &mut ProjectionBudget) -> FilterCal
             | pallet_xcm::Call::force_default_xcm_version { .. }
             | pallet_xcm::Call::force_subscribe_version_notify { .. }
             | pallet_xcm::Call::force_unsubscribe_version_notify { .. }
-            | pallet_xcm::Call::limited_reserve_transfer_assets { .. }
             | pallet_xcm::Call::limited_teleport_assets { .. }
             | pallet_xcm::Call::force_suspension { .. }
             | pallet_xcm::Call::transfer_assets { .. }
@@ -699,9 +707,6 @@ impl pallet_execution_guard::BatchDispatcher<RuntimeCall> for RuntimeDispatcher 
     fn rederive_call(
         call: &RuntimeCall,
     ) -> Result<pallet_execution_guard::ReDerivedCall, DispatchError> {
-        if live_execution_freeze() {
-            return Err(DispatchError::Other("live execution freeze active"));
-        }
         if Self::authorize_upgrade_hash(call).is_some() {
             // Capability enforcement deliberately does NOT live here: the guard
             // composes `rederive_call` with its own ordered `Capabilities` check
@@ -732,7 +737,8 @@ impl pallet_execution_guard::BatchDispatcher<RuntimeCall> for RuntimeDispatcher 
         // one `CapabilityDenied` check item (09 §1.2), so folding capability in
         // here keeps the reported error right; only `rederive_call` must stay
         // capability-agnostic (it maps to `BadDomainDeclaration`).
-        Self::rederive_call(call).is_ok()
+        !live_execution_freeze()
+            && Self::rederive_call(call).is_ok()
             && capability_enabled_for_call(class, call)
             && ClassOrigin::from_proposal_class(class).is_some_and(|origin| {
                 SafetyFilter::<BleavitSafetyClassifier>::contains_for(origin, call)

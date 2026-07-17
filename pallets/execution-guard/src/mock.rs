@@ -268,6 +268,7 @@ parameter_types! {
     pub static AttestationQuorum: bool = true;
     pub static GuardianHeld: Vec<ProposalId> = Vec::new();
     pub static LedgerFrozen: bool = false;
+    pub static ConstitutionDeadMan: bool = false;
     pub static Timelock: BlockNumber = 2;
     pub static Grace: BlockNumber = 10;
     pub static CodeSpacing: BlockNumber = 20;
@@ -433,6 +434,9 @@ impl GuardianState for TestGuardian {
     }
     fn ledger_freeze_active() -> bool {
         LedgerFrozen::get()
+    }
+    fn dead_man_freeze_active() -> bool {
+        ConstitutionDeadMan::get()
     }
 }
 
@@ -1072,6 +1076,7 @@ pub fn reset_statics() {
     AttestationQuorum::set(true);
     GuardianHeld::set(Vec::new());
     LedgerFrozen::set(false);
+    ConstitutionDeadMan::set(false);
     Timelock::set(2);
     Grace::set(10);
     CodeSpacing::set(20);
