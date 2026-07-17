@@ -37,6 +37,32 @@ except ModuleNotFoundError:  # Python 3.10 compatibility for the local quality g
     tomllib = None  # type: ignore[assignment]
 
 
+def strip_comment(raw: str) -> str:
+    """Drop a trailing `#` comment without cutting a `#` inside a quoted value.
+
+    A waiver reason naming an issue (`... see #76`) would otherwise be silently
+    truncated by a naive split, and silently is the bad part: the CI path uses
+    tomllib and would disagree with this parser.
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for char in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "#":
+            break
+        out.append(char)
+    return "".join(out)
+
+
 def parse_waivers_toml_compat(text: str) -> list[dict]:
     """Parse the `[[waiver]]` subset of TOML this file uses.
 
@@ -50,7 +76,7 @@ def parse_waivers_toml_compat(text: str) -> list[dict]:
     waivers: list[dict] = []
     current: dict | None = None
     for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip() if not raw.strip().startswith("#") else ""
+        line = strip_comment(raw).strip()
         if not line:
             continue
         if line == "[[waiver]]":

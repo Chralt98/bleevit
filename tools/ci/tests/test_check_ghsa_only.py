@@ -198,8 +198,78 @@ class CommittedWaiverTests(unittest.TestCase):
             self.assertTrue(waiver["clears_when"].strip(), identifier)
 
 
+class FailClosedTests(unittest.TestCase):
+    def test_a_scanner_that_produces_nothing_fails_the_gate(self) -> None:
+        """osv-scanner exits non-zero with empty stdout when it cannot reach the
+        OSV API. Treating that as "no findings" would turn a broken network into
+        a silently green security gate; it must be a hard error instead."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            scanner = directory / "osv-scanner"
+            scanner.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('error when retrieving vulns: max retries exceeded', file=sys.stderr)\n"
+                "raise SystemExit(127)\n",
+                encoding="utf-8",
+            )
+            scanner.chmod(0o755)
+            lockfile = directory / "Cargo.lock"
+            lockfile.write_text("", encoding="utf-8")
+            waivers = waiver_file(directory, "")
+            completed = subprocess.run(
+                [
+                    sys.executable, str(SCRIPT),
+                    "--scanner", str(scanner),
+                    "--waivers", str(waivers),
+                    "--lockfile", str(lockfile),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("produced no output", completed.stderr)
+
+    def test_non_json_scanner_output_fails_the_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            scanner = directory / "osv-scanner"
+            scanner.write_text("#!/bin/sh\necho 'not json'\n", encoding="utf-8")
+            scanner.chmod(0o755)
+            lockfile = directory / "Cargo.lock"
+            lockfile.write_text("", encoding="utf-8")
+            waivers = waiver_file(directory, "")
+            completed = subprocess.run(
+                [
+                    sys.executable, str(SCRIPT),
+                    "--scanner", str(scanner),
+                    "--waivers", str(waivers),
+                    "--lockfile", str(lockfile),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("not JSON", completed.stderr)
+
+
 class CompatParserTests(unittest.TestCase):
     """The 3.10 fallback must agree with tomllib on the committed file."""
+
+    def test_hash_inside_a_quoted_value_is_not_a_comment(self) -> None:
+        rows = checker.parse_waivers_toml_compat(
+            '[[waiver]]\n'
+            'id = "GHSA-x"  # trailing comment\n'
+            'package = "p"\n'
+            'version = "1"\n'
+            'reason = "regressed by #76"\n'
+            'blocked_by = "b"\n'
+            'clears_when = "c"\n'
+        )
+        self.assertEqual(rows[0]["reason"], "regressed by #76")
+        self.assertEqual(rows[0]["id"], "GHSA-x")
 
     def test_compat_parser_matches_the_committed_waivers(self) -> None:
         rows = checker.parse_waivers_toml_compat(WAIVERS.read_text(encoding="utf-8"))
