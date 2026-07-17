@@ -6,7 +6,7 @@ use futarchy_primitives::{
     keeper::CrankClass, phase_offsets, Branch, CohortSummary, DecisionOutcome, EpochPhase,
     ProposalState,
 };
-use parity_scale_codec::Encode;
+use parity_scale_codec::{Compact, Decode, Encode};
 use sp_runtime::DispatchError;
 
 fn phase_block(epoch: EpochId, numerator: BlockNumber) -> BlockNumber {
@@ -26,6 +26,52 @@ fn sync_at(block: BlockNumber) {
         RuntimeOrigin::signed(keeper()),
         tick_batch(Vec::new()),
     ));
+}
+
+fn seed_idle_clock(epoch: EpochId) {
+    let mut state = EpochState::new();
+    let start = phase_block(epoch, phase_offsets::INTAKE_NUM);
+    state.epoch.index = epoch;
+    state.epoch.phase = EpochPhase::Intake;
+    state.epoch.epoch_start_block = start;
+    state.epoch.phase_start_block = start;
+    assert_ok!(Epoch::seed(state));
+    set_block(start);
+}
+
+#[test]
+fn tick_drains_xcm_traffic_backlog_without_a_clock_crossing_or_settlement_cohort() {
+    new_test_ext().execute_with(|| {
+        seed_idle_clock(21);
+        WelfareTrafficBacklog::set(vec![0]);
+        assert!(Epoch::epoch_state().cohorts.is_empty());
+        assert!(WelfareTrafficPrunes::get().is_empty());
+
+        sync_at(phase_block(21, phase_offsets::INTAKE_NUM));
+
+        assert_eq!(EpochOf::<Test>::get().index, 21);
+        assert_eq!(WelfareTrafficPrunes::get(), vec![21]);
+        assert!(WelfareTrafficBacklog::get().is_empty());
+        assert!(SeamCalls::get().is_empty());
+    });
+}
+
+#[test]
+fn tick_fully_drains_a_twenty_one_epoch_backlog_in_eleven_calls() {
+    new_test_ext().execute_with(|| {
+        seed_idle_clock(41);
+        WelfareTrafficBacklog::set((0..21).collect());
+
+        for _ in 0..10 {
+            sync_at(phase_block(41, phase_offsets::INTAKE_NUM));
+        }
+        assert_eq!(WelfareTrafficBacklog::get(), vec![20]);
+
+        sync_at(phase_block(41, phase_offsets::INTAKE_NUM));
+        assert!(WelfareTrafficBacklog::get().is_empty());
+        assert_eq!(WelfareTrafficPrunes::get().len(), 11);
+        assert!(WelfareTrafficPrunes::get().iter().all(|epoch| *epoch == 41));
+    });
 }
 
 fn decision_state(
@@ -429,6 +475,11 @@ fn run_settlement_seam_differential() {
                     now,
                 )
                 .expect("core settlement scenario is accepted");
+            if !oracle.cohorts.iter().any(|cohort| cohort.epoch == 0) {
+                welfare
+                    .calls
+                    .push(SeamCall::WelfarePrune(oracle.epoch.index));
+            }
             assert_ok!(Epoch::settle_cohort(
                 RuntimeOrigin::signed(keeper()),
                 0,
@@ -893,6 +944,7 @@ fn r2_1_seeded_treasury_gate_veto_survives_live_nav_reclassification() {
 
 #[test]
 fn r2_2_decide_first_latches_stale_epoch_and_force_rejects() {
+    // limit-coverage: StaleEpochBound
     new_test_ext().execute_with(|| {
         let mut state = decision_state(1, ProposalClass::Param);
         state.epoch.phase = EpochPhase::Trade;
@@ -1935,6 +1987,7 @@ fn gate_veto_precedes_a_passing_welfare_margin_i14() {
 
 #[test]
 fn decision_extension_is_once_only_and_keeps_creation_schedule_frozen() {
+    // limit-coverage: dec.extension
     new_test_ext().execute_with(|| {
         assert_ok!(Epoch::seed(decision_state(1, ProposalClass::Param)));
         MarketGrade::set(false);
@@ -2489,7 +2542,22 @@ fn expiry_and_force_reject_never_enqueue_i15() {
 }
 
 #[test]
+fn tick_batch_bound_rejects_the_eleventh_pid_at_scale_call_admission() {
+    // limit-coverage: TickBatch
+    let mut encoded_call = vec![2u8]; // `tick` call index.
+    encoded_call.extend(Compact(futarchy_primitives::kernel::TICK_BATCH + 1).encode());
+
+    let error = crate::Call::<Test>::decode(&mut encoded_call.as_slice())
+        .expect_err("a max+1 tick batch must fail SCALE call admission");
+    assert_eq!(
+        error.to_string(),
+        "Could not decode `Call::tick::pids`:\n\tBoundedVec exceeds its limit\n"
+    );
+}
+
+#[test]
 fn settlement_is_cursor_resumable_and_welfare_is_the_only_settlement_seam() {
+    // limit-coverage: settle_cohort
     new_test_ext().execute_with(|| {
         assert_ok!(Epoch::seed(cohort_state(
             1,
@@ -2522,10 +2590,10 @@ fn settlement_is_cursor_resumable_and_welfare_is_the_only_settlement_seam() {
             vec![(keeper(), CrankClass::DecisionCritical)]
         );
         assert_ok!(Epoch::settle_cohort(RuntimeOrigin::signed(keeper()), 0, 1));
-        assert_eq!(
-            SeamCalls::get().last(),
-            Some(&SeamCall::Welfare(0, 1, SettlementTarget::Baseline))
-        );
+        assert!(SeamCalls::get().ends_with(&[
+            SeamCall::Welfare(0, 1, SettlementTarget::Baseline),
+            SeamCall::WelfarePrune(3),
+        ]));
         assert!(!Cohorts::<Test>::contains_key(0));
         assert!(!Proposals::<Test>::contains_key(1));
         assert_eq!(preimage_request_count([1; 32]), 0);
@@ -2544,6 +2612,14 @@ fn settlement_is_cursor_resumable_and_welfare_is_the_only_settlement_seam() {
                 (keeper(), CrankClass::DecisionCritical),
                 (keeper(), CrankClass::DecisionCritical),
             ]
+        );
+        assert_noop!(
+            Epoch::settle_cohort(
+                RuntimeOrigin::signed(keeper()),
+                0,
+                futarchy_primitives::kernel::SETTLE_COHORT_MAX_ITEMS + 1,
+            ),
+            Error::<Test>::BatchTooLarge
         );
         assert_noop!(
             Epoch::settle_cohort(RuntimeOrigin::signed(keeper()), 0, 0),
@@ -2581,6 +2657,7 @@ fn next_epoch_length_uses_values_origin_and_live_params() {
 
 #[test]
 fn intake_and_live_proposal_caps_are_enforced() {
+    // limit-coverage: IntakeQueue, MaxLiveProposals
     new_test_ext().execute_with(|| {
         for id in 0..MAX_INTAKE_QUEUE as u64 {
             let proposer = account(10u8.saturating_add((id / 4) as u8));
@@ -2622,6 +2699,7 @@ fn intake_and_live_proposal_caps_are_enforced() {
 
 #[test]
 fn per_account_intake_cap_survives_withdrawals_and_resets_next_epoch() {
+    // limit-coverage: intake.max_acct
     new_test_ext().execute_with(|| {
         for id in 1..=ParamsValue::get().intake_max_per_account as u64 {
             assert_ok!(Epoch::submit(
@@ -2655,6 +2733,7 @@ fn per_account_intake_cap_survives_withdrawals_and_resets_next_epoch() {
 
 #[test]
 fn four_non_terminal_cohort_cap_rolls_back_the_fifth_transition() {
+    // limit-coverage: MaxSettlingCohorts
     new_test_ext().execute_with(|| {
         let mut state = EpochState::new();
         for epoch in 0..MAX_NON_TERMINAL_COHORTS as u32 {
@@ -2883,6 +2962,7 @@ fn void_cohort_does_not_block_on_stale_intake_and_ticks_it_to_t20() {
 
 #[test]
 fn recent_summary_ring_evicts_fifo_at_32() {
+    // limit-coverage: RecentCohortSummaries ring
     new_test_ext().execute_with(|| {
         let mut state = cohort_state(100, 100, CohortStatus::Measuring { until_epoch: 102 });
         for epoch in 0..RECENT_COHORTS as u32 {
@@ -2954,6 +3034,26 @@ fn ledger_and_welfare_failures_are_atomic_g1() {
         )));
         set_block(phase_block(3, phase_offsets::HOUSEKEEPING_NUM));
         SeamFailure::set(Some(SeamCall::Welfare(0, 1, SettlementTarget::Baseline)));
+        let before_state = Epoch::epoch_state().encode();
+        let before_events = System::events();
+        let before_calls = SeamCalls::get();
+        assert_noop!(
+            Epoch::settle_cohort(RuntimeOrigin::signed(keeper()), 0, 2),
+            Error::<Test>::Welfare
+        );
+        assert_eq!(Epoch::epoch_state().encode(), before_state);
+        assert_eq!(System::events(), before_events);
+        assert_eq!(SeamCalls::get(), before_calls);
+    });
+
+    new_test_ext().execute_with(|| {
+        assert_ok!(Epoch::seed(cohort_state(
+            1,
+            0,
+            CohortStatus::Measuring { until_epoch: 2 },
+        )));
+        set_block(phase_block(3, phase_offsets::HOUSEKEEPING_NUM));
+        SeamFailure::set(Some(SeamCall::WelfarePrune(3)));
         let before_state = Epoch::epoch_state().encode();
         let before_events = System::events();
         let before_calls = SeamCalls::get();

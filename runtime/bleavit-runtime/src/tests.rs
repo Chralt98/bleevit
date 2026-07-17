@@ -4,6 +4,11 @@
 
 use alloc::{boxed::Box, vec, vec::Vec};
 
+use bleavit_xcm::{
+    caps::InflowCaps as XcmInflowCaps,
+    identity::usdc_location,
+    trader::{GovernedWeightTrader, TraderRates, WeightRate},
+};
 use frame_support::{
     assert_noop, assert_ok,
     dispatch::{DispatchClass, GetDispatchInfo},
@@ -11,17 +16,18 @@ use frame_support::{
         fungible::Inspect as FungibleInspect,
         fungibles::{Inspect as FungiblesInspect, Mutate as FungiblesMutate},
         tokens::ConversionToAssetBalance,
-        Contains, EnsureOrigin, Get, Hooks, PalletInfo, PalletsInfoAccess, QueryPreimage,
+        ConstU32, Contains, EnsureOrigin, Get, Hooks, PalletInfo, PalletsInfoAccess, QueryPreimage,
         StorePreimage, VestingSchedule,
     },
     weights::Weight,
+    BoundedVec,
 };
 use futarchy_primitives::{
     chain_identity, currency, kernel, DecisionOutcome, MarketSet, Proposal, ProposalClass,
     ProposalState, RejectReason, RuntimeVersionConstraint,
 };
 use origins_core::Origin as ClassOrigin;
-use parity_scale_codec::Encode;
+use parity_scale_codec::{Compact, Decode, Encode};
 use sp_core::H256;
 use sp_genesis_builder::PresetId;
 use sp_inherents::InherentData;
@@ -32,18 +38,24 @@ use sp_runtime::{
     transaction_validity::{InvalidTransaction, TransactionValidityError},
     BuildStorage, DispatchError, MultiAddress, MultiSignature,
 };
+use staging_xcm::latest::{
+    Asset as XcmAsset, AssetId as XcmAssetId, Fungibility, Weight as XcmWeight, XcmContext,
+};
+use staging_xcm_executor::{
+    test_helpers::mock_asset_to_holding, traits::WeightTrader, AssetsInHolding,
+};
 
 use crate::{
     classifier::{RuntimeBaseCallFilter, RuntimeDispatcher},
-    usdc_location, AccountId, AllPalletsWithSystem, AssetTxPayment, Attestor, Aura, AuraExt,
-    Authorship, Balance, Balances, BlockNumber, CollatorSelection, ConditionalLedger, Constitution,
-    ConvictionVoting, CumulusXcm, Epoch, ExecutionGuard, ForeignAssets, FutarchyTreasury, Guardian,
-    IncidentRegistry, Market, MessageQueue, Migrations, MilestoneRegistry, Multisig, Oracle,
-    Origins, PalletInfo as RuntimePalletInfo, ParachainInfo, ParachainSystem, PolkadotXcm,
-    Preimage, Proxy, Referenda, Runtime, RuntimeCall, RuntimeGenesisConfig, RuntimeOrigin,
-    Scheduler, Session, Sudo, System, Timestamp, TransactionPayment, TxExtension,
-    UncheckedExtrinsic, Utility, Vesting, Welfare, XcmpQueue, FEE_VIT_USDC_RATE_KEY,
-    MILLISECS_PER_BLOCK, SS58_PREFIX, USDC_DECIMALS, USDC_LOCATION_ENCODED, VERSION, VIT_DECIMALS,
+    AccountId, AllPalletsWithSystem, AssetTxPayment, Attestor, Aura, AuraExt, Authorship, Balance,
+    Balances, BlockNumber, CollatorSelection, ConditionalLedger, Constitution, ConvictionVoting,
+    CumulusXcm, Epoch, ExecutionGuard, ForeignAssets, FutarchyTreasury, Guardian, IncidentRegistry,
+    InflowCaps, Market, MessageQueue, Migrations, MilestoneRegistry, Multisig, Oracle, Origins,
+    PalletInfo as RuntimePalletInfo, ParachainInfo, ParachainSystem, PolkadotXcm, Preimage, Proxy,
+    Referenda, Runtime, RuntimeCall, RuntimeGenesisConfig, RuntimeOrigin, Scheduler, Session, Sudo,
+    System, Timestamp, TransactionPayment, TxExtension, UncheckedExtrinsic, Utility, Vesting,
+    Welfare, XcmpQueue, FEE_VIT_USDC_RATE_KEY, MILLISECS_PER_BLOCK, SS58_PREFIX, USDC_DECIMALS,
+    USDC_LOCATION_ENCODED, VERSION, VIT_DECIMALS,
 };
 
 trait SameType<Rhs> {}
@@ -57,6 +69,19 @@ where
 
 pub(crate) fn account(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
+}
+
+fn xcm_holding_amount(holding: &AssetsInHolding, id: &staging_xcm::latest::Location) -> u128 {
+    holding
+        .fungible_assets_iter()
+        .find_map(|asset| match asset {
+            XcmAsset {
+                id: XcmAssetId(location),
+                fun: Fungibility::Fungible(amount),
+            } if &location == id => Some(amount),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn merge_json(base: &mut serde_json::Value, patch: serde_json::Value) {
@@ -1202,9 +1227,10 @@ fn composition_contains_all_wired_pallets_at_their_frozen_indices() {
     assert_pallet!(Attestor, 60, "Attestor");
     assert_pallet!(Epoch, 61, "Epoch");
     assert_pallet!(ExecutionGuard, 62, "ExecutionGuard");
+    assert_pallet!(InflowCaps, 63, "InflowCaps");
     assert_eq!(
         <AllPalletsWithSystem as PalletsInfoAccess>::infos().len(),
-        40
+        41
     );
 }
 
@@ -1264,6 +1290,7 @@ fn execution_guard_enqueue_rejects_signed_callers() {
 
 #[test]
 fn guard_rejects_best_effort_wrappers_and_admits_atomic_batch_all() {
+    // limit-coverage: dead-man-switch
     use pallet_execution_guard::BatchDispatcher;
 
     development_ext().execute_with(|| {
@@ -1448,6 +1475,139 @@ fn usdc_fee_conversion_scales_decimals_and_rounds_against_the_payer() {
         assert_eq!(
             crate::configs::LiveFeeConversion::to_asset_balance(0, usdc_location()),
             Ok(0)
+        );
+    });
+}
+
+#[test]
+fn governed_xcm_rates_are_read_from_genesis_params_and_live_updates() {
+    development_ext().execute_with(|| {
+        use crate::configs::ConstitutionTraderRates;
+
+        // 13 §1 defaults: xcm.trade_dot_per_sec = 10 DOT/s (1e11 planck),
+        // xcm.trade_dot_per_mb = 1 DOT/MiB (1e10); xcm.trade_usdc_per_sec =
+        // 50 USDC/s (5e7 µUSDC), xcm.trade_usdc_per_mb = 5 USDC/MiB (5e6).
+        assert_eq!(
+            ConstitutionTraderRates::dot_rate(),
+            WeightRate {
+                units_per_second: 100_000_000_000,
+                units_per_megabyte: 10_000_000_000,
+            }
+        );
+        assert_eq!(
+            ConstitutionTraderRates::usdc_rate(),
+            WeightRate {
+                units_per_second: 50_000_000,
+                units_per_megabyte: 5_000_000,
+            }
+        );
+
+        let key = pallet_constitution::key16(b"xcm.dot_per_sec");
+        // The live clock begins at epoch zero, so exercise the real registry-
+        // amendment path to make this non-kernel PARAM row writable before
+        // proving `set_param` is observed immediately.
+        assert_ok!(Constitution::amend_registry(
+            pallet_origins::Origin::FutarchyMeta.into(),
+            key,
+            pallet_constitution::ParamValue::Balance(1_000_000_000),
+            pallet_constitution::ParamValue::Balance(10_000_000_000_000),
+            Some(pallet_constitution::MaxDelta::Factor(2)),
+            0,
+        ));
+        assert_ok!(Constitution::set_param(
+            pallet_origins::Origin::FutarchyParam.into(),
+            key,
+            pallet_constitution::ParamValue::Balance(200_000_000_000),
+        ));
+        assert_eq!(
+            ConstitutionTraderRates::dot_rate().units_per_second,
+            200_000_000_000
+        );
+    });
+}
+
+#[test]
+fn governed_xcm_trader_rounds_both_weight_dimensions_up_against_the_payer() {
+    use crate::configs::ConstitutionTraderRates;
+    use frame_support::weights::constants::{WEIGHT_PROOF_SIZE_PER_MB, WEIGHT_REF_TIME_PER_SECOND};
+
+    development_ext().execute_with(|| {
+        let context = XcmContext::with_message_id([44; 32]);
+        let payment = mock_asset_to_holding(XcmAsset {
+            id: XcmAssetId(usdc_location()),
+            fun: Fungibility::Fungible(10),
+        });
+        let mut trader = GovernedWeightTrader::<ConstitutionTraderRates, ()>::new();
+        let bought = trader.buy_weight(XcmWeight::from_parts(1, 1), payment, &context);
+        assert!(bought.is_ok(), "governed USDC payment must buy weight");
+
+        let rate = ConstitutionTraderRates::usdc_rate();
+        let reference_price = rate
+            .units_per_second
+            .saturating_add(u128::from(WEIGHT_REF_TIME_PER_SECOND).saturating_sub(1))
+            / u128::from(WEIGHT_REF_TIME_PER_SECOND);
+        let proof_price = rate
+            .units_per_megabyte
+            .saturating_add(u128::from(WEIGHT_PROOF_SIZE_PER_MB).saturating_sub(1))
+            / u128::from(WEIGHT_PROOF_SIZE_PER_MB);
+        let charged = reference_price.saturating_add(proof_price);
+        assert_eq!(charged, 6);
+        if let Ok(surplus) = bought {
+            assert_eq!(xcm_holding_amount(&surplus, &usdc_location()), 10 - charged);
+        }
+    });
+}
+
+#[test]
+fn phase_inflow_caps_use_real_foreign_asset_issuance_and_live_params() {
+    use crate::configs::PhaseInflowCaps;
+
+    development_ext().execute_with(|| {
+        // 13 §1 default: phase3.tvl_cap = 2,000,000 USDC (µUSDC, 6 decimals).
+        let global_cap = 2_000_000_000_000_u128;
+        let issued = global_cap - 100;
+        assert!(<ForeignAssets as FungiblesMutate<AccountId>>::mint_into(
+            usdc_location(),
+            &account(46),
+            issued,
+        )
+        .is_ok());
+        assert_eq!(ForeignAssets::total_issuance(usdc_location()), issued);
+        assert_ok!(<PhaseInflowCaps as XcmInflowCaps<AccountId>>::usdc_mint_admissible(100));
+        assert_eq!(
+            <PhaseInflowCaps as XcmInflowCaps<AccountId>>::usdc_mint_admissible(101),
+            Err(())
+        );
+
+        // The adapter observes the live row on its next read. Phase-gate
+        // discipline for cap changes is enforced by the governance layer;
+        // its set_param mutability remains the constitution-side SQ follow-up.
+        assert_ok!(Constitution::set_param(
+            pallet_origins::Origin::FutarchyMeta.into(),
+            pallet_constitution::key16(b"phase3.tvl_cap"),
+            pallet_constitution::ParamValue::Balance(issued),
+        ));
+        assert_eq!(
+            <PhaseInflowCaps as XcmInflowCaps<AccountId>>::usdc_mint_admissible(1),
+            Err(())
+        );
+
+        assert_ok!(Constitution::set_param(
+            pallet_origins::Origin::FutarchyMeta.into(),
+            pallet_constitution::key16(b"phase3.dep_cap"),
+            pallet_constitution::ParamValue::Balance(10),
+        ));
+        let beneficiary = account(47);
+        assert_ok!(
+            <PhaseInflowCaps as XcmInflowCaps<AccountId>>::note_usdc_inflow(&beneficiary, 10,)
+        );
+        assert_eq!(
+            <PhaseInflowCaps as XcmInflowCaps<AccountId>>::note_usdc_inflow(&beneficiary, 1),
+            Err(())
+        );
+        assert_eq!(
+            pallet_inflow_caps::CumulativeDeposits::<Runtime>::get(beneficiary),
+            10
         );
     });
 }
@@ -1725,6 +1885,379 @@ fn treasury_rebate_payout_moves_real_usdc_from_the_selected_pot() {
 }
 
 #[test]
+fn treasury_keeper_line_funding_moves_matching_real_usdc_into_the_pot() {
+    use crate::{configs::treasury_keeper_account, genesis::treasury_account};
+    use pallet_futarchy_treasury::BudgetLine;
+
+    development_ext().execute_with(|| {
+        let main = treasury_account();
+        let keeper_pot = treasury_keeper_account();
+        let amount = 50 * currency::USDC;
+        pallet_futarchy_treasury::State::<Runtime>::mutate(|state| {
+            state.main_usdc = amount;
+        });
+        assert!(<ForeignAssets as FungiblesMutate<AccountId>>::mint_into(
+            usdc_location(),
+            &main,
+            amount,
+        )
+        .is_ok());
+        let main_before = ForeignAssets::balance(usdc_location(), &main);
+
+        assert_ok!(FutarchyTreasury::fund_budget_line(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            BudgetLine::Keeper,
+            amount,
+        ));
+
+        assert_eq!(FutarchyTreasury::line_balance(BudgetLine::Keeper), amount);
+        assert_eq!(ForeignAssets::balance(usdc_location(), &keeper_pot), amount);
+        assert_eq!(
+            ForeignAssets::balance(usdc_location(), &main),
+            main_before - amount
+        );
+        assert_eq!(FutarchyTreasury::treasury().main_usdc, 0);
+    });
+}
+
+#[test]
+fn treasury_custody_sync_cannot_sweep_or_double_count_epoch_bond_escrow() {
+    use crate::{
+        configs::{epoch_account, treasury_keeper_account},
+        genesis::treasury_account,
+    };
+    use pallet_futarchy_treasury::BudgetLine;
+
+    development_ext().execute_with(|| {
+        let proposer = account(194);
+        let epoch_escrow = epoch_account();
+        let treasury_main = treasury_account();
+        let keeper_pot = treasury_keeper_account();
+        assert_ne!(epoch_escrow, treasury_main);
+        assert_ne!(epoch_escrow, keeper_pot);
+
+        let batch =
+            match pallet_execution_guard::pallet::RuntimeBatch::<Runtime>::try_from(Vec::new()) {
+                Ok(batch) => batch,
+                Err(_) => {
+                    assert!(false, "empty bounded payload must encode");
+                    return;
+                }
+            };
+        let bytes = batch.encode();
+        let payload_len = match u32::try_from(bytes.len()) {
+            Ok(len) => len,
+            Err(_) => {
+                assert!(false, "bounded payload length must fit u32");
+                return;
+            }
+        };
+        let payload_hash = match <Preimage as StorePreimage>::note(bytes.into()) {
+            Ok(hash) => hash,
+            Err(error) => {
+                assert!(false, "payload preimage must be noted: {error:?}");
+                return;
+            }
+        };
+        let bond = crate::configs::balance_param(b"prop.bond.param");
+        let funding = 50 * currency::USDC;
+        assert!(bond > 0);
+        assert_ok!(ForeignAssets::mint_into(usdc_location(), &proposer, bond,));
+        assert_ok!(ForeignAssets::mint_into(
+            usdc_location(),
+            &treasury_main,
+            funding,
+        ));
+        pallet_futarchy_treasury::State::<Runtime>::mutate(|state| {
+            state.main_usdc = funding;
+        });
+
+        let pid = pallet_epoch::NextProposalId::<Runtime>::get();
+        assert_ok!(Epoch::submit(
+            RuntimeOrigin::signed(proposer.clone()),
+            empty_param_proposal(pid, proposer, payload_hash, payload_len),
+        ));
+        let escrow_before = ForeignAssets::balance(usdc_location(), &epoch_escrow);
+        let issuance_before = ForeignAssets::total_issuance(usdc_location());
+        let deposits_before =
+            pallet_inflow_caps::CumulativeDeposits::<Runtime>::iter().collect::<Vec<_>>();
+        assert_eq!(escrow_before, bond);
+        assert_eq!(
+            pallet_epoch::ProposalBonds::<Runtime>::get(pid).map(|entry| entry.held),
+            Some(bond),
+        );
+
+        assert_ok!(FutarchyTreasury::fund_budget_line(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            BudgetLine::Keeper,
+            funding,
+        ));
+
+        assert_eq!(
+            ForeignAssets::balance(usdc_location(), &epoch_escrow),
+            escrow_before,
+            "MAIN→KEEPER custody sync must not touch the epoch sovereign escrow",
+        );
+        assert_eq!(
+            pallet_epoch::ProposalBonds::<Runtime>::get(pid).map(|entry| entry.held),
+            Some(bond),
+            "an internal treasury transfer must not mutate epoch liabilities",
+        );
+        assert_eq!(
+            ForeignAssets::total_issuance(usdc_location()),
+            issuance_before,
+            "custody sync is a transfer, not a mint or burn",
+        );
+        assert_eq!(
+            pallet_inflow_caps::CumulativeDeposits::<Runtime>::iter().collect::<Vec<_>>(),
+            deposits_before,
+            "local custody transfers do not traverse the XCM inflow meter",
+        );
+        assert_eq!(
+            ForeignAssets::balance(usdc_location(), &keeper_pot),
+            funding
+        );
+        assert!(Epoch::do_try_state().is_ok());
+        assert!(FutarchyTreasury::do_try_state().is_ok());
+    });
+}
+
+#[test]
+fn treasury_pot_funding_failure_rolls_back_internal_and_asset_state() {
+    use crate::{configs::treasury_keeper_account, genesis::treasury_account};
+    use pallet_futarchy_treasury::BudgetLine;
+
+    development_ext().execute_with(|| {
+        let main = treasury_account();
+        let keeper_pot = treasury_keeper_account();
+        let amount = 50 * currency::USDC;
+        pallet_futarchy_treasury::State::<Runtime>::mutate(|state| {
+            state.main_usdc = amount;
+        });
+        let state_before = pallet_futarchy_treasury::State::<Runtime>::get();
+        let main_before = ForeignAssets::balance(usdc_location(), &main);
+        let pot_before = ForeignAssets::balance(usdc_location(), &keeper_pot);
+        let issuance_before = ForeignAssets::total_issuance(usdc_location());
+
+        assert!(FutarchyTreasury::fund_budget_line(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            BudgetLine::Keeper,
+            amount,
+        )
+        .is_err());
+
+        assert_eq!(
+            pallet_futarchy_treasury::State::<Runtime>::get(),
+            state_before
+        );
+        assert_eq!(ForeignAssets::balance(usdc_location(), &main), main_before);
+        assert_eq!(
+            ForeignAssets::balance(usdc_location(), &keeper_pot),
+            pot_before
+        );
+        assert_eq!(
+            ForeignAssets::total_issuance(usdc_location()),
+            issuance_before
+        );
+    });
+}
+
+#[test]
+fn treasury_non_pot_line_funding_does_not_move_foreign_assets() {
+    use crate::{configs::treasury_keeper_account, genesis::treasury_account};
+    use pallet_futarchy_treasury::BudgetLine;
+
+    development_ext().execute_with(|| {
+        let main = treasury_account();
+        let keeper_pot = treasury_keeper_account();
+        let amount = 25 * currency::USDC;
+        let retained = currency::USDC;
+        pallet_futarchy_treasury::State::<Runtime>::mutate(|state| {
+            state.main_usdc = amount;
+        });
+        assert!(<ForeignAssets as FungiblesMutate<AccountId>>::mint_into(
+            usdc_location(),
+            &main,
+            amount + retained,
+        )
+        .is_ok());
+        let main_before = ForeignAssets::balance(usdc_location(), &main);
+        let pot_before = ForeignAssets::balance(usdc_location(), &keeper_pot);
+        let issuance_before = ForeignAssets::total_issuance(usdc_location());
+
+        assert_ok!(FutarchyTreasury::fund_budget_line(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            BudgetLine::Pol,
+            amount,
+        ));
+
+        assert_eq!(FutarchyTreasury::line_balance(BudgetLine::Pol), amount);
+        assert_eq!(ForeignAssets::balance(usdc_location(), &main), main_before);
+        assert_eq!(
+            ForeignAssets::balance(usdc_location(), &keeper_pot),
+            pot_before
+        );
+        assert_eq!(
+            ForeignAssets::total_issuance(usdc_location()),
+            issuance_before
+        );
+    });
+}
+
+#[test]
+fn xcm_traffic_recorder_uses_the_live_epoch_start_for_normal_day_attribution() {
+    use crate::configs::XcmTrafficRecorder;
+    use bleavit_xcm::health::LocalXcmHealthSink;
+
+    development_ext().execute_with(|| {
+        const EPOCH: u32 = 7;
+        const START: u32 = 123;
+        pallet_epoch::EpochOf::<Runtime>::mutate(|info| info.index = EPOCH);
+        pallet_epoch::Schedule::<Runtime>::mutate(|schedule| {
+            schedule.epoch_start_block = START;
+        });
+        System::set_block_number(START + 3 * futarchy_primitives::kernel::BLOCKS_PER_DAY + 17);
+        XcmTrafficRecorder::note_sent();
+        assert_eq!(Welfare::xcm_traffic(EPOCH, 3).accepted, 1);
+    });
+}
+
+#[test]
+fn xcm_traffic_recorder_attributes_the_first_post_roll_event_to_new_epoch_day_zero() {
+    use crate::configs::XcmTrafficRecorder;
+    use bleavit_xcm::health::LocalXcmHealthSink;
+
+    development_ext().execute_with(|| {
+        const NEW_EPOCH: u32 = 12;
+        const ROLL_BLOCK: u32 = 90_001;
+        pallet_epoch::EpochOf::<Runtime>::mutate(|info| info.index = NEW_EPOCH);
+        pallet_epoch::Schedule::<Runtime>::mutate(|schedule| {
+            schedule.epoch_start_block = ROLL_BLOCK;
+        });
+        System::set_block_number(ROLL_BLOCK);
+        XcmTrafficRecorder::note_send_failure();
+        assert_eq!(Welfare::xcm_traffic(NEW_EPOCH, 0).failed, 1);
+    });
+}
+
+#[test]
+fn xcm_traffic_recorder_clamps_large_live_epoch_day_to_u8_max() {
+    use crate::configs::XcmTrafficRecorder;
+    use bleavit_xcm::health::LocalXcmHealthSink;
+
+    development_ext().execute_with(|| {
+        const EPOCH: u32 = 19;
+        pallet_epoch::EpochOf::<Runtime>::mutate(|info| info.index = EPOCH);
+        pallet_epoch::Schedule::<Runtime>::mutate(|schedule| {
+            schedule.epoch_start_block = 0;
+        });
+        System::set_block_number(u32::MAX);
+        XcmTrafficRecorder::note_probe_timeout();
+        assert_eq!(Welfare::xcm_traffic(EPOCH, u8::MAX).probe_timeouts, 1);
+    });
+}
+
+#[test]
+fn oracle_probe_timeout_sink_records_welfare_xcm_traffic() {
+    development_ext().execute_with(|| {
+        pallet_epoch::EpochOf::<Runtime>::mutate(|info| info.index = 0);
+        pallet_epoch::Schedule::<Runtime>::mutate(|schedule| {
+            schedule.epoch_start_block = 0;
+        });
+        System::set_block_number(pallet_oracle::RES_PROBE_INTERVAL);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(account(
+            78
+        ))));
+        System::set_block_number(pallet_oracle::RES_PROBE_INTERVAL * 2);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(account(
+            78
+        ))));
+
+        assert_eq!(Welfare::xcm_traffic(0, 2).probe_timeouts, 1);
+    });
+}
+
+#[test]
+fn runtime_metric_inputs_do_not_emit_r_even_when_it_is_registered() {
+    use pallet_welfare::{
+        BoundedSpecSet, ComponentValue, MetricInputs, MetricSpec, Pillar, SourceClass,
+        EPSILON_PILLAR, HISTORY_PRIORS, ONE,
+    };
+
+    fn spec(id: u16, version: u16) -> MetricSpec {
+        MetricSpec {
+            id,
+            version,
+            pillar: Pillar::COnchain,
+            weight: futarchy_primitives::FixedU64(ONE / 2),
+            epsilon_floor: EPSILON_PILLAR,
+            activation_epoch: 0,
+            source: SourceClass::Onchain,
+            formula_ref: [1; 32],
+            units: [2; 16],
+            repr: [3; 16],
+            cadence_blocks: 1,
+            sanity_min: futarchy_primitives::FixedU64(0),
+            sanity_max: futarchy_primitives::FixedU64(ONE),
+            has_normalization_rule: true,
+            has_missing_data_rule: true,
+            has_gaming_vectors: true,
+            has_challenge_procedure: false,
+            prior_bounds: [futarchy_primitives::FixedU64(ONE); HISTORY_PRIORS],
+        }
+    }
+
+    development_ext().execute_with(|| {
+        const VERSION: u16 = 77;
+        const EPOCH: u32 = 9;
+        const DAY: u8 = 3;
+        let specs = BoundedSpecSet::truncate_from(vec![
+            spec(futarchy_primitives::metric_ids::X, VERSION),
+            spec(futarchy_primitives::metric_ids::R, VERSION),
+        ]);
+        pallet_welfare::MetricSpecs::<Runtime>::insert(VERSION, specs);
+
+        assert_eq!(
+            crate::configs::RuntimeMetricInputs::onchain_components(EPOCH, VERSION),
+            vec![ComponentValue {
+                id: futarchy_primitives::metric_ids::X,
+                value: futarchy_primitives::FixedU64(ONE),
+            }]
+        );
+
+        Welfare::note_xcm_traffic(EPOCH, DAY, pallet_welfare::XcmTrafficKind::Accepted);
+        Welfare::note_xcm_traffic(EPOCH, DAY, pallet_welfare::XcmTrafficKind::SendFailed);
+        Welfare::note_xcm_traffic(EPOCH, DAY, pallet_welfare::XcmTrafficKind::SendFailed);
+        pallet_oracle::ReserveHealth::<Runtime>::put(pallet_oracle::ReserveHealthValue {
+            unhealthy: true,
+            ..Default::default()
+        });
+        let degraded = vec![ComponentValue {
+            id: futarchy_primitives::metric_ids::X,
+            value: futarchy_primitives::FixedU64(333_333_333),
+        }];
+        assert_eq!(
+            crate::configs::RuntimeMetricInputs::onchain_components(EPOCH, VERSION),
+            degraded
+        );
+        assert_eq!(
+            crate::configs::RuntimeMetricInputs::daily_components(EPOCH, DAY, VERSION),
+            degraded
+        );
+        assert_eq!(
+            crate::configs::RuntimeMetricInputs::daily_components(EPOCH, DAY + 1, VERSION),
+            vec![ComponentValue {
+                id: futarchy_primitives::metric_ids::X,
+                value: futarchy_primitives::FixedU64(ONE),
+            }]
+        );
+        assert!(
+            crate::configs::RuntimeMetricInputs::onchain_components(EPOCH, VERSION + 1).is_empty()
+        );
+    });
+}
+
+#[test]
 fn development_key_constants_match_the_well_known_sr25519_keys() {
     assert_eq!(
         crate::genesis::ALICE_PUBLIC,
@@ -1881,6 +2414,226 @@ fn vesting_force_calls_are_nobody_and_public_calls_remain_public() {
 }
 
 #[test]
+fn vesting_schedule_bound_rejects_the_ninth_schedule() {
+    // limit-coverage: Vesting schedules per account
+    development_ext().execute_with(|| {
+        let source = Sr25519Keyring::Alice.to_account_id();
+        let target = account(99);
+        let schedule = pallet_vesting::VestingInfo::new(currency::VIT, 1, 100);
+        for _ in 0..8 {
+            assert_ok!(Vesting::vested_transfer(
+                RuntimeOrigin::signed(source.clone()),
+                MultiAddress::Id(target.clone()),
+                schedule,
+            ));
+        }
+        assert_noop!(
+            Vesting::vested_transfer(
+                RuntimeOrigin::signed(source),
+                MultiAddress::Id(target),
+                schedule,
+            ),
+            pallet_vesting::Error::<Runtime>::AtMaxVestingSchedules
+        );
+    });
+}
+
+#[test]
+fn oracle_proof_bound_is_enforced_by_real_runtime_extrinsic_admission() {
+    // limit-coverage: orc.max_proof_bytes
+    let bound = pallet_oracle::MAX_PROOF_BYTES_BOUND;
+    let proof = BoundedVec::<u8, ConstU32<{ pallet_oracle::MAX_PROOF_BYTES_BOUND }>>::try_from(
+        vec![0; bound as usize],
+    )
+    .expect("the at-bound proof constructs");
+    let call = RuntimeCall::Oracle(pallet_oracle::Call::recompute_proof {
+        component: 1,
+        epoch: 1,
+        spec_version: 1,
+        proof,
+    });
+    let call_bytes = call.encode();
+    let call_len = call_bytes.len();
+    let encoded_at_bound = UncheckedExtrinsic::new_bare(call).encode();
+    let mut at_bound_input = encoded_at_bound.as_slice();
+    let decoded_at_bound = UncheckedExtrinsic::decode(&mut at_bound_input);
+    assert!(decoded_at_bound.is_ok());
+    assert!(at_bound_input.is_empty());
+
+    // Derive the real bare-extrinsic preamble from the valid runtime type, then
+    // replace only its call bytes with a proof whose declared/actual length is
+    // bound+1. This exercises UncheckedExtrinsic::decode, not just pallet Call.
+    let encoded_bound_len = Compact(bound).encode();
+    let proof_start = call_bytes.len().saturating_sub(bound as usize);
+    let length_start = proof_start.saturating_sub(encoded_bound_len.len());
+    assert_eq!(
+        &call_bytes[length_start..proof_start],
+        encoded_bound_len.as_slice()
+    );
+    let mut oversized_call = call_bytes;
+    oversized_call.splice(
+        length_start..proof_start,
+        Compact(bound.saturating_add(1)).encode(),
+    );
+    oversized_call.push(0);
+
+    let mut inner_at_bound = encoded_at_bound.as_slice();
+    let declared_inner = Compact::<u32>::decode(&mut inner_at_bound)
+        .expect("valid bare extrinsic has a compact length")
+        .0 as usize;
+    assert_eq!(declared_inner, inner_at_bound.len());
+    let preamble_len = inner_at_bound.len().saturating_sub(call_len);
+    let mut oversized_inner = inner_at_bound[..preamble_len].to_vec();
+    oversized_inner.extend(oversized_call);
+    let mut encoded_oversized =
+        Compact(u32::try_from(oversized_inner.len()).expect("test extrinsic length fits u32"))
+            .encode();
+    encoded_oversized.extend(oversized_inner);
+
+    let error = UncheckedExtrinsic::decode(&mut encoded_oversized.as_slice())
+        .expect_err("a bound+1 proof must fail real runtime extrinsic admission");
+    assert!(error.to_string().contains("BoundedVec exceeds its limit"));
+}
+
+#[test]
+fn tick_batch_bound_is_enforced_by_real_runtime_extrinsic_admission() {
+    // limit-coverage: TickBatch
+    let bound = kernel::TICK_BATCH;
+    let pids = pallet_epoch::TickBatch::try_from(
+        (0..u64::from(bound)).collect::<Vec<futarchy_primitives::ProposalId>>(),
+    )
+    .expect("the at-bound batch constructs");
+    let call = RuntimeCall::Epoch(pallet_epoch::Call::tick { pids });
+    let call_bytes = call.encode();
+    let call_len = call_bytes.len();
+    let encoded_at_bound = UncheckedExtrinsic::new_bare(call).encode();
+    let mut at_bound_input = encoded_at_bound.as_slice();
+    let decoded_at_bound = UncheckedExtrinsic::decode(&mut at_bound_input);
+    assert!(decoded_at_bound.is_ok());
+    assert!(at_bound_input.is_empty());
+
+    // Same construction as the oracle-proof admission test above: keep the real
+    // bare-extrinsic preamble, replace only the batch's compact length with
+    // bound+1 and append one more fixed-width pid, then prove the REAL
+    // UncheckedExtrinsic::decode rejects the 11th item at admission.
+    let pid_bytes = core::mem::size_of::<futarchy_primitives::ProposalId>();
+    let encoded_bound_len = Compact(bound).encode();
+    let items_start = call_bytes.len().saturating_sub(bound as usize * pid_bytes);
+    let length_start = items_start.saturating_sub(encoded_bound_len.len());
+    assert_eq!(
+        &call_bytes[length_start..items_start],
+        encoded_bound_len.as_slice()
+    );
+    let mut oversized_call = call_bytes;
+    oversized_call.splice(
+        length_start..items_start,
+        Compact(bound.saturating_add(1)).encode(),
+    );
+    oversized_call.extend(core::iter::repeat_n(0u8, pid_bytes));
+
+    let mut inner_at_bound = encoded_at_bound.as_slice();
+    let declared_inner = Compact::<u32>::decode(&mut inner_at_bound)
+        .expect("valid bare extrinsic has a compact length")
+        .0 as usize;
+    assert_eq!(declared_inner, inner_at_bound.len());
+    let preamble_len = inner_at_bound.len().saturating_sub(call_len);
+    let mut oversized_inner = inner_at_bound[..preamble_len].to_vec();
+    oversized_inner.extend(oversized_call);
+    let mut encoded_oversized =
+        Compact(u32::try_from(oversized_inner.len()).expect("test extrinsic length fits u32"))
+            .encode();
+    encoded_oversized.extend(oversized_inner);
+
+    let error = UncheckedExtrinsic::decode(&mut encoded_oversized.as_slice())
+        .expect_err("an 11-pid tick batch must fail real runtime extrinsic admission");
+    assert!(error.to_string().contains("BoundedVec exceeds its limit"));
+}
+
+/// Shared byte-surgery core of the admission tests above: prove the at-bound
+/// call decodes as a real bare extrinsic, then splice the trailing
+/// `BoundedVec<u8, _>`'s compact length to bound+1 (adding one filler byte)
+/// and return the error the REAL `UncheckedExtrinsic::decode` rejects it
+/// with (each caller asserts the specific message). `tail_len` is the fixed
+/// number of encoded bytes that follow the bounded vec in the call.
+fn trailing_byte_vec_admission_error(call: RuntimeCall, bound: u32, tail_len: usize) -> String {
+    let call_bytes = call.encode();
+    let call_len = call_bytes.len();
+    let encoded_at_bound = UncheckedExtrinsic::new_bare(call).encode();
+    let mut at_bound_input = encoded_at_bound.as_slice();
+    let decoded_at_bound = UncheckedExtrinsic::decode(&mut at_bound_input);
+    assert!(decoded_at_bound.is_ok());
+    assert!(at_bound_input.is_empty());
+
+    let encoded_bound_len = Compact(bound).encode();
+    let items_start = call_bytes
+        .len()
+        .saturating_sub(tail_len)
+        .saturating_sub(bound as usize);
+    let length_start = items_start.saturating_sub(encoded_bound_len.len());
+    assert_eq!(
+        &call_bytes[length_start..items_start],
+        encoded_bound_len.as_slice()
+    );
+    let mut oversized_call = call_bytes;
+    oversized_call.splice(
+        length_start..items_start,
+        Compact(bound.saturating_add(1)).encode(),
+    );
+    oversized_call.insert(items_start, 0);
+
+    let mut inner_at_bound = encoded_at_bound.as_slice();
+    let declared_inner = Compact::<u32>::decode(&mut inner_at_bound)
+        .expect("valid bare extrinsic has a compact length")
+        .0 as usize;
+    assert_eq!(declared_inner, inner_at_bound.len());
+    let preamble_len = inner_at_bound.len().saturating_sub(call_len);
+    let mut oversized_inner = inner_at_bound[..preamble_len].to_vec();
+    oversized_inner.extend(oversized_call);
+    let mut encoded_oversized =
+        Compact(u32::try_from(oversized_inner.len()).expect("test extrinsic length fits u32"))
+            .encode();
+    encoded_oversized.extend(oversized_inner);
+
+    let error = UncheckedExtrinsic::decode(&mut encoded_oversized.as_slice())
+        .expect_err("a bound+1 vec must fail real runtime extrinsic admission");
+    error.to_string()
+}
+
+#[test]
+fn migration_cursor_bound_is_enforced_by_real_runtime_extrinsic_admission() {
+    // limit-coverage: MIGRATION_CURSOR_MAX_LEN
+    let bound = futarchy_primitives::bounds::MIGRATION_CURSOR_MAX_LEN;
+    let inner_cursor =
+        pallet_migrations::RawCursorOf::<Runtime>::try_from(vec![0u8; bound as usize])
+            .expect("the at-bound cursor constructs");
+    let call = RuntimeCall::Migrations(pallet_migrations::Call::force_set_active_cursor {
+        index: 0,
+        inner_cursor: Some(inner_cursor),
+        started_at: None,
+    });
+    // The encoded `started_at: None` is the single byte following the cursor.
+    let error = trailing_byte_vec_admission_error(call, bound, 1);
+    assert!(error.contains("BoundedVec exceeds its limit"));
+}
+
+#[test]
+fn migration_identifier_bound_is_enforced_by_real_runtime_extrinsic_admission() {
+    // limit-coverage: MIGRATION_IDENTIFIER_MAX_LEN
+    use pallet_migrations::HistoricCleanupSelector;
+
+    let bound = futarchy_primitives::bounds::MIGRATION_IDENTIFIER_MAX_LEN;
+    let identifier =
+        pallet_migrations::IdentifierOf::<Runtime>::try_from(vec![0u8; bound as usize])
+            .expect("the at-bound identifier constructs");
+    let call = RuntimeCall::Migrations(pallet_migrations::Call::clear_historic {
+        selector: HistoricCleanupSelector::Specific(vec![identifier]),
+    });
+    // The single identifier's bytes are the encoding's tail.
+    let error = trailing_byte_vec_admission_error(call, bound, 0);
+    assert!(error.contains("BoundedVec exceeds its limit"));
+}
+
+#[test]
 fn metadata_generates_and_runtime_constants_are_visible() {
     development_ext().execute_with(|| {
         let encoded = Runtime::metadata().encode();
@@ -1934,6 +2687,7 @@ fn d13_system_calls_are_denied_bare_and_through_every_closed_wrapper() {
 
 #[test]
 fn nesting_budget_accepts_the_limit_and_fails_closed_beyond_it() {
+    // limit-coverage: MAX_NESTED
     let mut at_limit = remark();
     for _ in 0..kernel::MAX_NESTED_LEVELS {
         at_limit = RuntimeCall::Utility(pallet_utility::Call::batch {
@@ -1950,6 +2704,15 @@ fn nesting_budget_accepts_the_limit_and_fails_closed_beyond_it() {
         calls: (0..=kernel::MAX_NESTED_CALLS).map(|_| remark()).collect(),
     });
     assert!(!RuntimeBaseCallFilter::contains(&oversized));
+
+    development_ext().execute_with(|| {
+        for call in [beyond, oversized] {
+            assert_noop!(
+                call.dispatch(RuntimeOrigin::signed(account(70))),
+                frame_system::Error::<Runtime>::CallFiltered
+            );
+        }
+    });
 }
 
 #[test]
@@ -3468,7 +4231,7 @@ fn seeded_trading_decision_refuses_classless_payload_before_guard_enqueue() {
         // reach this state through screening. The direct decision fixture
         // proves queue-time revalidation also fails closed. The separate I-9
         // seeded queue test below retains the real enqueue/execute/callback
-        // integration coverage while SQ-158 blocks every production payload.
+        // integration coverage while SQ-172 blocks every production payload.
         let batch =
             match pallet_execution_guard::pallet::RuntimeBatch::<Runtime>::try_from(Vec::new()) {
                 Ok(batch) => batch,
@@ -6303,7 +7066,7 @@ fn unverifiable_nonempty_payload_and_later_bond_floor_drift_cancel_with_full_ref
                 Fortitude::Polite,
             ),
             bond,
-            "SQ-158 implementation uncertainty cannot confiscate an honest bond",
+            "SQ-172 implementation uncertainty cannot confiscate an honest bond",
         );
         assert_eq!(
             ForeignAssets::balance(usdc_location(), &insurance),
