@@ -978,9 +978,9 @@ fn extrinsic_value_types_do_not_admit_wrong_kinds_via_scale() {
 fn genesis_registry_matches_13_1_row_encodings() {
     new_test_ext().execute_with(|| {
         // Every 13 §1 row with a scalar concrete default and no open
-        // [VERIFY] tag is seeded (87 total, incl. per-class suffix keys and
+        // [VERIFY] tag is seeded (91 total, incl. per-class suffix keys and
         // rule-6 short keys); spot-pin the unit encodings per kind.
-        assert_eq!(Params::<Test>::count(), 87);
+        assert_eq!(Params::<Test>::count(), 91);
 
         // Per-class suffix keys (13 rule 6) — δ floors, kernel-capped.
         let delta_meta = Params::<Test>::get(key16(b"dec.delta.meta")).unwrap();

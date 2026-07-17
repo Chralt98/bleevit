@@ -162,6 +162,19 @@ impl ProbeDispatch for () {
     fn probe_due(_: u64) {}
 }
 
+/// XCM-free observation seam fired after an unanswered reserve probe is folded.
+///
+/// The sink is infallible so XCM-health recording can never affect the
+/// fail-static reserve-health transition or the calling keeper crank (07 §8;
+/// 09 §6.4).
+pub trait ProbeTimeoutSink {
+    fn probe_timed_out();
+}
+
+impl ProbeTimeoutSink for () {
+    fn probe_timed_out() {}
+}
+
 /// Constructs a runtime origin resolving to a given authority so benchmarks can
 /// drive the privileged `adjudicate` call with its exact 07 §5.4 origin.
 #[cfg(feature = "runtime-benchmarks")]
@@ -216,6 +229,10 @@ pub mod pallet {
         /// Runtime XCM adapter invoked only after a fresh reserve probe commits
         /// (07 §8; B4/B1a). The pallet remains XCM-free by construction.
         type ProbeDispatch: ProbeDispatch;
+
+        /// Infallible local-health observer invoked once per committed timeout
+        /// fold (07 §8; 09 §6.4). It never changes dispatch results.
+        type ProbeTimeoutSink: ProbeTimeoutSink;
 
         /// Infallible, fail-soft rebate sink for useful oracle cranks (07 §13,
         /// 08 §6.3). Oracle work is paid from the separate ORACLE budget line.
@@ -689,6 +706,9 @@ pub mod pallet {
                     Err(CoreError::ProbeTooEarly)
                 }
             })?;
+            if folded_timeout {
+                T::ProbeTimeoutSink::probe_timed_out();
+            }
             let dispatch_live = T::ProbeDispatch::live();
             if dispatch_live {
                 if let Some(query_id) = fresh_query_id {

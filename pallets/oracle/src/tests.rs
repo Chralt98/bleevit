@@ -1241,7 +1241,7 @@ mod probe_dispatch_seam {
     use frame_support::{derive_impl, parameter_types};
     use futarchy_primitives::keeper::{CrankClass, KeeperRebateSink};
     use sp_runtime::{traits::IdentityLookup, AccountId32, BuildStorage};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     type Block = frame_system::mocking::MockBlock<DispatchTest>;
 
@@ -1282,6 +1282,7 @@ mod probe_dispatch_seam {
     std::thread_local! {
         static DISPATCHED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
         static REBATES: RefCell<Vec<(AccountId32, CrankClass)>> = const { RefCell::new(Vec::new()) };
+        static TIMEOUTS: Cell<u32> = const { Cell::new(0) };
     }
 
     pub struct RecordingProbeDispatch;
@@ -1289,6 +1290,14 @@ mod probe_dispatch_seam {
     impl pallet_oracle::ProbeDispatch for RecordingProbeDispatch {
         fn probe_due(query_id: u64) {
             DISPATCHED.with(|ids| ids.borrow_mut().push(query_id));
+        }
+    }
+
+    pub struct RecordingProbeTimeoutSink;
+
+    impl pallet_oracle::ProbeTimeoutSink for RecordingProbeTimeoutSink {
+        fn probe_timed_out() {
+            TIMEOUTS.with(|count| count.set(count.get().saturating_add(1)));
         }
     }
 
@@ -1309,6 +1318,7 @@ mod probe_dispatch_seam {
         type Reporting = DispatchReporting;
         type MaxRoundCloseBatch = MaxRoundCloseBatch;
         type ProbeDispatch = RecordingProbeDispatch;
+        type ProbeTimeoutSink = RecordingProbeTimeoutSink;
         type KeeperRebate = RecordingKeeperRebate;
         type WeightInfo = ();
         #[cfg(feature = "runtime-benchmarks")]
@@ -1337,6 +1347,7 @@ mod probe_dispatch_seam {
             System::set_block_number(1);
             DISPATCHED.with(|ids| ids.borrow_mut().clear());
             REBATES.with(|rebates| rebates.borrow_mut().clear());
+            TIMEOUTS.with(|count| count.set(0));
         });
         ext
     }
@@ -1354,6 +1365,7 @@ mod probe_dispatch_seam {
                 1
             );
             DISPATCHED.with(|ids| assert_eq!(&*ids.borrow(), &[1]));
+            TIMEOUTS.with(|count| assert_eq!(count.get(), 0));
             REBATES.with(|rebates| {
                 assert_eq!(
                     &*rebates.borrow(),
@@ -1373,6 +1385,7 @@ mod probe_dispatch_seam {
             assert_eq!(health.pending_since, None);
             assert_eq!(health.consecutive_fails, 1);
             DISPATCHED.with(|ids| assert_eq!(&*ids.borrow(), &[1]));
+            TIMEOUTS.with(|count| assert_eq!(count.get(), 1));
             // The live dispatcher makes the fail-static timeout fold genuine
             // state-advancing keeper work, paid once even without a fresh send.
             REBATES.with(|rebates| {
@@ -1572,6 +1585,7 @@ mod probe_dispatch_seam {
             type Reporting = DispatchReporting;
             type MaxRoundCloseBatch = MaxRoundCloseBatch;
             type ProbeDispatch = ();
+            type ProbeTimeoutSink = ();
             type KeeperRebate = RecordingKeeperRebate;
             type WeightInfo = ();
             #[cfg(feature = "runtime-benchmarks")]
@@ -1637,6 +1651,7 @@ fn reserve_probe_before_interval_is_too_early() {
             Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))),
             Error::<Test>::ProbeTooEarly
         );
+        assert_eq!(ProbeTimeoutCount::get(), 0);
     });
 }
 
@@ -1662,12 +1677,16 @@ fn reserve_probe_two_consecutive_fails_go_unhealthy() {
         assert_ok!(Oracle::reserve_probe_result(1, false));
         assert!(!Oracle::reserve_unhealthy());
         assert_eq!(ReserveHealth::<Test>::get().consecutive_fails, 1);
+        assert_eq!(ProbeTimeoutCount::get(), 0);
 
         set_block(RES_PROBE_INTERVAL * 2);
         System::reset_events();
         assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))));
         assert_ok!(Oracle::reserve_probe_result(2, false));
         assert!(Oracle::reserve_unhealthy());
+        // Response-driven failures are not timeout folds and never notify the
+        // timeout sink (07 §8; 09 §6.4).
+        assert_eq!(ProbeTimeoutCount::get(), 0);
         System::assert_has_event(Event::ReserveUnhealthy.into());
         System::assert_has_event(
             Event::ReserveProbeResult {
@@ -1735,15 +1754,18 @@ fn reserve_probe_timeout_fold_counts_an_unanswered_probe_as_a_fail() {
     new_test_ext().execute_with(|| {
         set_block(RES_PROBE_INTERVAL);
         assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9)))); // probe 1 pending
+        assert_eq!(ProbeTimeoutCount::get(), 0);
 
         set_block(RES_PROBE_INTERVAL * 2);
         assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9)))); // probe 1 times out, probe 2 sent
         assert!(!Oracle::reserve_unhealthy());
         assert_eq!(ReserveHealth::<Test>::get().consecutive_fails, 1);
+        assert_eq!(ProbeTimeoutCount::get(), 1);
 
         set_block(RES_PROBE_INTERVAL * 3);
         assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9)))); // probe 2 times out
         assert!(Oracle::reserve_unhealthy());
+        assert_eq!(ProbeTimeoutCount::get(), 2);
         assert_ok!(Oracle::do_try_state());
     });
 }
@@ -2358,6 +2380,7 @@ fn reserve_probe_response_at_or_after_timeout_counts_as_fail() {
         assert_ok!(Oracle::reserve_probe_result(1, true));
         assert_eq!(ReserveHealth::<Test>::get().consecutive_fails, 1);
         assert_eq!(ReserveHealth::<Test>::get().consecutive_passes, 0);
+        assert_eq!(ProbeTimeoutCount::get(), 0);
         assert!(!Oracle::reserve_unhealthy());
         assert_ok!(Oracle::do_try_state());
     });

@@ -4,6 +4,11 @@
 
 use alloc::{boxed::Box, vec, vec::Vec};
 
+use bleavit_xcm::{
+    caps::InflowCaps as XcmInflowCaps,
+    identity::usdc_location,
+    trader::{GovernedWeightTrader, TraderRates, WeightRate},
+};
 use frame_support::{
     assert_noop, assert_ok,
     dispatch::{DispatchClass, GetDispatchInfo},
@@ -30,15 +35,21 @@ use sp_runtime::{
     transaction_validity::{InvalidTransaction, TransactionValidityError},
     BuildStorage, DispatchError, MultiAddress, MultiSignature,
 };
+use staging_xcm::latest::{
+    Asset as XcmAsset, AssetId as XcmAssetId, Fungibility, Weight as XcmWeight, XcmContext,
+};
+use staging_xcm_executor::{
+    test_helpers::mock_asset_to_holding, traits::WeightTrader, AssetsInHolding,
+};
 
 use crate::{
     classifier::RuntimeBaseCallFilter, AccountId, AllPalletsWithSystem, AssetTxPayment, Attestor,
     Aura, AuraExt, Authorship, Balances, BlockNumber, CollatorSelection, ConditionalLedger,
     Constitution, ConvictionVoting, CumulusXcm, ExecutionGuard, ForeignAssets, FutarchyTreasury,
-    Guardian, IncidentRegistry, Market, MessageQueue, Migrations, MilestoneRegistry, Multisig,
-    Oracle, Origins, PalletInfo as RuntimePalletInfo, ParachainInfo, ParachainSystem, PolkadotXcm,
-    Preimage, Proxy, Referenda, Runtime, RuntimeCall, RuntimeGenesisConfig, RuntimeOrigin,
-    Scheduler, Session, Sudo, System, Timestamp, TransactionPayment, TxExtension,
+    Guardian, IncidentRegistry, InflowCaps, Market, MessageQueue, Migrations, MilestoneRegistry,
+    Multisig, Oracle, Origins, PalletInfo as RuntimePalletInfo, ParachainInfo, ParachainSystem,
+    PolkadotXcm, Preimage, Proxy, Referenda, Runtime, RuntimeCall, RuntimeGenesisConfig,
+    RuntimeOrigin, Scheduler, Session, Sudo, System, Timestamp, TransactionPayment, TxExtension,
     UncheckedExtrinsic, Utility, Vesting, Welfare, XcmpQueue, FEE_VIT_USDC_RATE_KEY,
     MILLISECS_PER_BLOCK, SS58_PREFIX, USDC_ASSET_ID, USDC_DECIMALS, USDC_LOCATION, VERSION,
     VIT_DECIMALS,
@@ -55,6 +66,19 @@ where
 
 fn account(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
+}
+
+fn xcm_holding_amount(holding: &AssetsInHolding, id: &staging_xcm::latest::Location) -> u128 {
+    holding
+        .fungible_assets_iter()
+        .find_map(|asset| match asset {
+            XcmAsset {
+                id: XcmAssetId(location),
+                fun: Fungibility::Fungible(amount),
+            } if &location == id => Some(amount),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn merge_json(base: &mut serde_json::Value, patch: serde_json::Value) {
@@ -619,9 +643,10 @@ fn composition_contains_all_b1a_pallets_and_only_future_slots_are_absent() {
     assert_pallet!(Guardian, 59, "Guardian");
     assert_pallet!(Attestor, 60, "Attestor");
     assert_pallet!(ExecutionGuard, 62, "ExecutionGuard");
+    assert_pallet!(InflowCaps, 63, "InflowCaps");
     assert_eq!(
         <AllPalletsWithSystem as PalletsInfoAccess>::infos().len(),
-        39
+        40
     );
 }
 
@@ -714,6 +739,134 @@ fn usdc_fee_conversion_scales_decimals_and_rounds_against_the_payer() {
         assert_eq!(
             crate::configs::LiveFeeConversion::to_asset_balance(0, USDC_ASSET_ID),
             Ok(0)
+        );
+    });
+}
+
+#[test]
+fn governed_xcm_rates_are_read_from_genesis_params_and_live_updates() {
+    development_ext().execute_with(|| {
+        use crate::configs::ConstitutionTraderRates;
+
+        assert_eq!(
+            ConstitutionTraderRates::dot_rate(),
+            WeightRate {
+                units_per_second: 100_000_000_000,
+                units_per_megabyte: 10_000_000_000,
+            }
+        );
+        assert_eq!(
+            ConstitutionTraderRates::usdc_rate(),
+            WeightRate {
+                units_per_second: 50_000_000,
+                units_per_megabyte: 5_000_000,
+            }
+        );
+
+        let key = pallet_constitution::key16(b"xcm.dot_per_sec");
+        // PendingEpochClock is the epoch-0 sentinel, so exercise the real
+        // registry-amendment path to make this non-kernel PARAM row writable
+        // at epoch zero before proving `set_param` is observed immediately.
+        assert_ok!(Constitution::amend_registry(
+            pallet_origins::Origin::FutarchyMeta.into(),
+            key,
+            pallet_constitution::ParamValue::Balance(1_000_000_000),
+            pallet_constitution::ParamValue::Balance(10_000_000_000_000),
+            Some(pallet_constitution::MaxDelta::Factor(2)),
+            0,
+        ));
+        assert_ok!(Constitution::set_param(
+            pallet_origins::Origin::FutarchyParam.into(),
+            key,
+            pallet_constitution::ParamValue::Balance(200_000_000_000),
+        ));
+        assert_eq!(
+            ConstitutionTraderRates::dot_rate().units_per_second,
+            200_000_000_000
+        );
+    });
+}
+
+#[test]
+fn governed_xcm_trader_rounds_both_weight_dimensions_up_against_the_payer() {
+    use crate::configs::ConstitutionTraderRates;
+    use frame_support::weights::constants::{WEIGHT_PROOF_SIZE_PER_MB, WEIGHT_REF_TIME_PER_SECOND};
+
+    development_ext().execute_with(|| {
+        let context = XcmContext::with_message_id([44; 32]);
+        let payment = mock_asset_to_holding(XcmAsset {
+            id: XcmAssetId(usdc_location()),
+            fun: Fungibility::Fungible(10),
+        });
+        let mut trader = GovernedWeightTrader::<ConstitutionTraderRates, ()>::new();
+        let bought = trader.buy_weight(XcmWeight::from_parts(1, 1), payment, &context);
+        assert!(bought.is_ok(), "governed USDC payment must buy weight");
+
+        let rate = ConstitutionTraderRates::usdc_rate();
+        let reference_price = rate
+            .units_per_second
+            .saturating_add(u128::from(WEIGHT_REF_TIME_PER_SECOND).saturating_sub(1))
+            / u128::from(WEIGHT_REF_TIME_PER_SECOND);
+        let proof_price = rate
+            .units_per_megabyte
+            .saturating_add(u128::from(WEIGHT_PROOF_SIZE_PER_MB).saturating_sub(1))
+            / u128::from(WEIGHT_PROOF_SIZE_PER_MB);
+        let charged = reference_price.saturating_add(proof_price);
+        assert_eq!(charged, 6);
+        if let Ok(surplus) = bought {
+            assert_eq!(xcm_holding_amount(&surplus, &usdc_location()), 10 - charged);
+        }
+    });
+}
+
+#[test]
+fn phase_inflow_caps_use_real_foreign_asset_issuance_and_live_params() {
+    use crate::configs::PhaseInflowCaps;
+
+    development_ext().execute_with(|| {
+        let global_cap = 2_000_000_000_000_u128;
+        let issued = global_cap - 100;
+        assert!(<ForeignAssets as FungiblesMutate<AccountId>>::mint_into(
+            USDC_ASSET_ID,
+            &account(46),
+            issued,
+        )
+        .is_ok());
+        assert_eq!(ForeignAssets::total_issuance(USDC_ASSET_ID), issued);
+        assert_ok!(<PhaseInflowCaps as XcmInflowCaps<AccountId>>::usdc_mint_admissible(100));
+        assert_eq!(
+            <PhaseInflowCaps as XcmInflowCaps<AccountId>>::usdc_mint_admissible(101),
+            Err(())
+        );
+
+        // The Phase-3 rows have cooldown zero; a live governance update is
+        // therefore visible to the adapter on its very next read.
+        assert_ok!(Constitution::set_param(
+            pallet_origins::Origin::FutarchyMeta.into(),
+            pallet_constitution::key16(b"phase3.tvl_cap"),
+            pallet_constitution::ParamValue::Balance(issued),
+        ));
+        assert_eq!(
+            <PhaseInflowCaps as XcmInflowCaps<AccountId>>::usdc_mint_admissible(1),
+            Err(())
+        );
+
+        assert_ok!(Constitution::set_param(
+            pallet_origins::Origin::FutarchyMeta.into(),
+            pallet_constitution::key16(b"phase3.dep_cap"),
+            pallet_constitution::ParamValue::Balance(10),
+        ));
+        let beneficiary = account(47);
+        assert_ok!(
+            <PhaseInflowCaps as XcmInflowCaps<AccountId>>::note_usdc_inflow(&beneficiary, 10,)
+        );
+        assert_eq!(
+            <PhaseInflowCaps as XcmInflowCaps<AccountId>>::note_usdc_inflow(&beneficiary, 1),
+            Err(())
+        );
+        assert_eq!(
+            pallet_inflow_caps::CumulativeDeposits::<Runtime>::get(beneficiary),
+            10
         );
     });
 }
@@ -839,6 +992,292 @@ fn treasury_rebate_payout_moves_real_usdc_from_the_selected_pot() {
         .is_ok());
         assert_eq!(ForeignAssets::balance(USDC_ASSET_ID, &keeper), 2 * amount);
         assert_eq!(ForeignAssets::balance(USDC_ASSET_ID, &oracle_pot), retained);
+    });
+}
+
+#[test]
+fn treasury_keeper_line_funding_moves_matching_real_usdc_into_the_pot() {
+    use crate::{configs::treasury_keeper_account, genesis::treasury_account};
+    use pallet_futarchy_treasury::BudgetLine;
+
+    development_ext().execute_with(|| {
+        let main = treasury_account();
+        let keeper_pot = treasury_keeper_account();
+        let amount = 50 * currency::USDC;
+        let retained = currency::USDC;
+        pallet_futarchy_treasury::State::<Runtime>::mutate(|state| {
+            state.main_usdc = amount;
+        });
+        assert!(<ForeignAssets as FungiblesMutate<AccountId>>::mint_into(
+            USDC_ASSET_ID,
+            &main,
+            amount + retained,
+        )
+        .is_ok());
+        let main_before = ForeignAssets::balance(USDC_ASSET_ID, &main);
+
+        assert_ok!(FutarchyTreasury::fund_budget_line(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            BudgetLine::Keeper,
+            amount,
+        ));
+
+        assert_eq!(FutarchyTreasury::line_balance(BudgetLine::Keeper), amount);
+        assert_eq!(ForeignAssets::balance(USDC_ASSET_ID, &keeper_pot), amount);
+        assert_eq!(
+            ForeignAssets::balance(USDC_ASSET_ID, &main),
+            main_before - amount
+        );
+        assert_eq!(FutarchyTreasury::treasury().main_usdc, 0);
+    });
+}
+
+#[test]
+fn treasury_pot_funding_failure_rolls_back_internal_and_asset_state() {
+    use crate::{configs::treasury_keeper_account, genesis::treasury_account};
+    use pallet_futarchy_treasury::BudgetLine;
+
+    development_ext().execute_with(|| {
+        let main = treasury_account();
+        let keeper_pot = treasury_keeper_account();
+        let amount = 50 * currency::USDC;
+        pallet_futarchy_treasury::State::<Runtime>::mutate(|state| {
+            state.main_usdc = amount;
+        });
+        let state_before = pallet_futarchy_treasury::State::<Runtime>::get();
+        let main_before = ForeignAssets::balance(USDC_ASSET_ID, &main);
+        let pot_before = ForeignAssets::balance(USDC_ASSET_ID, &keeper_pot);
+        let issuance_before = ForeignAssets::total_issuance(USDC_ASSET_ID);
+
+        assert!(FutarchyTreasury::fund_budget_line(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            BudgetLine::Keeper,
+            amount,
+        )
+        .is_err());
+
+        assert_eq!(
+            pallet_futarchy_treasury::State::<Runtime>::get(),
+            state_before
+        );
+        assert_eq!(ForeignAssets::balance(USDC_ASSET_ID, &main), main_before);
+        assert_eq!(
+            ForeignAssets::balance(USDC_ASSET_ID, &keeper_pot),
+            pot_before
+        );
+        assert_eq!(
+            ForeignAssets::total_issuance(USDC_ASSET_ID),
+            issuance_before
+        );
+    });
+}
+
+#[test]
+fn treasury_non_pot_line_funding_does_not_move_foreign_assets() {
+    use crate::{configs::treasury_keeper_account, genesis::treasury_account};
+    use pallet_futarchy_treasury::BudgetLine;
+
+    development_ext().execute_with(|| {
+        let main = treasury_account();
+        let keeper_pot = treasury_keeper_account();
+        let amount = 25 * currency::USDC;
+        let retained = currency::USDC;
+        pallet_futarchy_treasury::State::<Runtime>::mutate(|state| {
+            state.main_usdc = amount;
+        });
+        assert!(<ForeignAssets as FungiblesMutate<AccountId>>::mint_into(
+            USDC_ASSET_ID,
+            &main,
+            amount + retained,
+        )
+        .is_ok());
+        let main_before = ForeignAssets::balance(USDC_ASSET_ID, &main);
+        let pot_before = ForeignAssets::balance(USDC_ASSET_ID, &keeper_pot);
+        let issuance_before = ForeignAssets::total_issuance(USDC_ASSET_ID);
+
+        assert_ok!(FutarchyTreasury::fund_budget_line(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            BudgetLine::Pol,
+            amount,
+        ));
+
+        assert_eq!(FutarchyTreasury::line_balance(BudgetLine::Pol), amount);
+        assert_eq!(ForeignAssets::balance(USDC_ASSET_ID, &main), main_before);
+        assert_eq!(
+            ForeignAssets::balance(USDC_ASSET_ID, &keeper_pot),
+            pot_before
+        );
+        assert_eq!(
+            ForeignAssets::total_issuance(USDC_ASSET_ID),
+            issuance_before
+        );
+    });
+}
+
+#[test]
+fn xcm_traffic_recorder_uses_epoch_relative_days_fallback_and_clamp() {
+    use crate::configs::XcmTrafficRecorder;
+    use bleavit_xcm::health::LocalXcmHealthSink;
+
+    development_ext().execute_with(|| {
+        let epoch_length_key = pallet_constitution::key16(b"epoch.length");
+        let default_epoch_length =
+            match pallet_constitution::Params::<Runtime>::get(epoch_length_key) {
+                Some(record) => match record.value {
+                    pallet_constitution::ParamValue::U32(value) => value,
+                    _ => {
+                        assert!(false, "epoch.length must be a U32 parameter");
+                        return;
+                    }
+                },
+                None => {
+                    assert!(false, "epoch.length must exist in genesis Params");
+                    return;
+                }
+            };
+        let last_day =
+            u8::try_from((default_epoch_length - 1) / futarchy_primitives::kernel::BLOCKS_PER_DAY)
+                .map_or(u8::MAX, |day| day);
+
+        System::set_block_number(default_epoch_length - 1);
+        XcmTrafficRecorder::note_sent();
+        assert_eq!(Welfare::xcm_traffic(0, last_day).accepted, 1);
+
+        System::set_block_number(default_epoch_length);
+        XcmTrafficRecorder::note_send_failure();
+        assert_eq!(Welfare::xcm_traffic(0, 0).failed, 1);
+
+        pallet_constitution::Params::<Runtime>::mutate(epoch_length_key, |record| {
+            if let Some(record) = record {
+                record.value = pallet_constitution::ParamValue::U32(0);
+            }
+        });
+        System::set_block_number(default_epoch_length - 1);
+        XcmTrafficRecorder::note_probe_timeout();
+        assert_eq!(Welfare::xcm_traffic(0, last_day).probe_timeouts, 1);
+
+        pallet_constitution::Params::<Runtime>::mutate(epoch_length_key, |record| {
+            if let Some(record) = record {
+                record.value = pallet_constitution::ParamValue::U32(u32::MAX);
+            }
+        });
+        System::set_block_number(u32::MAX - 1);
+        XcmTrafficRecorder::note_probe_timeout();
+        assert_eq!(Welfare::xcm_traffic(0, u8::MAX).probe_timeouts, 1);
+    });
+}
+
+#[test]
+fn oracle_probe_timeout_sink_records_welfare_xcm_traffic() {
+    development_ext().execute_with(|| {
+        System::set_block_number(pallet_oracle::RES_PROBE_INTERVAL);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(account(
+            78
+        ))));
+        System::set_block_number(pallet_oracle::RES_PROBE_INTERVAL * 2);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(account(
+            78
+        ))));
+
+        assert_eq!(Welfare::xcm_traffic(0, 2).probe_timeouts, 1);
+    });
+}
+
+#[test]
+fn runtime_metric_inputs_emit_only_registered_x_and_r_components() {
+    use pallet_welfare::{
+        BoundedSpecSet, ComponentValue, MetricInputs, MetricSpec, Pillar, SourceClass,
+        EPSILON_PILLAR, HISTORY_PRIORS, ONE,
+    };
+
+    fn spec(id: u16, version: u16) -> MetricSpec {
+        MetricSpec {
+            id,
+            version,
+            pillar: Pillar::COnchain,
+            weight: futarchy_primitives::FixedU64(ONE / 2),
+            epsilon_floor: EPSILON_PILLAR,
+            activation_epoch: 0,
+            source: SourceClass::Onchain,
+            formula_ref: [1; 32],
+            units: [2; 16],
+            repr: [3; 16],
+            cadence_blocks: 1,
+            sanity_min: futarchy_primitives::FixedU64(0),
+            sanity_max: futarchy_primitives::FixedU64(ONE),
+            has_normalization_rule: true,
+            has_missing_data_rule: true,
+            has_gaming_vectors: true,
+            has_challenge_procedure: false,
+            prior_bounds: [futarchy_primitives::FixedU64(ONE); HISTORY_PRIORS],
+        }
+    }
+
+    development_ext().execute_with(|| {
+        const VERSION: u16 = 77;
+        const EPOCH: u32 = 9;
+        const DAY: u8 = 3;
+        let specs = BoundedSpecSet::truncate_from(vec![
+            spec(futarchy_primitives::metric_ids::X, VERSION),
+            spec(futarchy_primitives::metric_ids::R, VERSION),
+        ]);
+        pallet_welfare::MetricSpecs::<Runtime>::insert(VERSION, specs);
+
+        assert_eq!(
+            crate::configs::RuntimeMetricInputs::onchain_components(EPOCH, VERSION),
+            vec![
+                ComponentValue {
+                    id: futarchy_primitives::metric_ids::X,
+                    value: futarchy_primitives::FixedU64(ONE),
+                },
+                ComponentValue {
+                    id: futarchy_primitives::metric_ids::R,
+                    value: futarchy_primitives::FixedU64(ONE),
+                },
+            ]
+        );
+
+        Welfare::note_xcm_traffic(EPOCH, DAY, pallet_welfare::XcmTrafficKind::Accepted);
+        Welfare::note_xcm_traffic(EPOCH, DAY, pallet_welfare::XcmTrafficKind::SendFailed);
+        Welfare::note_xcm_traffic(EPOCH, DAY, pallet_welfare::XcmTrafficKind::SendFailed);
+        pallet_oracle::ReserveHealth::<Runtime>::put(pallet_oracle::ReserveHealthValue {
+            unhealthy: true,
+            ..Default::default()
+        });
+        let degraded = vec![
+            ComponentValue {
+                id: futarchy_primitives::metric_ids::X,
+                value: futarchy_primitives::FixedU64(333_333_333),
+            },
+            ComponentValue {
+                id: futarchy_primitives::metric_ids::R,
+                value: futarchy_primitives::FixedU64(0),
+            },
+        ];
+        assert_eq!(
+            crate::configs::RuntimeMetricInputs::onchain_components(EPOCH, VERSION),
+            degraded
+        );
+        assert_eq!(
+            crate::configs::RuntimeMetricInputs::daily_components(EPOCH, DAY, VERSION),
+            degraded
+        );
+        assert_eq!(
+            crate::configs::RuntimeMetricInputs::daily_components(EPOCH, DAY + 1, VERSION),
+            vec![
+                ComponentValue {
+                    id: futarchy_primitives::metric_ids::X,
+                    value: futarchy_primitives::FixedU64(ONE),
+                },
+                ComponentValue {
+                    id: futarchy_primitives::metric_ids::R,
+                    value: futarchy_primitives::FixedU64(0),
+                },
+            ]
+        );
+        assert!(
+            crate::configs::RuntimeMetricInputs::onchain_components(EPOCH, VERSION + 1).is_empty()
+        );
     });
 }
 
@@ -2860,13 +3299,13 @@ fn live_param_adapters_resolve_their_registry_keys() {
 }
 
 #[test]
-fn pending_incident_multiplier_defaults_to_the_neutral_identity() {
+fn runtime_incident_multiplier_defaults_to_the_neutral_identity() {
     use pallet_welfare::MetricInputs;
     development_ext().execute_with(|| {
         // No closed registry epoch ⇒ the neutral 1.0 multiplier (a zero would
         // erase C_attested outright — fail-destructive, not fail-safe).
         assert_eq!(
-            crate::configs::PendingMetricInputs::incident_multiplier(5),
+            crate::configs::RuntimeMetricInputs::incident_multiplier(5),
             futarchy_primitives::FixedU64(1_000_000_000)
         );
     });

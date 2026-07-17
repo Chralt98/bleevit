@@ -170,6 +170,7 @@ construct_runtime!(
         // A8 slot: `Epoch: pallet_epoch = 61` once its production FRAME shell
         // lands (pallet indices are SCALE-frozen — never renumber the above).
         ExecutionGuard: pallet_execution_guard = 62,
+        InflowCaps: pallet_inflow_caps = 63,
     }
 );
 

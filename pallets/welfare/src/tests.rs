@@ -562,11 +562,15 @@ fn prune_rolls_the_snapshot_and_gate_windows() {
         assert_eq!(Snapshots::<Test>::iter().count(), MAX_SNAPSHOTS);
         assert_eq!(GateBreachFlags::<Test>::iter().count(), MAX_GATE_FLAGS);
         assert_eq!(SampledGateDays::<Test>::iter().count(), MAX_GATE_FLAGS);
+        Welfare::note_xcm_traffic(2, 0, XcmTrafficKind::Accepted);
+        Welfare::note_xcm_traffic(3, 0, XcmTrafficKind::SendFailed);
 
         assert_ok!(Welfare::prune(3));
         assert!(!Snapshots::<Test>::contains_key((2, 1)));
         assert!(!GateBreachFlags::<Test>::contains_key(2));
         assert!(!SampledGateDays::<Test>::contains_key(2));
+        assert!(!XcmTraffic::<Test>::contains_key((2, 0)));
+        assert!(XcmTraffic::<Test>::contains_key((3, 0)));
         assert_eq!(MetricSpecs::<Test>::iter().count(), 1);
 
         let next = MAX_SNAPSHOTS as u32 + 2;
@@ -587,6 +591,128 @@ fn prune_rolls_the_snapshot_and_gate_windows() {
         assert_eq!(Snapshots::<Test>::iter().count(), MAX_SNAPSHOTS);
         assert_eq!(GateBreachFlags::<Test>::iter().count(), MAX_GATE_FLAGS);
         assert_eq!(SampledGateDays::<Test>::iter().count(), MAX_GATE_FLAGS);
+    });
+}
+
+#[test]
+fn xcm_traffic_recorder_saturates_each_counter() {
+    new_test_ext().execute_with(|| {
+        XcmTraffic::<Test>::insert(
+            (7, 3),
+            XcmTrafficCounters {
+                accepted: u64::MAX,
+                failed: u64::MAX,
+                probe_timeouts: u64::MAX,
+            },
+        );
+
+        Welfare::note_xcm_traffic(7, 3, XcmTrafficKind::Accepted);
+        Welfare::note_xcm_traffic(7, 3, XcmTrafficKind::SendFailed);
+        Welfare::note_xcm_traffic(7, 3, XcmTrafficKind::ProbeTimeout);
+
+        assert_eq!(
+            Welfare::xcm_traffic(7, 3),
+            XcmTrafficCounters {
+                accepted: u64::MAX,
+                failed: u64::MAX,
+                probe_timeouts: u64::MAX,
+            }
+        );
+    });
+}
+
+#[test]
+fn xcm_traffic_is_isolated_by_epoch_and_day() {
+    new_test_ext().execute_with(|| {
+        Welfare::note_xcm_traffic(7, 1, XcmTrafficKind::Accepted);
+        Welfare::note_xcm_traffic(7, 2, XcmTrafficKind::SendFailed);
+        Welfare::note_xcm_traffic(8, 1, XcmTrafficKind::ProbeTimeout);
+
+        assert_eq!(
+            Welfare::xcm_traffic(7, 1),
+            XcmTrafficCounters {
+                accepted: 1,
+                failed: 0,
+                probe_timeouts: 0,
+            }
+        );
+        assert_eq!(
+            Welfare::xcm_traffic(7, 2),
+            XcmTrafficCounters {
+                accepted: 0,
+                failed: 1,
+                probe_timeouts: 0,
+            }
+        );
+        assert_eq!(
+            Welfare::xcm_traffic(8, 1),
+            XcmTrafficCounters {
+                accepted: 0,
+                failed: 0,
+                probe_timeouts: 1,
+            }
+        );
+        assert_eq!(Welfare::xcm_traffic(8, 2), XcmTrafficCounters::default());
+    });
+}
+
+#[test]
+fn xcm_traffic_epoch_sum_is_field_wise_and_saturating() {
+    new_test_ext().execute_with(|| {
+        XcmTraffic::<Test>::insert(
+            (7, 0),
+            XcmTrafficCounters {
+                accepted: u64::MAX,
+                failed: 1,
+                probe_timeouts: 0,
+            },
+        );
+        XcmTraffic::<Test>::insert(
+            (7, u8::MAX),
+            XcmTrafficCounters {
+                accepted: 1,
+                failed: u64::MAX,
+                probe_timeouts: u64::MAX,
+            },
+        );
+        XcmTraffic::<Test>::insert(
+            (8, 0),
+            XcmTrafficCounters {
+                accepted: 0,
+                failed: 0,
+                probe_timeouts: 1,
+            },
+        );
+
+        assert_eq!(
+            Welfare::xcm_traffic_epoch(7),
+            XcmTrafficCounters {
+                accepted: u64::MAX,
+                failed: u64::MAX,
+                probe_timeouts: u64::MAX,
+            }
+        );
+    });
+}
+
+#[test]
+fn xcm_traffic_recorder_is_infallible_across_epoch_and_day_boundaries() {
+    new_test_ext().execute_with(|| {
+        for epoch in [0, u32::MAX / 2, u32::MAX] {
+            for day in u8::MIN..=u8::MAX {
+                let kind = match day % 3 {
+                    0 => XcmTrafficKind::Accepted,
+                    1 => XcmTrafficKind::SendFailed,
+                    _ => XcmTrafficKind::ProbeTimeout,
+                };
+                Welfare::note_xcm_traffic(epoch, day, kind);
+            }
+            let counters = Welfare::xcm_traffic_epoch(epoch);
+            assert_eq!(
+                counters.accepted + counters.failed + counters.probe_timeouts,
+                256
+            );
+        }
     });
 }
 

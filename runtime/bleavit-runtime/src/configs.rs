@@ -623,8 +623,15 @@ mod xcm_config {
     pub struct XcmConfig;
     impl staging_xcm_executor::Config for XcmConfig {
         type RuntimeCall = RuntimeCall;
-        type XcmSender = ();
+        // The real transport lands with the SQ-101/XCM-integration follow-up.
+        // The health wrapper is already load-bearing for every sender that
+        // reaches this executor; `()` returning `NotApplicable` is tuple-router
+        // control flow and deliberately records no traffic, so the zero-
+        // transport shell yields the specified X = 1.
+        type XcmSender = bleavit_xcm::health::HealthTrackingRouter<(), XcmTrafficRecorder>;
         type XcmEventEmitter = PolkadotXcm;
+        // The CappedInflows transactor binding is blocked on the SQ-101
+        // Location-keyed ForeignAssets re-key; PhaseInflowCaps is ready for it.
         type AssetTransactor = ();
         type OriginConverter = ();
         type IsReserve = ();
@@ -632,7 +639,10 @@ mod xcm_config {
         type UniversalLocation = UniversalLocation;
         type Barrier = ();
         type Weigher = FixedWeightBounds<UnitWeightCost, RuntimeCall, MaxInstructions>;
-        type Trader = ();
+        // `()` TakeRevenue drops unrefunded fees (payer-adverse, cannot create
+        // an unbacked claim); treasury routing lands with the SQ-101
+        // Location-keyed ForeignAssets re-key.
+        type Trader = bleavit_xcm::trader::GovernedWeightTrader<ConstitutionTraderRates, ()>;
         type ResponseHandler = PolkadotXcm;
         type AssetTrap = PolkadotXcm;
         type SubscriptionService = PolkadotXcm;
@@ -713,7 +723,7 @@ impl cumulus_pallet_xcmp_queue::Config for Runtime {
 impl pallet_xcm::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type SendXcmOrigin = staging_xcm_builder::EnsureXcmOrigin<RuntimeOrigin, ()>;
-    type XcmRouter = ();
+    type XcmRouter = bleavit_xcm::health::HealthTrackingRouter<(), XcmTrafficRecorder>;
     type ExecuteXcmOrigin = staging_xcm_builder::EnsureXcmOrigin<RuntimeOrigin, ()>;
     type XcmExecuteFilter = Nothing;
     type XcmExecutor = xcm_config::Executor;
@@ -988,6 +998,62 @@ fn balance_param(name: &[u8]) -> Balance {
         },
     }
 }
+
+/// Live 09 §6.1 DOT/USDC execution rates from constitution Params.
+pub struct ConstitutionTraderRates;
+impl bleavit_xcm::trader::TraderRates for ConstitutionTraderRates {
+    fn dot_rate() -> bleavit_xcm::trader::WeightRate {
+        bleavit_xcm::trader::WeightRate {
+            units_per_second: balance_param(b"xcm.dot_per_sec"),
+            units_per_megabyte: balance_param(b"xcm.dot_per_mb"),
+        }
+    }
+
+    fn usdc_rate() -> bleavit_xcm::trader::WeightRate {
+        bleavit_xcm::trader::WeightRate {
+            units_per_second: balance_param(b"xcm.usdc_per_sec"),
+            units_per_megabyte: balance_param(b"xcm.usdc_per_mb"),
+        }
+    }
+}
+
+/// Phase-3 caps are seeded as µUSDC (six decimals), the same base unit used
+/// by the local sufficient USDC asset's issuance and account balances.
+pub struct ConstitutionInflowCapParams;
+impl pallet_inflow_caps::InflowCapParams for ConstitutionInflowCapParams {
+    fn tvl_cap_usdc() -> u128 {
+        balance_param(b"phase3.tvl_cap")
+    }
+
+    fn deposit_cap_usdc() -> u128 {
+        balance_param(b"phase3.dep_cap")
+    }
+}
+
+pub struct ForeignUsdcIssuance;
+impl frame_support::traits::Get<u128> for ForeignUsdcIssuance {
+    fn get() -> u128 {
+        <ForeignAssets as Inspect<AccountId>>::total_issuance(USDC_ASSET_ID)
+    }
+}
+
+impl pallet_inflow_caps::Config for Runtime {
+    type CapParams = ConstitutionInflowCapParams;
+    type UsdcIssuance = ForeignUsdcIssuance;
+}
+
+/// Ready-to-bind 09 §5.2 XCM adapter over the shared on-chain meters.
+#[allow(dead_code)] // Consumed once SQ-101 replaces XcmConfig::AssetTransactor = ().
+pub struct PhaseInflowCaps;
+impl bleavit_xcm::caps::InflowCaps<AccountId> for PhaseInflowCaps {
+    fn usdc_mint_admissible(amount: u128) -> Result<(), ()> {
+        pallet_inflow_caps::Pallet::<Runtime>::mint_admissible(amount)
+    }
+
+    fn note_usdc_inflow(who: &AccountId, amount: u128) -> Result<(), ()> {
+        pallet_inflow_caps::Pallet::<Runtime>::note_inflow(who, amount)
+    }
+}
 fn fixed_param(name: &[u8]) -> u64 {
     let key = pallet_constitution::key16(name);
     match live_param(key) {
@@ -1006,6 +1072,53 @@ fn u32_param(name: &[u8]) -> u32 {
             Some(pallet_constitution::ParamValue::U32(value)) => value,
             _ => 0,
         },
+    }
+}
+
+fn xcm_traffic_epoch_and_day() -> (EpochId, u8) {
+    // Pending-A8 convention: use the exact epoch provider bound to welfare,
+    // just as PendingEpochClock and B9's epoch-0 keeper budget do. When A8
+    // replaces that associated type, recorder attribution follows it.
+    let epoch = <<Runtime as pallet_welfare::Config>::CurrentEpoch as frame_support::traits::Get<
+        EpochId,
+    >>::get();
+    let live_epoch_length = u32_param(b"epoch.length");
+    let epoch_length = if live_epoch_length == 0 {
+        let key = pallet_constitution::key16(b"epoch.length");
+        match default_param(key) {
+            Some(pallet_constitution::ParamValue::U32(default)) if default != 0 => default,
+            // The genesis registry is statically validated, but retain a
+            // non-zero kernel-bound fallback so this recorder can never divide
+            // by zero even under corrupted storage.
+            _ => kernel::MIN_EPOCH_LENGTH_BLOCKS,
+        }
+    } else {
+        live_epoch_length
+    };
+    let day = (System::block_number() % epoch_length) / BLOCKS_PER_DAY;
+    let day = u8::try_from(day).map_or(u8::MAX, |bounded| bounded);
+    (epoch, day)
+}
+
+/// Fail-soft recorder for the three locally observable v1 XCM-health signals.
+pub struct XcmTrafficRecorder;
+impl bleavit_xcm::health::LocalXcmHealthSink for XcmTrafficRecorder {
+    fn note_sent() {
+        Self::record(pallet_welfare::XcmTrafficKind::Accepted);
+    }
+
+    fn note_send_failure() {
+        Self::record(pallet_welfare::XcmTrafficKind::SendFailed);
+    }
+
+    fn note_probe_timeout() {
+        Self::record(pallet_welfare::XcmTrafficKind::ProbeTimeout);
+    }
+}
+impl XcmTrafficRecorder {
+    fn record(kind: pallet_welfare::XcmTrafficKind) {
+        let (epoch, day) = xcm_traffic_epoch_and_day();
+        pallet_welfare::Pallet::<Runtime>::note_xcm_traffic(epoch, day, kind);
     }
 }
 fn perbill_param(name: &[u8]) -> u32 {
@@ -1232,29 +1345,93 @@ impl pallet_welfare::WelfareParamsProvider for WelfareParams {
         FixedU64(fixed_param(b"welfare.wA"))
     }
 }
-/// A8 pending inputs deliberately return empty vectors, causing snapshot cranks
-/// to reject instead of persisting a metric derived from absent inputs.
-pub struct PendingMetricInputs;
-impl pallet_welfare::MetricInputs for PendingMetricInputs {
-    fn onchain_components(_: EpochId, _: u16) -> Vec<pallet_welfare::ComponentValue> {
-        Vec::new()
+fn xcm_health(counters: pallet_welfare::XcmTrafficCounters) -> FixedU64 {
+    let total = u128::from(counters.accepted)
+        .saturating_add(u128::from(counters.failed))
+        .saturating_add(u128::from(counters.probe_timeouts));
+    if total == 0 {
+        return FixedU64(pallet_welfare::ONE);
+    }
+
+    // The 1e9-grid division floors, so rounding can only reduce reported
+    // health. Every checked-arithmetic failure also falls back to zero rather
+    // than fabricating an optimistic value.
+    let value = u128::from(counters.accepted)
+        .checked_mul(u128::from(pallet_welfare::ONE))
+        .and_then(|numerator| numerator.checked_div(total))
+        .and_then(|scaled| u64::try_from(scaled).ok())
+        .map_or(0, |scaled| scaled);
+    FixedU64(value)
+}
+
+fn metric_components(
+    spec_version: u16,
+    counters: pallet_welfare::XcmTrafficCounters,
+) -> Vec<pallet_welfare::ComponentValue> {
+    let Some(specs) = pallet_welfare::MetricSpecs::<Runtime>::get(spec_version) else {
+        return Vec::new();
+    };
+    let x = xcm_health(counters);
+    specs
+        .iter()
+        .filter(|spec| spec.pillar == pallet_welfare::Pillar::COnchain)
+        .filter_map(|spec| {
+            let value = match spec.id {
+                futarchy_primitives::metric_ids::X => x,
+                futarchy_primitives::metric_ids::R => {
+                    // Pre-A8 approximation of the day/epoch reserve flag: the
+                    // current fail-static state is never healthier than an
+                    // observed active anomaly, but is not yet historical.
+                    if pallet_oracle::Pallet::<Runtime>::reserve_unhealthy() {
+                        FixedU64(0)
+                    } else {
+                        FixedU64(pallet_welfare::ONE)
+                    }
+                }
+                // Inputs for every other registered component land with the
+                // A8/values wiring. Welfare treats registered-but-missing input
+                // as an error, failing the crank status-quo-safe instead of
+                // fabricating health.
+                _ => return None,
+            };
+            Some(pallet_welfare::ComponentValue { id: spec.id, value })
+        })
+        .collect()
+}
+
+pub struct RuntimeMetricInputs;
+impl pallet_welfare::MetricInputs for RuntimeMetricInputs {
+    fn onchain_components(
+        epoch: EpochId,
+        spec_version: u16,
+    ) -> Vec<pallet_welfare::ComponentValue> {
+        metric_components(
+            spec_version,
+            pallet_welfare::Pallet::<Runtime>::xcm_traffic_epoch(epoch),
+        )
     }
     fn incident_multiplier(epoch: EpochId) -> FixedU64 {
         // The IncidentRegistry aggregate IS the C_attested multiplier
         // (registry-core: an empty closed epoch records exactly 1.0). An
         // absent entry means the epoch is not closed yet; the neutral 1.0 is
-        // returned because this pending seam is unreachable while
-        // `onchain_components` is empty (snapshot cranks reject first) — A8's
-        // real MetricInputs must instead gate snapshots on registry close-out
-        // rather than fabricate a multiplier (returning 0 here would zero
-        // C_attested outright, which is fail-destructive, not fail-safe).
+        // retained from the pending-A8 convention. A8's complete inputs wiring
+        // must gate snapshots on registry close-out rather than fabricate a
+        // multiplier (returning 0 here would zero C_attested outright, which
+        // is fail-destructive, not fail-safe).
         match pallet_registry::Aggregates::<Runtime>::get(epoch) {
             Some(value) => value,
             None => FixedU64(1_000_000_000),
         }
     }
-    fn daily_components(_: EpochId, _: u8, _: u16) -> Vec<pallet_welfare::ComponentValue> {
-        Vec::new()
+    fn daily_components(
+        epoch: EpochId,
+        day: u8,
+        spec_version: u16,
+    ) -> Vec<pallet_welfare::ComponentValue> {
+        metric_components(
+            spec_version,
+            pallet_welfare::Pallet::<Runtime>::xcm_traffic(epoch, day),
+        )
     }
 }
 pub struct WelfareLedger;
@@ -1293,7 +1470,7 @@ impl pallet_welfare::LedgerSettlement for WelfareLedger {
 impl pallet_welfare::Config for Runtime {
     type MetricGovernanceOrigin = pallet_origins::EnsureConstitutionalValues;
     type Params = WelfareParams;
-    type MetricInputs = PendingMetricInputs;
+    type MetricInputs = RuntimeMetricInputs;
     type Ledger = WelfareLedger;
     type CurrentEpoch = PendingEpochClock;
     type KeeperRebate = FutarchyTreasury;
@@ -1333,17 +1510,25 @@ impl pallet_oracle::ReportingContext for PendingReporting {
 impl pallet_oracle::Config for Runtime {
     type AdjudicationOrigin = pallet_origins::EnsureOracleResolution;
     type Reporting = PendingReporting;
-    // B4 pending probe-dispatch seam: `()` sends nothing, so every probe times
-    // out fail-static (07 §8, I-24 — absence is never healthy). Swapped for
-    // `bleavit_xcm::probe::XcmProbeDispatcher` when the stub XCM config below
-    // (`xcm_config`: Barrier/AssetTransactor/Trader/XcmSender = ()) is replaced
-    // by the bleavit-xcm components (the B4 runtime-integration follow-up).
+    // `()` sends nothing, so every probe times out fail-static (07 §8, I-24 —
+    // absence is never healthy). The real probe dispatcher remains part of the
+    // SQ-101/XCM-integration follow-up that supplies the transport/asset route.
     type ProbeDispatch = ();
+    type ProbeTimeoutSink = OracleProbeTimeoutToWelfare;
     type KeeperRebate = FutarchyTreasury;
     type MaxRoundCloseBatch = ConstU32<{ kernel::TICK_BATCH }>;
     type WeightInfo = pallet_oracle::weights::SubstrateWeight<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
     type BenchmarkHelper = RuntimeBenchmarkHelper;
+}
+
+/// Oracle timeout folds share the router recorder's attribution and remain
+/// unable to affect the fail-static reserve transition that called the sink.
+pub struct OracleProbeTimeoutToWelfare;
+impl pallet_oracle::ProbeTimeoutSink for OracleProbeTimeoutToWelfare {
+    fn probe_timed_out() {
+        <XcmTrafficRecorder as bleavit_xcm::health::LocalXcmHealthSink>::note_probe_timeout();
+    }
 }
 
 pub struct RegistryParams;
@@ -1362,7 +1547,7 @@ impl pallet_registry::WatchtowerRegistry<AccountId> for OracleWatchtowers {
     }
 }
 /// The current welfare shell has no external-component write endpoint. The
-/// aggregate remains in registry storage and is pulled by `PendingMetricInputs`.
+/// aggregate remains in registry storage and is pulled by `RuntimeMetricInputs`.
 pub struct WelfarePullSink;
 impl pallet_registry::WelfareSink for WelfarePullSink {
     fn note_external_component(
@@ -1489,6 +1674,30 @@ impl pallet_futarchy_treasury::RebatePayout<AccountId> for TreasuryRebatePayout 
         <ForeignAssets as Inspect<AccountId>>::balance(USDC_ASSET_ID, &source)
     }
 }
+
+/// Atomically synchronize pot-backed internal budget credit with real USDC
+/// custody (08 §1.4). Unlike fail-soft rebate recording/payout, a failure here
+/// must abort the entire `fund_budget_line` call.
+pub struct TreasuryPotFunding;
+impl pallet_futarchy_treasury::PotFunding<AccountId> for TreasuryPotFunding {
+    fn fund(
+        line: pallet_futarchy_treasury::PayoutLine,
+        amount: Balance,
+    ) -> frame_support::dispatch::DispatchResult {
+        let destination = match line {
+            pallet_futarchy_treasury::PayoutLine::Keeper => treasury_keeper_account(),
+            pallet_futarchy_treasury::PayoutLine::Oracle => treasury_oracle_account(),
+        };
+        <ForeignAssets as Mutate<AccountId>>::transfer(
+            USDC_ASSET_ID,
+            &crate::genesis::treasury_account(),
+            &destination,
+            amount,
+            Preservation::Preserve,
+        )
+        .map(|_| ())
+    }
+}
 /// B4 pending renewal-dispatch seam: fail-closed (G-1) — every
 /// `execute_coretime_renewal` rolls back until the real
 /// `bleavit_xcm::coretime::XcmRenewalDispatcher` is wired with the stub XCM
@@ -1513,6 +1722,7 @@ impl pallet_futarchy_treasury::Config for Runtime {
     type CurrentEpoch = PendingEpochClock;
     type RenewalDispatch = PendingRenewalDispatch;
     type RebatePayout = TreasuryRebatePayout;
+    type PotFunding = TreasuryPotFunding;
     type WeightInfo = pallet_futarchy_treasury::weights::SubstrateWeight<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
     type BenchmarkHelper = RuntimeBenchmarkHelper;

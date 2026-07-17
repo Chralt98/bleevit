@@ -9,6 +9,7 @@ build = "build.rs"
 [dependencies]
 # --- Local protocol crates (B6 wires A11; A8 remains a pending runtime seam).
 futarchy-primitives = { path = "../../crates/futarchy-primitives", default-features = false }
+bleavit-xcm = { path = "../bleavit-xcm", default-features = false }
 origins-core = { path = "../../crates/origins-core", default-features = false }
 pallet-constitution = { path = "../../pallets/constitution", default-features = false }
 pallet-conditional-ledger = { path = "../../pallets/conditional-ledger", default-features = false }
@@ -19,6 +20,7 @@ pallet-registry = { path = "../../pallets/registry", default-features = false }
 pallet-futarchy-treasury = { path = "../../pallets/futarchy-treasury", default-features = false }
 pallet-guardian = { path = "../../pallets/guardian", default-features = false }
 pallet-attestor = { path = "../../pallets/attestor", default-features = false }
+pallet-inflow-caps = { path = "../../pallets/inflow-caps", default-features = false }
 pallet-execution-guard = { path = "../../pallets/execution-guard", default-features = false }
 pallet-welfare = { path = "../../pallets/welfare", default-features = false }
 registry-core = { path = "../../crates/registry-core", default-features = false }
@@ -103,6 +105,7 @@ substrate-wasm-builder = { workspace = true, optional = true }
 [features]
 default = ["std"]
 std = [
+  "bleavit-xcm/std",
   "cumulus-pallet-aura-ext/std",
   "cumulus-pallet-parachain-system/std",
   "cumulus-pallet-xcm/std",
@@ -123,6 +126,7 @@ std = [
   "pallet-asset-tx-payment/std",
   "pallet-assets/std",
   "pallet-attestor/std",
+  "pallet-inflow-caps/std",
   "pallet-aura/std",
   "pallet-authorship/std",
   "pallet-balances/std",
@@ -178,6 +182,7 @@ std = [
   "substrate-wasm-builder",
 ]
 runtime-benchmarks = [
+  "bleavit-xcm/runtime-benchmarks",
   "cumulus-pallet-parachain-system/runtime-benchmarks",
   "cumulus-pallet-xcmp-queue/runtime-benchmarks",
   "cumulus-primitives-core/runtime-benchmarks",
@@ -221,6 +226,7 @@ runtime-benchmarks = [
   "staging-xcm-executor/runtime-benchmarks",
 ]
 try-runtime = [
+  "bleavit-xcm/try-runtime",
   "cumulus-pallet-aura-ext/try-runtime",
   "cumulus-pallet-parachain-system/try-runtime",
   "cumulus-pallet-xcm/try-runtime",
@@ -232,6 +238,7 @@ try-runtime = [
   "pallet-asset-tx-payment/try-runtime",
   "pallet-assets/try-runtime",
   "pallet-attestor/try-runtime",
+  "pallet-inflow-caps/try-runtime",
   "pallet-aura/try-runtime",
   "pallet-authorship/try-runtime",
   "pallet-balances/try-runtime",

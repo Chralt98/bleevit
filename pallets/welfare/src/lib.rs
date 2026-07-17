@@ -168,6 +168,46 @@ pub mod pallet {
         Vec<((EpochId, MetricSpecVersion), StoredSnapshot)>,
         Vec<(EpochId, CoreGateBreachFlags)>,
     );
+
+    /// Locally observable XCM traffic for one epoch/day window (09 §6.4).
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        Decode,
+        DecodeWithMemTracking,
+        Default,
+        Encode,
+        Eq,
+        MaxEncodedLen,
+        PartialEq,
+        TypeInfo,
+    )]
+    pub struct XcmTrafficCounters {
+        pub accepted: u64,
+        pub failed: u64,
+        pub probe_timeouts: u64,
+    }
+
+    /// One locally observable XCM traffic signal (09 §6.4).
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        Decode,
+        DecodeWithMemTracking,
+        Encode,
+        Eq,
+        MaxEncodedLen,
+        PartialEq,
+        TypeInfo,
+    )]
+    pub enum XcmTrafficKind {
+        Accepted,
+        SendFailed,
+        ProbeTimeout,
+    }
+
     /// Bounded mirror of the core snapshot, whose transient component `Vec`
     /// cannot itself implement `MaxEncodedLen`.
     #[derive(
@@ -250,6 +290,17 @@ pub mod pallet {
     #[pallet::storage]
     pub type SampledGateDays<T: Config> =
         StorageMap<_, Blake2_128Concat, EpochId, [u32; 2], OptionQuery>;
+
+    /// Local XCM transport/probe counters by `(epoch, day)` (09 §6.4).
+    ///
+    /// The future runtime `MetricInputs` binding computes v1 X as
+    /// `accepted / (accepted + failed + probe_timeouts)` over the requested
+    /// day/epoch window; no traffic means X = 1. This pallet records only the
+    /// three local signals and deliberately does not compute X. Entries are
+    /// reaped with the welfare rolling window by [`Pallet::prune`].
+    #[pallet::storage]
+    pub type XcmTraffic<T: Config> =
+        StorageMap<_, Twox64Concat, (EpochId, u8), XcmTrafficCounters, ValueQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -530,7 +581,51 @@ pub mod pallet {
             {
                 SampledGateDays::<T>::remove(epoch);
             }
+            for key in XcmTraffic::<T>::iter_keys()
+                .filter(|(epoch, _)| *epoch < cutoff_epoch)
+                .collect::<Vec<_>>()
+            {
+                XcmTraffic::<T>::remove(key);
+            }
             Ok(())
+        }
+
+        /// Record one locally observable XCM signal without affecting its caller.
+        ///
+        /// Saturation is deliberate: router delivery and oracle timeout handling
+        /// are fail-soft observation paths, so recording can never error or panic.
+        pub fn note_xcm_traffic(epoch: EpochId, day: u8, kind: XcmTrafficKind) {
+            XcmTraffic::<T>::mutate((epoch, day), |counters| match kind {
+                XcmTrafficKind::Accepted => {
+                    counters.accepted = counters.accepted.saturating_add(1);
+                }
+                XcmTrafficKind::SendFailed => {
+                    counters.failed = counters.failed.saturating_add(1);
+                }
+                XcmTrafficKind::ProbeTimeout => {
+                    counters.probe_timeouts = counters.probe_timeouts.saturating_add(1);
+                }
+            });
+        }
+
+        /// Return the local XCM counters for one epoch/day window.
+        pub fn xcm_traffic(epoch: EpochId, day: u8) -> XcmTrafficCounters {
+            XcmTraffic::<T>::get((epoch, day))
+        }
+
+        /// Return the field-wise saturating sum of an epoch's local XCM counters.
+        ///
+        /// The prescribed storage shape is a single map keyed by `(EpochId, u8)`,
+        /// so probing the complete `u8` day domain gives a fixed 256-read bound
+        /// independent of historical map size.
+        pub fn xcm_traffic_epoch(epoch: EpochId) -> XcmTrafficCounters {
+            (u8::MIN..=u8::MAX).fold(XcmTrafficCounters::default(), |mut total, day| {
+                let counters = XcmTraffic::<T>::get((epoch, day));
+                total.accepted = total.accepted.saturating_add(counters.accepted);
+                total.failed = total.failed.saturating_add(counters.failed);
+                total.probe_timeouts = total.probe_timeouts.saturating_add(counters.probe_timeouts);
+                total
+            })
         }
 
         /// Full core state rebuilt from the three frozen storage mirrors.
