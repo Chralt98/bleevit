@@ -111,10 +111,31 @@ def load_waivers(path: Path) -> dict[str, dict]:
     return {row["id"]: row for row in rows}
 
 
-def rustsec_covered(vuln: dict) -> bool:
-    """True when RustSec carries this advisory, i.e. cargo-audit can see it."""
-    ids = [vuln.get("id", "")] + list(vuln.get("aliases") or [])
-    return any(i.startswith("RUSTSEC-") for i in ids)
+def rustsec_primary_ids(vulns: list[dict]) -> set[str]:
+    """RUSTSEC ids OSV returns as records *for this package*.
+
+    These — and only these — are what cargo-audit will actually fire on when it
+    scans this crate.
+    """
+    return {v["id"] for v in vulns if v.get("id", "").startswith("RUSTSEC-")}
+
+
+def rustsec_covered(vuln: dict, primaries: set[str]) -> bool:
+    """True when cargo-audit can really see this advisory for this package.
+
+    Membership in `primaries` is the test, NOT merely "the record mentions some
+    RUSTSEC id". An alias can name a RustSec advisory that is keyed to a
+    *different crate* and so will never fire here: hickory-proto 0.25.2's
+    GHSA-3v94-mw7p-v465 aliases RUSTSEC-2026-0120, which belongs to hickory-net.
+    Trusting the alias string would hand such a finding to cargo-audit on the
+    assumption it is covered, when cargo-audit will never report it — a silent
+    fail-open, and precisely the class of gap this whole leg exists to close.
+    (That specific advisory is fine: it also aliases RUSTSEC-2026-0118, a real
+    hickory-proto advisory that does fire.)
+    """
+    if vuln.get("id", "").startswith("RUSTSEC-"):
+        return True
+    return any(alias in primaries for alias in (vuln.get("aliases") or []))
 
 
 def scan(scanner: str, lockfile: Path) -> dict:
@@ -139,8 +160,10 @@ def ghsa_only_findings(report: dict, lockfile: Path) -> list[dict]:
         for pkg in result.get("packages", []):
             name = pkg["package"]["name"]
             version = pkg["package"]["version"]
-            for vuln in pkg.get("vulnerabilities", []):
-                if rustsec_covered(vuln):
+            vulns = pkg.get("vulnerabilities", [])
+            primaries = rustsec_primary_ids(vulns)
+            for vuln in vulns:
+                if rustsec_covered(vuln, primaries):
                     continue
                 out.append(
                     {

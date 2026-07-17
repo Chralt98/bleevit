@@ -126,14 +126,45 @@ MINIMAL_WAIVER = """\
 
 
 class RustSecCoverageTests(unittest.TestCase):
-    def test_rustsec_id_is_cargo_audits_responsibility(self) -> None:
-        self.assertTrue(checker.rustsec_covered(WASMTIME_RUSTSEC))
+    def primaries(self, *vulns: dict) -> set[str]:
+        return checker.rustsec_primary_ids(list(vulns))
 
-    def test_ghsa_aliasing_a_rustsec_id_is_covered(self) -> None:
-        self.assertTrue(checker.rustsec_covered(WASMTIME_GHSA))
+    def test_rustsec_id_is_cargo_audits_responsibility(self) -> None:
+        p = self.primaries(WASMTIME_RUSTSEC, WASMTIME_GHSA)
+        self.assertTrue(checker.rustsec_covered(WASMTIME_RUSTSEC, p))
+
+    def test_ghsa_aliasing_a_real_rustsec_record_is_covered(self) -> None:
+        p = self.primaries(WASMTIME_RUSTSEC, WASMTIME_GHSA)
+        self.assertTrue(checker.rustsec_covered(WASMTIME_GHSA, p))
 
     def test_ghsa_with_no_rustsec_alias_is_the_blind_spot(self) -> None:
-        self.assertFalse(checker.rustsec_covered(YAMUX))
+        self.assertFalse(checker.rustsec_covered(YAMUX, self.primaries(YAMUX)))
+
+    def test_alias_to_a_rustsec_id_of_a_DIFFERENT_crate_does_not_count(self) -> None:
+        """The fail-open this leg would otherwise have shipped with.
+
+        hickory-proto 0.25.2's GHSA-3v94-mw7p-v465 really does alias
+        RUSTSEC-2026-0120, an advisory keyed to hickory-net. cargo-audit scanning
+        hickory-proto will never fire it, so treating the alias as proof of
+        coverage would hand the finding to a gate that cannot see it. Only a
+        RUSTSEC id OSV returns as a record FOR THIS PACKAGE counts.
+        """
+        foreign = {
+            "id": "GHSA-hypothetical",
+            "aliases": ["RUSTSEC-2026-0120"],  # belongs to hickory-net
+            "summary": "GHSA-only advisory that name-drops another crate's RUSTSEC id",
+        }
+        primaries = self.primaries(foreign)
+        self.assertEqual(primaries, set())
+        self.assertFalse(checker.rustsec_covered(foreign, primaries))
+
+    def test_real_hickory_shape_stays_covered_via_its_genuine_rustsec_record(self) -> None:
+        """The same GHSA also aliases RUSTSEC-2026-0118, which IS a hickory-proto
+        record — so it stays cargo-audit's job and must not be double-reported."""
+        rustsec_0118 = {"id": "RUSTSEC-2026-0118", "aliases": ["GHSA-3v94-mw7p-v465", "RUSTSEC-2026-0120"]}
+        ghsa_3v94 = {"id": "GHSA-3v94-mw7p-v465", "aliases": ["RUSTSEC-2026-0118", "RUSTSEC-2026-0120"]}
+        p = self.primaries(rustsec_0118, ghsa_3v94)
+        self.assertTrue(checker.rustsec_covered(ghsa_3v94, p))
 
 
 class GateTests(unittest.TestCase):
