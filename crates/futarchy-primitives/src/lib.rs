@@ -902,7 +902,7 @@ pub mod kernel {
     /// prevent the recursion); an over-deep adversarial preimage decodes to
     /// `BadPreimage` (G-1 status quo), never a stack-overflow trap/abort. This
     /// is the decode-bomb hardening surfaced by the 15 §4.5 decode-fuzz work
-    /// (S2); see PLAN.md · Decision log (SQ-175).
+    /// (S2); see PLAN.md · Decision log (SQ-215).
     pub const MAX_PAYLOAD_DECODE_DEPTH: u32 = 256;
     /// Maximum aggregate payload dispatch weight as a fraction of the block
     /// limit (`prop.max_weight`, 13 §2). The ratio form avoids re-encoding the
@@ -919,6 +919,15 @@ pub mod kernel {
     pub const QUOTE_CLAMP_MIN_1E9: u64 = 1_000_000;
     pub const QUOTE_CLAMP_MAX_1E9: u64 = 999_000_000;
     pub const GATE_P_MAX_CEILING_1E9: u64 = 100_000_000;
+    /// 05 §5 decision-grade scalar-book sanity band (kernel rule, not a
+    /// governance-tunable parameter).
+    pub const DECISION_SANITY_MIN_1E9: u64 = 20_000_000;
+    pub const DECISION_SANITY_MAX_1E9: u64 = 980_000_000;
+    /// 06 §4 Treasury proposal bond surcharge: 0.5% of Ask.
+    pub const TREASURY_BOND_ASK_BPS: u128 = 50;
+    /// 04 §9 / 05 §5.1 Treasury hard-gate threshold: 1% of spendable NAV.
+    pub const TREASURY_GATE_NAV_BPS: u128 = 100;
+    pub const BASIS_POINTS_DENOMINATOR: u128 = 10_000;
     pub const ORC_MAX_PROOF_BYTES: u32 = 256 * 1024;
     pub const REG_MAX_FILINGS_EPOCH: u32 = 64;
     pub const WT_MAX: u32 = 16;
