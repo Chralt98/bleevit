@@ -6948,7 +6948,8 @@ fn view_quote_matches_core_rounding_and_fails_closed() {
         assert!(actual.cost > 0);
         assert!(actual.fee > 0);
 
-        let over_limit = pallet_market::core_market::max_trade_amount(B).saturating_add(1);
+        let max_trade = pallet_market::core_market::max_trade_amount(B);
+        let over_limit = max_trade.saturating_add(1);
         let expected_over = pallet_market::core_market::quote(
             &book,
             TradeSide::BuyLong,
@@ -6958,8 +6959,11 @@ fn view_quote_matches_core_rounding_and_fails_closed() {
         .expect("the numerical domain extends beyond the per-trade bound");
         let actual_over = crate::views::quote(MARKET_ID, TradeSide::BuyLong, over_limit);
         assert_eq!(actual_over, expected_over);
-        assert!(!actual_over.within_domain);
-        assert_eq!(actual_over.max_trade, B / 4);
+        // 02 §4 makes this flag only the post-trade LMSR domain predicate;
+        // 11 §11.5 P-1 binds the FE to detect the separate trade-size row.
+        assert!(actual_over.within_domain);
+        assert_eq!(actual_over.max_trade, max_trade);
+        assert!(over_limit > actual_over.max_trade);
 
         assert_eq!(
             crate::views::quote(999, TradeSide::BuyLong, amount),
@@ -6977,7 +6981,7 @@ fn view_quote_matches_core_rounding_and_fails_closed() {
                 cost: 0,
                 fee: 0,
                 p_after_1e9: FixedU64(0),
-                max_trade: B / 4,
+                max_trade,
                 within_domain: false,
             }
         );
@@ -7205,6 +7209,29 @@ fn view_welfare_current_maps_snapshot_and_preserves_g1_context() {
         assert!(view.s_breached);
         assert!(!view.c_breached);
         assert!(view.reserve_flag);
+
+        pallet_welfare::MetricSpecs::<Runtime>::insert(
+            4,
+            pallet_welfare::pallet::BoundedSpecSet::try_from(vec![spec(4, 0)])
+                .expect("one tied metric spec fits"),
+        );
+        assert_eq!(
+            <crate::configs::RuntimeConstitutionAccess as pallet_epoch::ConstitutionAccess<
+                AccountId,
+            >>::active_metric_spec_version(),
+            None,
+            "05 §4.6 / I-16 qualification must fail closed on the latest activation tie"
+        );
+        // 02 §3 and 05 §4.6 require the runtime view to use that same
+        // canonical selector. Until the open encoding question is resolved,
+        // sentinel spec_version 0 means "no active spec".
+        let ambiguous = crate::views::welfare_current();
+        assert_eq!(ambiguous.spec_version, 0);
+        assert_eq!(ambiguous.w_current_1e9, FixedU64(0));
+        assert_eq!(ambiguous.s_pillar_1e9, FixedU64(0));
+        assert!(!ambiguous.s_breached);
+        assert!(!ambiguous.c_breached);
+        assert!(ambiguous.reserve_flag);
     });
 }
 
@@ -7257,7 +7284,7 @@ fn view_params_converts_live_records_in_request_order() {
         assert_eq!(rows[0].cooldown_blocks, 604_800);
         assert_eq!(rows[0].class, ProposalClass::Meta);
         assert_eq!(rows[1].value, 5);
-        assert_eq!(rows[1].max_delta, 5);
+        assert_eq!(rows[1].max_delta, 2);
         assert_eq!(rows[1].cooldown_blocks, 302_400);
         assert_eq!(rows[1].last_change, 99);
         assert_eq!(rows[1].class, ProposalClass::Param);
@@ -7288,6 +7315,40 @@ fn view_params_converts_live_records_in_request_order() {
         let malformed = futarchy_primitives::BoundedVec::try_from(vec![keeper_key])
             .expect("one requested key fits");
         assert!(crate::views::params(malformed).is_empty());
+    });
+}
+
+#[test]
+fn view_params_projects_factor_delta_conservatively() {
+    use pallet_constitution::{key16, MaxDelta};
+
+    development_ext().execute_with(|| {
+        // 02 §4 exposes one max_delta scalar for 13 §1's asymmetric
+        // exec.lock.* factor rule. Under R-7 it must be no larger than either
+        // admitted direction; which side the scalar denotes is still an open
+        // contract question, so derive the expectation from the live record.
+        let key = key16(b"exec.lock.code");
+        let record = pallet_constitution::Params::<Runtime>::get(key)
+            .expect("the canonical exec.lock.code record exists");
+        let value = record.value.as_u128();
+        assert!(matches!(record.max_delta, Some(MaxDelta::Factor(_))));
+        let factor = match record.max_delta {
+            Some(MaxDelta::Factor(factor)) => u128::from(factor),
+            _ => 1,
+        };
+        assert!(factor >= 1);
+        let lower = value / factor + u128::from(value % factor != 0);
+        let downward = value.saturating_sub(lower);
+        let upward = value.saturating_mul(factor).saturating_sub(value);
+        let keys =
+            futarchy_primitives::BoundedVec::try_from(vec![key]).expect("one requested key fits");
+        let view = crate::views::params(keys);
+
+        assert_eq!(view.len(), 1);
+        assert_eq!(view.as_slice()[0].value, value);
+        assert_eq!(view.as_slice()[0].max_delta, downward.min(upward));
+        assert_eq!(view.as_slice()[0].max_delta, downward);
+        assert!(view.as_slice()[0].max_delta < upward);
     });
 }
 

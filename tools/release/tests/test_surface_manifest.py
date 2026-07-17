@@ -171,6 +171,55 @@ class SurfaceManifestTests(unittest.TestCase):
                 "DescriptorLeadTime",
                 {"type": "u32", "value": "0xc0a80000"},
             ),
+            "constant.epoch.max_intake_queue": (
+                "MaxIntakeQueue",
+                {"type": "u32", "value": "0x40000000"},
+            ),
+            "constant.epoch.max_live_proposals": (
+                "MaxLiveProposals",
+                {"type": "u32", "value": "0x20000000"},
+            ),
+            "constant.epoch.recent_cohorts": (
+                "RecentCohortSummariesBound",
+                {"type": "u32", "value": "0x20000000"},
+            ),
+            "constant.epoch.books_per_proposal": (
+                "MaxBooksPerProposal",
+                {"type": "u32", "value": "0x06000000"},
+            ),
+            "constant.epoch.phase_offsets": (
+                "PhaseOffsets",
+                {
+                    "type": "[(u32,u32);7]",
+                    "value": "0x00000000150000000300000015000000040000001500000005000000150000000f0000001500000012000000150000001400000015000000",
+                },
+            ),
+            "constant.decision.window_floor": (
+                "DecisionWindowFloor",
+                {"type": "u32", "value": "0x40380000"},
+            ),
+            "constant.decision.extension": (
+                "DecisionExtension",
+                {"type": "u32", "value": "0xc0a80000"},
+            ),
+            "constant.decision.delta_floors": (
+                "DecisionDeltaFloors",
+                {
+                    "type": "[futarchy_primitives::FixedU64(u64);4]",
+                    "value": "0x404b4c0000000000404b4c0000000000404b4c0000000000404b4c0000000000",
+                },
+            ),
+            "constant.decision.sigma_floors": (
+                "DecisionSigmaFloors",
+                {
+                    "type": "[futarchy_primitives::FixedU64(u64);4]",
+                    "value": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                },
+            ),
+            "constant.epoch.length_floor": (
+                "MinEpochLength",
+                {"type": "u32", "value": "0x80130300"},
+            ),
         }
         by_id = {entry["id"]: entry for entry in self.entries}
         for identifier, (constant, layout) in expected.items():
@@ -206,6 +255,7 @@ class SurfaceManifestTests(unittest.TestCase):
         self.assertTrue(epoch_constants)
         for entry in epoch_constants:
             self.assertNotIn("blocked_by", entry, entry["id"])
+            self.assertIn("layout", entry, entry["id"])
 
         stale = [
             entry["id"]

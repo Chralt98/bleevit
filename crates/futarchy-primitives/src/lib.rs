@@ -1377,4 +1377,25 @@ mod tests {
         // Pin the exact 13 §3.1 numerators, not just their ordering.
         assert_eq!(boundaries, [0, 3, 4, 5, 15, 18, 20]);
     }
+
+    #[test]
+    fn epoch_constant_values_match_contract_02_section_9() {
+        // 02 §9 freezes these metadata-visible Epoch constant values and their
+        // PARAM/TREASURY/CODE/META ordering. Any change here MUST be a deliberate
+        // integration-contract revision that also re-freezes the release manifest.
+        assert_eq!(
+            phase_offsets::ORDERED,
+            [
+                (0, 21),
+                (3, 21),
+                (4, 21),
+                (5, 21),
+                (15, 21),
+                (18, 21),
+                (20, 21),
+            ]
+        );
+        assert_eq!(kernel::DECISION_DELTA_FLOORS, [FixedU64(5_000_000); 4]);
+        assert_eq!(kernel::DECISION_SIGMA_FLOORS, [FixedU64(0); 4]);
+    }
 }

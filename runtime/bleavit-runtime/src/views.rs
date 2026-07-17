@@ -271,22 +271,24 @@ fn welfare_sentinel(epoch: u32, spec_version: u16, reserve_flag: bool) -> Welfar
 }
 
 /// Assemble `FutarchyApi::welfare_current` per 02 §3/§4 and 05 §4.6.
-/// A spec version is active only when every component's activation epoch has
-/// arrived, matching welfare-core's snapshot admission rule; the greatest
-/// active version is selected deterministically. No active version or missing
-/// snapshot returns the G-1 zero sentinel while retaining epoch/version and the
-/// real reserve flag. Oracle reserve health is authoritative; constitution bit
-/// 7 is only its 02 §7.3 mirror.
+/// Qualification and this view share the constitution's canonical active-spec
+/// selector, including its fail-closed `None` on a latest-activation tie. Per
+/// 02 §3 and 05 §4.6, two surfaces must never name different active specs.
+/// `spec_version: 0` in the G-1 sentinel means "no active spec"; that lossy
+/// encoding remains an open contract question, so this view does not invent a
+/// second encoding. A missing snapshot also returns the sentinel while keeping
+/// a uniquely selected version. Oracle reserve health is authoritative;
+/// constitution bit 7 is only its 02 §7.3 mirror.
 pub fn welfare_current() -> WelfareView {
     let epoch = <Runtime as pallet_welfare::Config>::CurrentEpoch::get();
-    let spec_version = pallet_welfare::MetricSpecs::<Runtime>::iter()
-        .filter_map(|(version, specs)| {
-            (!specs.is_empty() && specs.iter().all(|spec| spec.activation_epoch <= epoch))
-                .then_some(version)
-        })
-        .max()
-        .map_or(0, |version| version);
     let reserve_flag = pallet_oracle::Pallet::<Runtime>::reserve_unhealthy();
+    let Some(spec_version) =
+        <<Runtime as pallet_epoch::Config>::Constitution as pallet_epoch::ConstitutionAccess<
+            AccountId,
+        >>::active_metric_spec_version()
+    else {
+        return welfare_sentinel(epoch, 0, reserve_flag);
+    };
     match pallet_welfare::Pallet::<Runtime>::welfare_state().current_view(
         epoch,
         spec_version,
@@ -299,10 +301,11 @@ pub fn welfare_current() -> WelfareView {
 
 /// Assemble `FutarchyApi::params` per 02 §3/§4 and 13 reading rule 7.
 /// Unknown keys are skipped and found keys retain input order (including
-/// duplicates). `max_delta` is the maximum absolute step from the current
-/// value, as single-homed in `ParamRecord::max_delta_allowance`; zero means no
-/// per-step rule. Malformed records are skipped rather than presented as
-/// unbounded. Cooldowns use the live `epoch.length`, saturating at `u32::MAX`.
+/// duplicates). `max_delta` is the conservative bidirectional absolute step
+/// from the current value, as single-homed in
+/// `ParamRecord::max_delta_allowance`; zero means no per-step rule. Malformed
+/// records are skipped rather than presented as unbounded. Cooldowns use the
+/// live `epoch.length`, saturating at `u32::MAX`.
 pub fn params(
     keys: BoundedVec<ParamKey, { bounds::MAX_PARAM_KEYS }>,
 ) -> BoundedVec<ParamView, { bounds::MAX_PARAM_KEYS }> {

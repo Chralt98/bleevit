@@ -627,8 +627,10 @@ impl<AccountId: Clone + Eq> Default for MarketState<AccountId> {
 /// Mutation-free 02 §4 / 04 §6 quote using the exact fixed-point and
 /// maker-adverse currency-rounding paths used by [`buy_book`] and
 /// [`sell_book`]. `cost` is the gross buy charge or gross sell proceeds before
-/// fee. An evaluable amount outside the per-trade bounds is returned with
-/// `within_domain = false`; a closed book or an unevaluable post-state rejects.
+/// fee. Per 02 §4, `within_domain` reports only the post-trade LMSR domain;
+/// 11 §11.5 P-1 makes the independent per-trade bound a separate frontend
+/// precondition, exposed here by `max_trade`. A closed book or an unevaluable
+/// post-state rejects.
 pub fn quote<A>(
     m: &MarketBook<A>,
     side: TradeSide,
@@ -688,9 +690,10 @@ pub fn quote<A>(
     };
     let p_after_1e9 = price_1e9_quantities(post_long, post_short, m.b)?;
     let max_trade = max_trade_amount(m.b);
-    let within_domain = amount >= MIN_TRADE
-        && amount <= max_trade
-        && quantities_within_domain(post_long, post_short, m.b);
+    // 02 §4 freezes this field as the post-trade |q_L-q_S|/b predicate only;
+    // the 11 §11.5 P-1 min/max check remains independently visible through
+    // `max_trade` and the MinTrade metadata constant.
+    let within_domain = quantities_within_domain(post_long, post_short, m.b);
     Ok(QuoteView {
         cost,
         fee: fee_up(cost, fee_bps)?,
@@ -1625,13 +1628,16 @@ mod tests {
     }
 
     #[test]
-    fn quote_marks_evaluable_trade_bound_failures_and_rejects_bad_math() {
+    fn quote_reports_domain_independently_from_trade_bounds_and_rejects_bad_math() {
         let book = MarketBook::open(1, BookKind::Baseline { epoch: 1 }, a(1), a(2), B);
         let over_limit =
             quote(&book, TradeSide::BuyLong, max_trade_amount(B) + 1, FEE_BPS).unwrap();
-        assert!(!over_limit.within_domain);
+        // 02 §4 freezes `within_domain` to the post-trade LMSR predicate;
+        // 11 §11.5 P-1 makes the per-trade maximum a separate FE check.
+        assert!(over_limit.within_domain);
         assert!(over_limit.cost > 0);
         assert_eq!(over_limit.max_trade, max_trade_amount(B));
+        assert!(max_trade_amount(B) + 1 > over_limit.max_trade);
         assert_eq!(
             quote(&book, TradeSide::SellLong, 1, FEE_BPS),
             Err(Error::ArithmeticOverflow)

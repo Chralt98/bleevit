@@ -768,7 +768,11 @@
       "pallet": "Epoch",
       "constant": "MaxIntakeQueue",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "u32",
+        "value": "0x40000000"
+      }
     },
     {
       "id": "constant.epoch.max_live_proposals",
@@ -776,7 +780,11 @@
       "pallet": "Epoch",
       "constant": "MaxLiveProposals",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "u32",
+        "value": "0x20000000"
+      }
     },
     {
       "id": "constant.epoch.recent_cohorts",
@@ -784,7 +792,11 @@
       "pallet": "Epoch",
       "constant": "RecentCohortSummariesBound",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "u32",
+        "value": "0x20000000"
+      }
     },
     {
       "id": "constant.epoch.books_per_proposal",
@@ -792,7 +804,11 @@
       "pallet": "Epoch",
       "constant": "MaxBooksPerProposal",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "u32",
+        "value": "0x06000000"
+      }
     },
     {
       "id": "constant.epoch.phase_offsets",
@@ -800,7 +816,11 @@
       "pallet": "Epoch",
       "constant": "PhaseOffsets",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "[(u32,u32);7]",
+        "value": "0x00000000150000000300000015000000040000001500000005000000150000000f0000001500000012000000150000001400000015000000"
+      }
     },
     {
       "id": "constant.execution_guard.descriptor_lead_time",
@@ -844,7 +864,11 @@
       "pallet": "Epoch",
       "constant": "DecisionWindowFloor",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "u32",
+        "value": "0x40380000"
+      }
     },
     {
       "id": "constant.decision.extension",
@@ -852,7 +876,11 @@
       "pallet": "Epoch",
       "constant": "DecisionExtension",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "u32",
+        "value": "0xc0a80000"
+      }
     },
     {
       "id": "constant.decision.delta_floors",
@@ -860,7 +888,11 @@
       "pallet": "Epoch",
       "constant": "DecisionDeltaFloors",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "[futarchy_primitives::FixedU64(u64);4]",
+        "value": "0x404b4c0000000000404b4c0000000000404b4c0000000000404b4c0000000000"
+      }
     },
     {
       "id": "constant.decision.sigma_floors",
@@ -868,7 +900,11 @@
       "pallet": "Epoch",
       "constant": "DecisionSigmaFloors",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "[futarchy_primitives::FixedU64(u64);4]",
+        "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      }
     },
     {
       "id": "constant.execution_guard.timelock_floor",
@@ -900,7 +936,11 @@
       "pallet": "Epoch",
       "constant": "MinEpochLength",
       "required": true,
-      "citation": "02 §9"
+      "citation": "02 §9",
+      "layout": {
+        "type": "u32",
+        "value": "0x80130300"
+      }
     },
     {
       "id": "event.ledger.split",

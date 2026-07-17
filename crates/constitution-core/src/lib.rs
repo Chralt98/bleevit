@@ -167,10 +167,13 @@ pub struct ParamRecord {
 }
 
 impl ParamRecord {
-    /// Maximum absolute step represented by this record's current max-delta
-    /// rule. Percent and factor allowances deliberately use the same
-    /// conservative saturating bounds as [`Self::checked_update`], so the
-    /// runtime view cannot drift from admission semantics.
+    /// Conservative absolute step represented by this record's current
+    /// max-delta rule in both directions. 02 §4 exposes only one scalar and
+    /// does not define which side of an asymmetric rule it means; that lossy
+    /// projection remains an open spec question. R-7 therefore requires the
+    /// smaller allowance, so a frontend `abs(next - value) <= max_delta`
+    /// check can never render a move as admissible when [`Self::checked_update`]
+    /// rejects it.
     pub fn max_delta_allowance(&self) -> Result<u128, Error> {
         match self.max_delta {
             None => Ok(0),
@@ -184,6 +187,9 @@ impl ParamRecord {
                     Some(scaled) => scaled,
                     None => u128::MAX,
                 };
+                // Unlike Factor, checked_update applies this same absolute,
+                // rounded-down allowance to increases and decreases, so the
+                // Percent rule itself has no directional asymmetry to project.
                 Ok(scaled / 100)
             }
             Some(MaxDelta::Factor(factor)) => {
@@ -201,7 +207,7 @@ impl ParamRecord {
                     None => value,
                 };
                 let downward = value.checked_sub(lower).map_or(0, |allowance| allowance);
-                Ok(upward.max(downward))
+                Ok(upward.min(downward))
             }
         }
     }
@@ -1988,19 +1994,43 @@ mod tests {
         record.max = ParamValue::Balance(u128::MAX);
         record.max_delta = Some(MaxDelta::Factor(2));
         // checked_update admits [ceil(5 / 2), 5 * 2] = [3, 10], so the
-        // maximum absolute admitted move is the upward allowance of five.
-        assert_eq!(record.max_delta_allowance(), Ok(5));
+        // 02 §4 scalar is conservatively the smaller directional allowance
+        // under R-7; which side this lossy projection denotes remains an open
+        // contract question.
+        assert_eq!(record.max_delta_allowance(), Ok(2));
 
         record.value = ParamValue::Balance(u128::MAX - 1);
-        // The same saturating upper bound used by checked_update leaves one
-        // unit of upward room; the downward side is larger and therefore wins.
-        assert_eq!(
-            record.max_delta_allowance(),
-            Ok((u128::MAX - 1) - ((u128::MAX - 1) / 2))
-        );
+        // Saturation leaves one unit upward, which is the conservative side.
+        assert_eq!(record.max_delta_allowance(), Ok(1));
 
         record.max_delta = Some(MaxDelta::Factor(0));
         assert_eq!(record.max_delta_allowance(), Err(Error::MetaBoundViolation));
+    }
+
+    #[test]
+    fn factor_allowance_projects_the_smaller_exec_lock_direction() {
+        // 02 §4 exposes only one scalar although 13 §1's exec.lock.* factor
+        // rule is directional. R-7 requires the projection not to advertise a
+        // move `checked_update` can reject; the encoding remains an open spec
+        // question, so derive both sides from the canonical record itself.
+        let record = genesis_params()
+            .into_iter()
+            .find(|record| record.key == key16(b"exec.lock.code"))
+            .expect("the canonical exec.lock.code record exists");
+        let value = record.value.as_u128();
+        assert!(matches!(record.max_delta, Some(MaxDelta::Factor(_))));
+        let factor = match record.max_delta {
+            Some(MaxDelta::Factor(factor)) => u128::from(factor),
+            _ => 1,
+        };
+        assert!(factor >= 1);
+        let lower = value / factor + u128::from(value % factor != 0);
+        let downward = value.saturating_sub(lower);
+        let upward = value.saturating_mul(factor).saturating_sub(value);
+
+        assert_eq!(record.max_delta_allowance(), Ok(downward.min(upward)));
+        assert_eq!(record.max_delta_allowance(), Ok(downward));
+        assert!(downward < upward);
     }
 
     #[test]

@@ -326,7 +326,7 @@ Canonical names below are FINAL; the frontend `CRITICAL_SURFACE` list and local-
 
 | Pallet | Events (canonical) |
 |---|---|
-| `pallet-conditional-ledger` | `Split`, `Merged`, `ScalarSplit`, `ScalarMerged`, **`GateSplit { pid: ProposalId, branch: Branch, gate: GateType, amount: Balance }`**, **`GateMerged { pid: ProposalId, branch: Branch, gate: GateType, amount: Balance }`**, `PositionTransferred`, **`BaselineSplit { epoch: EpochId, amount: Balance }`**, **`BaselineMerged { epoch: EpochId, amount: Balance }`**, `VaultResolved { pid, branch }`, **`VaultVoided { pid }`** (D-1, X-11f), `ScalarSettlementSet { pid, branch, s }` (carries winning branch — B-low), `GateSettled { pid, branch, gate, outcome }` (B-2), **`BaselineSettled { epoch: EpochId, s: FixedU64 }`**, `Redeemed`, `ScalarRedeemed`, `ScalarPairRedeemed { pid, amount }` (B-5), **`GateRedeemed { pid: ProposalId, gate: GateType, amount: Balance }`**, **`VoidRedeemed { pid, kind, amount, payout }`** (D-1), **`BaselineRedeemed { epoch: EpochId, side: ScalarSide, payout: Balance }`**, `VaultReaped` |
+| `pallet-conditional-ledger` | `Split`, `Merged`, `ScalarSplit`, `ScalarMerged`, **`GateSplit { pid: ProposalId, branch: Branch, gate: GateType, amount: Balance }`**, **`GateMerged { pid: ProposalId, branch: Branch, gate: GateType, amount: Balance }`**, `PositionTransferred`, **`BaselineSplit { epoch: EpochId, amount: Balance }`**, **`BaselineMerged { epoch: EpochId, amount: Balance }`**, `VaultResolved { pid, branch }`, **`VaultVoided { pid }`** (D-1, X-11f), `ScalarSettlementSet { pid, branch, s }` (carries winning branch — B-low), `GateSettled { pid, branch, gate, outcome }` (B-2), **`BaselineSettled { epoch: EpochId, s: FixedU64 }`**, `Redeemed`, `ScalarRedeemed`, `ScalarPairRedeemed { pid, amount }` (B-5), **`GateRedeemed { pid: ProposalId, gate: GateType, amount: Balance }`**, **`VoidRedeemed { pid, kind, amount, payout }`** (D-1), **`BaselineRedeemed { epoch: EpochId, side: ScalarSide, payout: Balance }`**, `VaultReaped`, **`BaselineVaultReaped { epoch: EpochId, residue: Balance }`** |
 | `pallet-market` | §5 table |
 | `pallet-epoch` | `ProposalSubmitted`, `ProposalWithdrawn`, `ScreeningStarted`, `ProposalCancelled { reason }`, `ProposalQualified`, `ProposalDeferred`, `MarketsOpened`, `DecisionExtended`, `ProposalQueued { payload_hash, maturity }`, `ProposalRejected { reason }`, `ProposalDelayed { justification_hash }`, `RerunScheduled`, `RerunOpened`, `MandateExpired`, `MeasurementStarted { cohort }`, `CohortSettled { epoch, s }`, **`ProposalForceRejected { pid, reason }`** — emitted by transition T20 (emergency/VOID force-reject), which previously emitted nothing and silently corrupted every event-derived archive (X-11f), `IntakeSlashed { pid, reason, amount }` (accompanies every partial intake-bond slash — [06](06-governance-and-guardians.md) §4) |
 | `pallet-execution-guard` | `Executed { pid, record }`, `ExecutionFailed { pid, outcome: DispatchOutcomeCode }`, `Ratified { pid, referendum_index }` (written by `execution_guard.ratify(proposal_id, referendum_index)`, the sole `ratify`-track governance call — [06](06-governance-and-guardians.md) §2.2), `UpgradeAuthorized { code_hash, authorized_at }` (system-event mirror carrying `authorized_at` for the `DescriptorLeadTime` check, D-14) |
@@ -483,16 +483,16 @@ The tuple/array orders in this table are part of the freeze. Every per-class arr
 | ConditionalLedger | `MaxPositionsPerAccount` | `u32` | `bounds::MAX_ACCOUNT_POSITIONS` (= 64) | Wired |
 | ConditionalLedger | `ArchiveDelay` | `BlockNumber` (`u32`) | live `Params[ledger.archive]` | Wired |
 | ConditionalLedger | `ReapBatch` | `u32` | `kernel::REAP_BATCH` (= 100) | Wired |
-| ConditionalLedger | `MinTransfer` | `Balance` | `kernel::MIN_TRANSFER_USDC` (= 10,000 base units) | Next wiring |
+| ConditionalLedger | `MinTransfer` | `Balance` | `kernel::MIN_TRANSFER_USDC` (= 10,000 base units) | Wired |
 | Market | `Fee` | `u128` | live `Params[mkt.fee]`, projected in basis points (launch 30) | Wired |
 | Market | `ObsInterval` | `u64` | live `Params[mkt.obs_interval]`, promoted from `u32` (launch 10 blocks) | Wired |
 | Market | `Kappa1e9` | `u64` | live `Params[mkt.kappa]` on the 1e9 grid (launch 5,000,000) | Wired |
 | Market | `ArchiveDelay` | `BlockNumber` (`u32`) | live `Params[ledger.archive]` | Wired |
-| Market | `MinTrade` | `Balance` | `kernel::MIN_TRADE_USDC` (= 1,000,000 base units) | Next wiring |
-| Market | `MaxTradeRatio` | `(u32, u32)` | kernel ratio `(1, 4)` (`b/4`) | Next wiring |
-| Market | `MaxLiveMarkets` | `u32` | `bounds::MAX_LIVE_MARKETS` (= 196) | Next wiring |
-| Market | `GatePMaxCeiling` | `FixedU64` | `kernel::GATE_P_MAX_CEILING_1E9` (= 100,000,000; 0.10) | Next wiring |
-| Market | `GateEpsFloor` | `FixedU64` | [13 §1](13-parameters.md) `gate.eps` K floor (= 5,000,000; 0.005) | Next wiring |
+| Market | `MinTrade` | `Balance` | `kernel::MIN_TRADE_USDC` (= 1,000,000 base units) | Wired |
+| Market | `MaxTradeRatio` | `(u32, u32)` | kernel ratio `(1, 4)` (`b/4`) | Wired |
+| Market | `MaxLiveMarkets` | `u32` | `bounds::MAX_LIVE_MARKETS` (= 196) | Wired |
+| Market | `GatePMaxCeiling` | `FixedU64` | `kernel::GATE_P_MAX_CEILING_1E9` (= 100,000,000; 0.10) | Wired |
+| Market | `GateEpsFloor` | `FixedU64` | [13 §1](13-parameters.md) `gate.eps` K floor (= 5,000,000; 0.005) | Wired |
 | Oracle | `MaxRoundCloseBatch` | `u32` | `kernel::TICK_BATCH` (= 10) | Wired |
 | Registry (each instance) | `Kind` | `RegistryKind` | runtime instance `Config::Kind` (`Incident` or `Milestone`) | Wired |
 | Registry (each instance) | `ArchiveDelay` | `BlockNumber` (`u32`) | live `Params[ledger.archive]` | Wired |
@@ -505,21 +505,21 @@ The tuple/array orders in this table are part of the freeze. Every per-class arr
 | ExecutionGuard | `MaxPayloadBytes` | `u32` | `kernel::MAX_BYTES` (= 65,536) | Wired |
 | ExecutionGuard | `DescriptorLeadTime` | `BlockNumber` (`u32`) | `kernel::DESCRIPTOR_LEAD_TIME_BLOCKS` (= 43,200) | Wired |
 | ExecutionGuard | `MaxRuntimeCodeBytes` | `u32` | runtime `Config::MaxRuntimeCodeBytes` (`pallet_preimage::MAX_SIZE`) | Wired |
-| ExecutionGuard | `ExecutionTimelockFloor` | `[u32; 4]` | [13 §1](13-parameters.md) `exec.lock.*` K hard minima, `[14,400; 4]` blocks | Next wiring |
-| ExecutionGuard | `ExecutionGraceFloor` | `u32` | [13 §1](13-parameters.md) `exec.grace` K hard minimum (= 100,800 blocks) | Next wiring |
+| ExecutionGuard | `ExecutionTimelockFloor` | `[u32; 4]` | [13 §1](13-parameters.md) `exec.lock.*` K hard minima, `[14,400; 4]` blocks | Wired |
+| ExecutionGuard | `ExecutionGraceFloor` | `u32` | [13 §1](13-parameters.md) `exec.grace` K hard minimum (= 100,800 blocks) | Wired |
 | Epoch | `INTEGRATION_CONTRACT_VERSION` | `u32` | `futarchy_primitives::INTEGRATION_CONTRACT_VERSION` (= 4) | Wired |
 | Epoch | `MaxLiveProposals` | `u32` | `bounds::MAX_LIVE_PROPOSALS` (= 32) | Wired |
 | Epoch | `MaxIntakeQueue` | `u32` | `bounds::INTAKE_QUEUE` (= 64) | Wired |
 | Epoch | `MaxNonTerminalCohorts` | `u32` | `bounds::MAX_NON_TERMINAL_COHORTS` (= 4) | Wired |
 | Epoch | `RecentCohortSummariesBound` | `u32` | `bounds::RECENT_COHORT_SUMMARIES` (= 32) | Wired |
 | Epoch | `TickBatch` | `u32` | `kernel::TICK_BATCH` (= 10) | Wired |
-| Epoch | `PhaseOffsets` | `[(u32, u32); 7]` | `futarchy_primitives::phase_offsets`: `[(0,21), (3,21), (4,21), (5,21), (15,21), (18,21), (20,21)]` for Intake/Qualify/Seed/Trade/DecideWindow/Decide/Housekeeping | Next wiring |
-| Epoch | `MaxBooksPerProposal` | `u32` | `bounds::BOOKS_PER_PROPOSAL` (= 6) | Next wiring |
-| Epoch | `MinEpochLength` | `u32` | `kernel::MIN_EPOCH_LENGTH_BLOCKS` (= 201,600) | Next wiring |
-| Epoch | `DecisionWindowFloor` | `u32` | [13 §1](13-parameters.md) `dec.window` K hard minimum (= 14,400 blocks) | Next wiring |
-| Epoch | `DecisionExtension` | `u32` | `kernel::DEC_EXTENSION_BLOCKS` (= 43,200) | Next wiring |
-| Epoch | `DecisionDeltaFloors` | `[FixedU64; 4]` | [13 §1](13-parameters.md) `dec.delta.*` K hard minima (= `[5,000,000; 4]`) | Next wiring |
-| Epoch | `DecisionSigmaFloors` | `[FixedU64; 4]` | [13 §1](13-parameters.md) `dec.sigma.*` K hard minima (= `[0; 4]`) | Next wiring |
+| Epoch | `PhaseOffsets` | `[(u32, u32); 7]` | `futarchy_primitives::phase_offsets`: `[(0,21), (3,21), (4,21), (5,21), (15,21), (18,21), (20,21)]` for Intake/Qualify/Seed/Trade/DecideWindow/Decide/Housekeeping | Wired |
+| Epoch | `MaxBooksPerProposal` | `u32` | `bounds::BOOKS_PER_PROPOSAL` (= 6) | Wired |
+| Epoch | `MinEpochLength` | `u32` | `kernel::MIN_EPOCH_LENGTH_BLOCKS` (= 201,600) | Wired |
+| Epoch | `DecisionWindowFloor` | `u32` | [13 §1](13-parameters.md) `dec.window` K hard minimum (= 14,400 blocks) | Wired |
+| Epoch | `DecisionExtension` | `u32` | `kernel::DEC_EXTENSION_BLOCKS` (= 43,200) | Wired |
+| Epoch | `DecisionDeltaFloors` | `[FixedU64; 4]` | [13 §1](13-parameters.md) `dec.delta.*` K hard minima (= `[5,000,000; 4]`) | Wired |
+| Epoch | `DecisionSigmaFloors` | `[FixedU64; 4]` | [13 §1](13-parameters.md) `dec.sigma.*` K hard minima (= `[0; 4]`) | Wired |
 
 The `PalletId` configuration constants exposed by ConditionalLedger, Market and Registry are intentionally absent: they are internal custody identifiers and no frontend workflow binds them. No placeholder names from external release tooling are normative; this table is the canonical name freeze.
 
