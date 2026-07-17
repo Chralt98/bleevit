@@ -8,6 +8,7 @@ mod apis;
 mod classifier;
 mod configs;
 mod genesis;
+pub mod views;
 
 #[cfg(test)]
 mod tests;

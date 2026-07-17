@@ -78,6 +78,42 @@ fn execute_happy_path_dispatches_with_class_origin_and_records_terminal_state() 
 }
 
 #[test]
+fn queue_view_exposes_sorted_core_projection_and_meter_state() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(enqueue_calls(
+            2,
+            futarchy_primitives::ProposalClass::Param,
+            vec![param_call(2)],
+            vec![CallDomain::Param],
+        ));
+        assert_ok!(enqueue_calls(
+            1,
+            futarchy_primitives::ProposalClass::Param,
+            vec![param_call(1)],
+            vec![CallDomain::Param],
+        ));
+        let mut meters = Queue::<Test>::iter_values()
+            .flat_map(|queued| queued.meters_declared.into_inner())
+            .collect::<Vec<_>>();
+        meters.sort_unstable();
+        meters.dedup();
+        assert!(!meters.is_empty());
+        BlockedMeters::<Test>::put(BoundedVec::try_from(meters).expect("two blocked meters fit"));
+
+        let view = GuardPallet::queue_view();
+        assert_eq!(
+            view.iter().map(|entry| entry.pid).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(view.iter().all(|entry| !entry.meters_clear));
+        assert!(view.iter().all(|entry| matches!(
+            entry.ratification,
+            futarchy_primitives::RatificationStatus::NotRequired
+        )));
+    });
+}
+
+#[test]
 fn keeper_rebate_is_exactly_once_for_terminal_execute_and_zero_for_error() {
     new_test_ext().execute_with(|| {
         setup_param(1, 41);

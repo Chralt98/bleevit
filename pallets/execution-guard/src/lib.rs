@@ -877,6 +877,17 @@ pub mod pallet {
             None
         }
 
+        /// Read-only 02 §3 execution-queue projection. Hydration sorts by
+        /// proposal id and [`ExecutionGuard::view`] single-homes ratification
+        /// and blocked-meter semantics. A missing/invalid runtime version is a
+        /// G-1 empty sentinel rather than a partially trusted queue.
+        pub fn queue_view() -> Vec<futarchy_primitives::QueuedExecutionView> {
+            match Self::load() {
+                Ok(guard) => guard.view(),
+                Err(_) => Vec::new(),
+            }
+        }
+
         pub fn retry_exhausted(pid: ProposalId) -> bool {
             Queue::<T>::get(pid)
                 .and_then(|queued| queued.failed_at)

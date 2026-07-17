@@ -699,6 +699,7 @@ fn usdc_fee_conversion_scales_decimals_and_rounds_against_the_payer() {
                 max_delta: None,
                 cooldown_epochs: 0,
                 last_changed_epoch: 0,
+                last_change_block: 0,
                 class: pallet_constitution::ParamClass::Treasury,
                 kernel_bounded: false,
             },
@@ -3089,4 +3090,519 @@ fn referenda_cancel_and_kill_are_enactable_by_constitutional_values() {
             &call
         ));
     }
+}
+
+// ------------------------------------------------------- B2 runtime views --
+
+#[test]
+fn view_quote_matches_core_rounding_and_fails_closed() {
+    use futarchy_primitives::{Branch, FixedU64, TradeSide};
+    use pallet_market::core_market::{BookKind, MarketBook};
+
+    development_ext().execute_with(|| {
+        const MARKET_ID: u64 = 41;
+        const B: u128 = 10_000_000_000;
+        let book = MarketBook::open(
+            MARKET_ID,
+            BookKind::Decision {
+                proposal: 7,
+                branch: Branch::Accept,
+            },
+            account(31),
+            account(32),
+            B,
+        );
+        pallet_market::Markets::<Runtime>::insert(MARKET_ID, book.clone());
+
+        let amount = 1_000_000;
+        let expected = pallet_market::core_market::quote(
+            &book,
+            TradeSide::BuyLong,
+            amount,
+            <Runtime as pallet_market::Config>::Fee::get(),
+        )
+        .expect("well inside the executable LMSR domain");
+        let actual = crate::views::quote(MARKET_ID, TradeSide::BuyLong, amount);
+        assert_eq!(actual, expected);
+        assert!(actual.within_domain);
+        assert!(actual.cost > 0);
+        assert!(actual.fee > 0);
+
+        let over_limit = pallet_market::core_market::max_trade_amount(B).saturating_add(1);
+        let expected_over = pallet_market::core_market::quote(
+            &book,
+            TradeSide::BuyLong,
+            over_limit,
+            <Runtime as pallet_market::Config>::Fee::get(),
+        )
+        .expect("the numerical domain extends beyond the per-trade bound");
+        let actual_over = crate::views::quote(MARKET_ID, TradeSide::BuyLong, over_limit);
+        assert_eq!(actual_over, expected_over);
+        assert!(!actual_over.within_domain);
+        assert_eq!(actual_over.max_trade, B / 4);
+
+        assert_eq!(
+            crate::views::quote(999, TradeSide::BuyLong, amount),
+            futarchy_primitives::QuoteView {
+                cost: 0,
+                fee: 0,
+                p_after_1e9: FixedU64(0),
+                max_trade: 0,
+                within_domain: false,
+            }
+        );
+        assert_eq!(
+            crate::views::quote(MARKET_ID, TradeSide::SellLong, amount),
+            futarchy_primitives::QuoteView {
+                cost: 0,
+                fee: 0,
+                p_after_1e9: FixedU64(0),
+                max_trade: B / 4,
+                within_domain: false,
+            }
+        );
+    });
+}
+
+#[test]
+fn view_account_positions_uses_vault_order_and_truncates_protocol_accounts() {
+    use pallet_conditional_ledger::core_ledger::VaultInfo;
+
+    development_ext().execute_with(|| {
+        let who = crate::configs::insurance_account();
+        let who_raw: [u8; 32] = who.clone().into();
+        for proposal in (1..=5).rev() {
+            pallet_conditional_ledger::Vaults::<Runtime>::insert(proposal, VaultInfo::open(1));
+            for (index, position) in
+                pallet_conditional_ledger::core_ledger::proposal_positions(proposal)
+                    .into_iter()
+                    .enumerate()
+            {
+                pallet_conditional_ledger::Positions::<Runtime>::insert(
+                    position,
+                    &who,
+                    u128::from(proposal) * 100 + index as u128 + 1,
+                );
+            }
+        }
+
+        let positions = crate::views::account_positions(who_raw);
+        assert_eq!(positions.len(), 64);
+        for (index, view) in positions.iter().enumerate() {
+            let proposal = (index / 14 + 1) as u64;
+            let instrument = index % 14;
+            assert_eq!(
+                view.position,
+                pallet_conditional_ledger::core_ledger::proposal_positions(proposal)[instrument]
+            );
+            assert_eq!(
+                view.balance,
+                u128::from(proposal) * 100 + instrument as u128 + 1
+            );
+            assert_eq!(view.vault_state, futarchy_primitives::VaultState::Open);
+        }
+    });
+}
+
+#[test]
+fn view_account_positions_includes_baseline_instruments_and_terminal_state() {
+    use futarchy_primitives::{Branch, FixedU64, ScalarSide, VaultState};
+    use pallet_conditional_ledger::core_ledger::{BaselineState, BaselineVaultInfo};
+
+    development_ext().execute_with(|| {
+        let who_raw = [78; 32];
+        let who = AccountId::new(who_raw);
+        let mut baseline = BaselineVaultInfo::open();
+        baseline.state = BaselineState::Settled(FixedU64(700_000_000));
+        pallet_conditional_ledger::BaselineVaults::<Runtime>::insert(8, baseline);
+        for (position, balance) in pallet_conditional_ledger::core_ledger::baseline_positions(8)
+            .into_iter()
+            .zip([11, 12])
+        {
+            pallet_conditional_ledger::Positions::<Runtime>::insert(position, &who, balance);
+        }
+
+        let positions = crate::views::account_positions(who_raw);
+        assert_eq!(positions.len(), 2);
+        assert_eq!(
+            positions
+                .iter()
+                .map(|view| view.position)
+                .collect::<Vec<_>>(),
+            vec![
+                futarchy_primitives::PositionId::Baseline {
+                    epoch: 8,
+                    side: ScalarSide::Long,
+                },
+                futarchy_primitives::PositionId::Baseline {
+                    epoch: 8,
+                    side: ScalarSide::Short,
+                },
+            ]
+        );
+        assert!(positions.iter().all(|view| view.vault_state
+            == VaultState::ScalarSettled {
+                winner: Branch::Accept,
+                s: FixedU64(700_000_000),
+            }));
+    });
+}
+
+#[test]
+fn view_execution_queue_reuses_guard_projection_and_fails_closed() {
+    use pallet_execution_guard::pallet::{StoredBlockedMeters, StoredMeters};
+
+    development_ext().execute_with(|| {
+        let version = pallet_execution_guard::CurrentSpecName::<Runtime>::get()
+            .expect("guard genesis records the active runtime version");
+        let meter = [9; 8];
+        for pid in (1..=33).rev() {
+            pallet_execution_guard::Queue::<Runtime>::insert(
+                pid,
+                pallet_execution_guard::pallet::StoredQueuedExecution {
+                    pid,
+                    payload_hash: [pid as u8; 32],
+                    payload_len: 1,
+                    class: ProposalClass::Param,
+                    maturity: 10,
+                    grace_end: 20,
+                    version_constraint: version.clone(),
+                    meters_declared: StoredMeters::try_from(vec![meter])
+                        .expect("one declared meter fits"),
+                    ratify_ref: None,
+                    ratification_passed: false,
+                    attestation_id: None,
+                    pre_upgrade_checkpoint: None,
+                    cancelled: false,
+                    declared_domains: Default::default(),
+                    failed_at: None,
+                },
+            );
+        }
+        pallet_execution_guard::BlockedMeters::<Runtime>::put(
+            StoredBlockedMeters::try_from(vec![meter]).expect("one blocked meter fits"),
+        );
+
+        let view = crate::views::execution_queue();
+        assert_eq!(
+            view.iter().map(|entry| entry.pid).collect::<Vec<_>>(),
+            (1..=32).collect::<Vec<_>>()
+        );
+        assert_eq!(view.len(), 32);
+        assert!(view.iter().all(|entry| !entry.meters_clear));
+        assert!(view.iter().all(|entry| matches!(
+            entry.ratification,
+            futarchy_primitives::RatificationStatus::NotRequired
+        )));
+
+        pallet_execution_guard::CurrentSpecName::<Runtime>::kill();
+        assert!(crate::views::execution_queue().is_empty());
+    });
+}
+
+#[test]
+fn view_welfare_current_maps_snapshot_and_preserves_g1_context() {
+    use futarchy_primitives::FixedU64;
+    use pallet_welfare::{MetricSpec, Pillar, SourceClass};
+
+    fn spec(version: u16, activation_epoch: u32) -> MetricSpec {
+        MetricSpec {
+            id: version,
+            version,
+            pillar: Pillar::S,
+            weight: FixedU64(1_000_000_000),
+            epsilon_floor: FixedU64(1),
+            activation_epoch,
+            source: SourceClass::Onchain,
+            formula_ref: [1; 32],
+            units: [2; 16],
+            repr: [3; 16],
+            cadence_blocks: 1,
+            sanity_min: FixedU64(0),
+            sanity_max: FixedU64(1_000_000_000),
+            has_normalization_rule: true,
+            has_missing_data_rule: true,
+            has_gaming_vectors: true,
+            has_challenge_procedure: true,
+            prior_bounds: [FixedU64(0); pallet_welfare::HISTORY_PRIORS],
+        }
+    }
+
+    development_ext().execute_with(|| {
+        pallet_oracle::ReserveHealth::<Runtime>::mutate(|health| health.unhealthy = true);
+        let sentinel = crate::views::welfare_current();
+        assert_eq!(sentinel.epoch, 0);
+        assert_eq!(sentinel.spec_version, 0);
+        assert_eq!(sentinel.w_current_1e9, FixedU64(0));
+        assert!(sentinel.reserve_flag);
+
+        pallet_welfare::MetricSpecs::<Runtime>::insert(
+            2,
+            pallet_welfare::pallet::BoundedSpecSet::try_from(vec![spec(2, 0)])
+                .expect("one metric spec fits"),
+        );
+        pallet_welfare::MetricSpecs::<Runtime>::insert(
+            3,
+            pallet_welfare::pallet::BoundedSpecSet::try_from(vec![spec(3, 1)])
+                .expect("one future metric spec fits"),
+        );
+        pallet_welfare::Snapshots::<Runtime>::insert(
+            (0, 2),
+            pallet_welfare::pallet::StoredSnapshot {
+                epoch: 0,
+                spec_version: 2,
+                s_pillar: FixedU64(101),
+                c_onchain: FixedU64(102),
+                c_attested: FixedU64(103),
+                p_pillar: FixedU64(104),
+                a_pillar: FixedU64(105),
+                gate_s: FixedU64(106),
+                gate_c: FixedU64(107),
+                welfare: FixedU64(108),
+                components: Default::default(),
+            },
+        );
+        pallet_welfare::GateBreachFlags::<Runtime>::insert(
+            0,
+            pallet_welfare::CoreGateBreachFlags {
+                s_breached: true,
+                c_breached: false,
+                day_bitmap: [1, 0],
+            },
+        );
+
+        let view = crate::views::welfare_current();
+        assert_eq!(view.epoch, 0);
+        assert_eq!(view.spec_version, 2);
+        assert_eq!(view.s_pillar_1e9, FixedU64(101));
+        assert_eq!(view.c_onchain_1e9, FixedU64(102));
+        assert_eq!(view.c_attested_1e9, FixedU64(103));
+        assert_eq!(view.p_pillar_1e9, FixedU64(104));
+        assert_eq!(view.a_pillar_1e9, FixedU64(105));
+        assert_eq!(view.gate_s_1e9, FixedU64(106));
+        assert_eq!(view.gate_c_1e9, FixedU64(107));
+        assert_eq!(view.w_current_1e9, FixedU64(108));
+        assert!(view.s_breached);
+        assert!(!view.c_breached);
+        assert!(view.reserve_flag);
+    });
+}
+
+#[test]
+fn view_params_converts_live_records_in_request_order() {
+    use pallet_constitution::{key16, MaxDelta, ParamValue};
+
+    development_ext().execute_with(|| {
+        let keeper_key = key16(b"keeper.budget");
+        pallet_constitution::Params::<Runtime>::mutate(keeper_key, |record| {
+            let record = record
+                .as_mut()
+                .expect("keeper budget is a genesis parameter");
+            record.value = ParamValue::Balance(5);
+            record.min = ParamValue::Balance(0);
+            record.max = ParamValue::Balance(u128::MAX);
+            record.max_delta = Some(MaxDelta::Factor(2));
+            record.last_change_block = 99;
+        });
+        let keys = futarchy_primitives::BoundedVec::try_from(vec![
+            key16(b"epoch.length"),
+            keeper_key,
+            key16(b"epoch.slots"),
+            key16(b"iss.inflation"),
+            key16(b"pol.b.param"),
+            key16(b"epoch.horizon_k"),
+            key16(b"att.bond"),
+            key16(b"unknown"),
+            keeper_key,
+        ])
+        .expect("fixture stays below the request bound");
+        let view = crate::views::params(keys);
+        let rows = view.as_slice();
+
+        assert_eq!(view.len(), 8);
+        assert_eq!(
+            view.iter().map(|row| row.key).collect::<Vec<_>>(),
+            vec![
+                key16(b"epoch.length"),
+                keeper_key,
+                key16(b"epoch.slots"),
+                key16(b"iss.inflation"),
+                key16(b"pol.b.param"),
+                key16(b"epoch.horizon_k"),
+                key16(b"att.bond"),
+                keeper_key,
+            ]
+        );
+        assert_eq!(rows[0].max_delta, 30_240);
+        assert_eq!(rows[0].cooldown_blocks, 604_800);
+        assert_eq!(rows[0].class, ProposalClass::Meta);
+        assert_eq!(rows[1].value, 5);
+        assert_eq!(rows[1].max_delta, 5);
+        assert_eq!(rows[1].cooldown_blocks, 302_400);
+        assert_eq!(rows[1].last_change, 99);
+        assert_eq!(rows[1].class, ProposalClass::Param);
+        assert_eq!(rows[2].max_delta, 2);
+        assert_eq!(rows[2].class, ProposalClass::Meta);
+        assert_eq!(rows[3].max_delta, 0);
+        assert_eq!(rows[3].cooldown_blocks, 0);
+        assert_eq!(rows[3].class, ProposalClass::Constitutional);
+        assert_eq!(rows[4].class, ProposalClass::Treasury);
+        assert_eq!(rows[5].class, ProposalClass::Meta);
+        assert_eq!(rows[6].class, ProposalClass::Constitutional);
+        assert_eq!(rows[7], rows[1]);
+
+        pallet_constitution::Params::<Runtime>::remove(key16(b"epoch.length"));
+        let one = futarchy_primitives::BoundedVec::try_from(vec![keeper_key])
+            .expect("one requested key fits");
+        assert_eq!(
+            crate::views::params(one).as_slice()[0].cooldown_blocks,
+            u32::MAX
+        );
+
+        pallet_constitution::Params::<Runtime>::mutate(keeper_key, |record| {
+            record
+                .as_mut()
+                .expect("keeper budget remains present")
+                .max_delta = Some(MaxDelta::Factor(0));
+        });
+        let malformed = futarchy_primitives::BoundedVec::try_from(vec![keeper_key])
+            .expect("one requested key fits");
+        assert!(crate::views::params(malformed).is_empty());
+    });
+}
+
+#[test]
+fn view_nav_maps_every_contract_field_from_hand_built_state() {
+    use pallet_futarchy_treasury::{BudgetLine, Stream};
+
+    development_ext().execute_with(|| {
+        pallet_futarchy_treasury::State::<Runtime>::mutate(|state| {
+            state.main_usdc = 1_000;
+            state.reserve_impaired = true;
+            state.lines = frame_support::BoundedVec::truncate_from(vec![
+                (BudgetLine::Pol, 10),
+                (BudgetLine::PolBaseline, 20),
+                (BudgetLine::Keeper, 30),
+                (BudgetLine::Oracle, 40),
+                (BudgetLine::Rewards, 50),
+                (BudgetLine::OpsBootnodes, 60),
+            ]);
+            state.streams = frame_support::BoundedVec::truncate_from(vec![
+                Stream {
+                    id: 1,
+                    recipient: [1; 32],
+                    line: BudgetLine::Rewards,
+                    total: 100,
+                    claimed: 25,
+                    start: 1,
+                    duration: 10,
+                    cancelled: false,
+                },
+                Stream {
+                    id: 2,
+                    recipient: [2; 32],
+                    line: BudgetLine::Rewards,
+                    total: 70,
+                    claimed: 10,
+                    start: 1,
+                    duration: 10,
+                    cancelled: true,
+                },
+            ]);
+            state.pending_outflows = frame_support::BoundedVec::truncate_from(vec![7, 8]);
+            state.pol_commitments = frame_support::BoundedVec::truncate_from(vec![9]);
+        });
+        assert_ok!(<ForeignAssets as FungiblesMutate<AccountId>>::mint_into(
+            USDC_ASSET_ID,
+            &crate::configs::insurance_account(),
+            55_000_000,
+        ));
+
+        let view = crate::views::nav();
+        // Assets = main 1,000 + all lines 210 + stream escrow 75;
+        // obligations = stream 75 + pending 15 + POL commitment 9.
+        assert_eq!(view.total, 1_186);
+        assert_eq!(view.main, 1_000);
+        assert_eq!(view.pol, 30);
+        assert_eq!(view.insurance, 55_000_000);
+        assert_eq!(view.keeper, 30);
+        assert_eq!(view.oracle, 40);
+        assert_eq!(view.rewards, 50);
+        assert_eq!(view.stream_remainders, 75);
+        assert_eq!(view.obligations, 99);
+        assert!(view.haircut_flag);
+        assert_eq!(view.spendable_nav, 0);
+        assert_eq!(view.meter_utilization_bps, 0);
+        assert_eq!(
+            view.class_floors,
+            [
+                FutarchyTreasury::floor(ProposalClass::Param),
+                FutarchyTreasury::floor(ProposalClass::Treasury),
+                FutarchyTreasury::floor(ProposalClass::Code),
+                FutarchyTreasury::floor(ProposalClass::Meta),
+            ]
+        );
+    });
+}
+
+#[test]
+fn view_open_oracle_rounds_sorts_triple_keys_and_marks_prior_escalation() {
+    use futarchy_primitives::FixedU64;
+
+    fn round(
+        component: u16,
+        epoch: u32,
+        version: u16,
+        round: u8,
+        challenger: Option<[u8; 32]>,
+    ) -> pallet_oracle::RoundState {
+        pallet_oracle::RoundState {
+            component,
+            epoch,
+            round,
+            spec_version: version,
+            reporter: [component as u8; 32],
+            value: FixedU64(u64::from(component) * 100),
+            evidence_hash: [version as u8; 32],
+            bond: 1_000 + u128::from(component),
+            challenge_deadline: 50 + u32::from(component),
+            extended: false,
+            challenger,
+            counter_value: challenger.map(|_| FixedU64(7)),
+            acks: round,
+            report_hash: [round; 32],
+            stake_at_risk: 10,
+            cumulative_reporter_bond: 11,
+            cumulative_challenger_bond: 12,
+        }
+    }
+
+    development_ext().execute_with(|| {
+        for state in [
+            round(3, 2, 1, 2, None),
+            round(1, 9, 2, 1, Some([8; 32])),
+            round(1, 8, 3, 1, None),
+        ] {
+            pallet_oracle::Rounds::<Runtime>::insert(
+                (state.component, state.epoch, state.spec_version),
+                state,
+            );
+        }
+        let view = crate::views::open_oracle_rounds();
+        let rows = view.as_slice();
+        assert_eq!(
+            view.iter()
+                .map(|entry| (entry.component, entry.epoch, entry.spec_version))
+                .collect::<Vec<_>>(),
+            vec![(1, 8, 3), (1, 9, 2), (3, 2, 1)]
+        );
+        assert!(!rows[0].escalated);
+        // A live challenger in round one is not an escalation yet.
+        assert!(!rows[1].escalated);
+        // Round two exists only because the prior round escalated under 07 §5.
+        assert!(rows[2].escalated);
+        assert_eq!(rows[2].value_1e9, FixedU64(300));
+        assert_eq!(rows[2].acked_by_watchtowers, 2);
+        assert_eq!(rows[2].evidence_hash, [1; 32]);
+    });
 }

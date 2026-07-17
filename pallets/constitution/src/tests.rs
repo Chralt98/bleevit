@@ -163,6 +163,7 @@ fn contract_version_and_bounds_reexports_hold() {
 fn set_param_updates_in_bounds_key_and_emits() {
     new_test_ext().execute_with(|| {
         set_epoch(1); // cooldown 1 elapsed
+        System::set_block_number(42);
         assert_ok!(Constitution::set_param(
             RuntimeOrigin::signed(PARAM_ACC),
             key16(OBS_KEY),
@@ -171,6 +172,7 @@ fn set_param_updates_in_bounds_key_and_emits() {
         let record = Params::<Test>::get(key16(OBS_KEY)).unwrap();
         assert_eq!(record.value, ParamValue::U32(12));
         assert_eq!(record.last_changed_epoch, 1);
+        assert_eq!(record.last_change_block, 42);
         assert_eq!(
             last_event(),
             RuntimeEvent::Constitution(Event::ParamUpdated {
@@ -864,6 +866,7 @@ fn shell_and_core_agree_on_the_same_operation_sequence() {
             key16(OBS_KEY),
             ParamValue::U32(12),
             1,
+            1,
         )
         .unwrap();
 
@@ -1145,7 +1148,7 @@ fn randomized_differential_covers_errors_origins_and_epochs() {
                     };
                     let shell = Constitution::set_param(runtime_origin, key, value);
                     let model = core
-                        .dispatch_set_param(authority, key, value, epoch)
+                        .dispatch_set_param(authority, key, value, epoch, 1)
                         .map_err(crate::Pallet::<Test>::map_core_error);
                     assert_eq!(shell, model, "set_param result diverged at step {step}");
                 }

@@ -81,7 +81,7 @@ pub mod pallet {
     use frame_support::pallet_prelude::*;
     use frame_support::traits::EnsureOrigin;
     use frame_system::pallet_prelude::*;
-    use sp_runtime::TryRuntimeError;
+    use sp_runtime::{traits::UniqueSaturatedInto, TryRuntimeError};
 
     use futarchy_primitives::{EpochId, ParamKey, ProposalClass};
 
@@ -266,7 +266,11 @@ pub mod pallet {
                 DispatchError::BadOrigin
             );
             let updated = record
-                .checked_update(value, T::CurrentEpoch::get())
+                .checked_update(
+                    value,
+                    T::CurrentEpoch::get(),
+                    frame_system::Pallet::<T>::block_number().unique_saturated_into(),
+                )
                 .map_err(Self::map_core_error)?;
             Params::<T>::insert(key, updated);
             Self::deposit_event(Event::ParamUpdated { key, value });
