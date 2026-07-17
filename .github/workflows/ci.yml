@@ -5,8 +5,8 @@ on:
   push:
     branches: [main]
 
-# Every job only reads the repo; none needs a writable GITHUB_TOKEN (CodeQL
-# workflow-permissions finding on PR #89).
+# Every job only checks out the tree and runs tests/validators — the token
+# never needs write scopes (CodeQL: actions/missing-workflow-permissions).
 permissions:
   contents: read
 
@@ -190,3 +190,17 @@ jobs:
           for helper in zombienet/drills/js/*.js; do
             node --check "$helper"
           done
+
+  # S3 generated rate-limit/meter/bound coverage — 15 §4.6; I-22.
+  limit-coverage:
+    name: Generated limit coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run limit-coverage checker tests
+        run: python3 -m unittest discover -s tools/limit-coverage/tests
+      - name: Validate registry classifications and Rust test markers
+        run: python3 tools/limit-coverage/check-limit-coverage.py
