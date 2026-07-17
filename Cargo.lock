@@ -1283,6 +1283,7 @@ dependencies = [
  "pallet-execution-guard",
  "pallet-futarchy-treasury",
  "pallet-guardian",
+ "pallet-inflow-caps",
  "pallet-market",
  "pallet-message-queue",
  "pallet-migrations",
@@ -7743,6 +7744,18 @@ dependencies = [
  "frame-support",
  "frame-system",
  "log",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
+name = "pallet-inflow-caps"
+version = "0.1.0"
+dependencies = [
+ "frame-support",
+ "frame-system",
  "parity-scale-codec",
  "scale-info",
  "sp-io",

@@ -20,6 +20,7 @@ pallet-registry = { path = "../../pallets/registry", default-features = false }
 pallet-futarchy-treasury = { path = "../../pallets/futarchy-treasury", default-features = false }
 pallet-guardian = { path = "../../pallets/guardian", default-features = false }
 pallet-attestor = { path = "../../pallets/attestor", default-features = false }
+pallet-inflow-caps = { path = "../../pallets/inflow-caps", default-features = false }
 pallet-execution-guard = { path = "../../pallets/execution-guard", default-features = false }
 pallet-welfare = { path = "../../pallets/welfare", default-features = false }
 pallet-epoch = { path = "../../pallets/epoch", default-features = false }
@@ -133,6 +134,7 @@ std = [
   "pallet-asset-tx-payment/std",
   "pallet-assets/std",
   "pallet-attestor/std",
+  "pallet-inflow-caps/std",
   "pallet-aura/std",
   "pallet-authorship/std",
   "pallet-balances/std",
@@ -236,6 +238,7 @@ runtime-benchmarks = [
   "staging-xcm-executor/runtime-benchmarks",
 ]
 try-runtime = [
+  "bleavit-xcm/try-runtime",
   "cumulus-pallet-aura-ext/try-runtime",
   "cumulus-pallet-parachain-system/try-runtime",
   "cumulus-pallet-xcm/try-runtime",
@@ -247,6 +250,7 @@ try-runtime = [
   "pallet-asset-tx-payment/try-runtime",
   "pallet-assets/try-runtime",
   "pallet-attestor/try-runtime",
+  "pallet-inflow-caps/try-runtime",
   "pallet-aura/try-runtime",
   "pallet-authorship/try-runtime",
   "pallet-balances/try-runtime",

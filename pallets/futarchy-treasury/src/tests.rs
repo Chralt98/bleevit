@@ -139,6 +139,110 @@ fn fund_budget_line_moves_main_into_the_line() {
 }
 
 #[test]
+fn pot_backed_budget_lines_sync_exact_funding_to_custody() {
+    funded_ext().execute_with(|| {
+        let keeper_before = Treasury::line_balance(BudgetLine::Keeper);
+        let oracle_before = Treasury::line_balance(BudgetLine::Oracle);
+
+        assert_ok!(Treasury::fund_budget_line(
+            to(),
+            BudgetLine::Keeper,
+            50 * USDC
+        ));
+        assert_ok!(Treasury::fund_budget_line(
+            to(),
+            BudgetLine::Oracle,
+            30 * USDC
+        ));
+
+        assert_eq!(
+            pot_funding_calls(),
+            vec![
+                (PayoutLine::Keeper, 50 * USDC),
+                (PayoutLine::Oracle, 30 * USDC),
+            ]
+        );
+        assert_eq!(
+            Treasury::line_balance(BudgetLine::Keeper),
+            keeper_before + 50 * USDC
+        );
+        assert_eq!(
+            Treasury::line_balance(BudgetLine::Oracle),
+            oracle_before + 30 * USDC
+        );
+        assert_eq!(KeeperRebatePotBalance::get(), 50 * USDC);
+        assert_eq!(OracleRebatePotBalance::get(), 30 * USDC);
+        assert_ok!(crate::Pallet::<Test>::do_try_state());
+    });
+}
+
+#[test]
+fn pot_funding_failure_rolls_back_internal_credit_and_event() {
+    funded_ext().execute_with(|| {
+        let main_before = crate::Pallet::<Test>::treasury().main_usdc;
+        let line_before = Treasury::line_balance(BudgetLine::Keeper);
+        set_pot_funding_failure(true);
+        System::reset_events();
+
+        assert_noop!(
+            Treasury::fund_budget_line(to(), BudgetLine::Keeper, 50 * USDC),
+            sp_runtime::DispatchError::Other("pot funding failed")
+        );
+
+        assert_eq!(crate::Pallet::<Test>::treasury().main_usdc, main_before);
+        assert_eq!(Treasury::line_balance(BudgetLine::Keeper), line_before);
+        assert!(System::events().is_empty());
+        assert_eq!(pot_funding_calls(), vec![(PayoutLine::Keeper, 50 * USDC)]);
+    });
+}
+
+#[test]
+fn non_pot_budget_lines_credit_without_custody_calls() {
+    funded_ext().execute_with(|| {
+        let cases = [
+            (BudgetLine::Pol, 11 * USDC),
+            (BudgetLine::OpsCoretime, 12 * USDC),
+            (BudgetLine::Rewards, 13 * USDC),
+        ];
+        let before = cases
+            .iter()
+            .map(|(line, _)| (*line, Treasury::line_balance(*line)))
+            .collect::<Vec<_>>();
+
+        for (line, amount) in cases {
+            assert_ok!(Treasury::fund_budget_line(to(), line, amount));
+        }
+
+        assert!(pot_funding_calls().is_empty());
+        for ((line, amount), (_, old_balance)) in cases.into_iter().zip(before) {
+            assert_eq!(Treasury::line_balance(line), old_balance + amount);
+        }
+    });
+}
+
+#[test]
+fn zero_funding_keeps_core_bookkeeping_without_custody_movement() {
+    funded_ext().execute_with(|| {
+        let main_before = crate::Pallet::<Test>::treasury().main_usdc;
+        System::reset_events();
+
+        assert_ok!(Treasury::fund_budget_line(to(), BudgetLine::Keeper, 0));
+
+        assert_eq!(crate::Pallet::<Test>::treasury().main_usdc, main_before);
+        assert_eq!(Treasury::line_balance(BudgetLine::Keeper), 0);
+        assert!(crate::Pallet::<Test>::treasury()
+            .lines
+            .contains(&(BudgetLine::Keeper, 0)));
+        assert!(pot_funding_calls().is_empty());
+        assert_eq!(KeeperRebatePotBalance::get(), 0);
+        System::assert_last_event(RuntimeEvent::Treasury(Event::BudgetLineFunded {
+            line: BudgetLine::Keeper,
+            amount: 0,
+        }));
+    });
+}
+
+#[test]
 fn spend_enforces_stream_threshold_cap_and_line_balance() {
     // limit-coverage: trs.stream_thr
     funded_ext().execute_with(|| {
@@ -584,6 +688,7 @@ mod renewal_dispatch_seam {
         type CurrentEpoch = CurrentEpoch;
         type RenewalDispatch = RecordingRenewalDispatch;
         type RebatePayout = ();
+        type PotFunding = ();
         type WeightInfo = ();
         #[cfg(feature = "runtime-benchmarks")]
         type BenchmarkHelper = DispatchBenchmarkHelper;
@@ -1120,8 +1225,15 @@ fn try_state_reconciles_rebate_lines_against_real_custody_pots() {
             BudgetLine::Oracle,
             30 * USDC
         ));
-        // Funding the internal ledger is not a custody transfer. The mismatch
-        // is deliberately loud until the follow-up sync mechanism is built.
+        // The funding seam keeps the internal lines and the real custody pots
+        // synchronized atomically (08 §1.4).
+        assert_eq!(KeeperRebatePotBalance::get(), 50 * USDC);
+        assert_eq!(OracleRebatePotBalance::get(), 30 * USDC);
+        assert_ok!(crate::Pallet::<Test>::do_try_state());
+
+        // Direct transfers, recovery, or genesis mistakes can still create
+        // drift; the standing alarm remains the backstop for those sources.
+        set_rebate_pot_balance(PayoutLine::Keeper, 49 * USDC);
         assert!(matches!(
             crate::Pallet::<Test>::do_try_state(),
             Err(sp_runtime::TryRuntimeError::Other(
@@ -1130,6 +1242,7 @@ fn try_state_reconciles_rebate_lines_against_real_custody_pots() {
         ));
 
         set_rebate_pot_balance(PayoutLine::Keeper, 50 * USDC);
+        set_rebate_pot_balance(PayoutLine::Oracle, 29 * USDC);
         assert!(matches!(
             crate::Pallet::<Test>::do_try_state(),
             Err(sp_runtime::TryRuntimeError::Other(

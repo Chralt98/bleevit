@@ -223,6 +223,7 @@ construct_runtime!(
         // Frozen custom-pallet slots (02 §7; never renumber).
         Epoch: pallet_epoch = 61,
         ExecutionGuard: pallet_execution_guard = 62,
+        InflowCaps: pallet_inflow_caps = 63,
     }
 );
 

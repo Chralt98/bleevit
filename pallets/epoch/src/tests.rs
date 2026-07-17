@@ -28,6 +28,52 @@ fn sync_at(block: BlockNumber) {
     ));
 }
 
+fn seed_idle_clock(epoch: EpochId) {
+    let mut state = EpochState::new();
+    let start = phase_block(epoch, phase_offsets::INTAKE_NUM);
+    state.epoch.index = epoch;
+    state.epoch.phase = EpochPhase::Intake;
+    state.epoch.epoch_start_block = start;
+    state.epoch.phase_start_block = start;
+    assert_ok!(Epoch::seed(state));
+    set_block(start);
+}
+
+#[test]
+fn tick_drains_xcm_traffic_backlog_without_a_clock_crossing_or_settlement_cohort() {
+    new_test_ext().execute_with(|| {
+        seed_idle_clock(21);
+        WelfareTrafficBacklog::set(vec![0]);
+        assert!(Epoch::epoch_state().cohorts.is_empty());
+        assert!(WelfareTrafficPrunes::get().is_empty());
+
+        sync_at(phase_block(21, phase_offsets::INTAKE_NUM));
+
+        assert_eq!(EpochOf::<Test>::get().index, 21);
+        assert_eq!(WelfareTrafficPrunes::get(), vec![21]);
+        assert!(WelfareTrafficBacklog::get().is_empty());
+        assert!(SeamCalls::get().is_empty());
+    });
+}
+
+#[test]
+fn tick_fully_drains_a_twenty_one_epoch_backlog_in_eleven_calls() {
+    new_test_ext().execute_with(|| {
+        seed_idle_clock(41);
+        WelfareTrafficBacklog::set((0..21).collect());
+
+        for _ in 0..10 {
+            sync_at(phase_block(41, phase_offsets::INTAKE_NUM));
+        }
+        assert_eq!(WelfareTrafficBacklog::get(), vec![20]);
+
+        sync_at(phase_block(41, phase_offsets::INTAKE_NUM));
+        assert!(WelfareTrafficBacklog::get().is_empty());
+        assert_eq!(WelfareTrafficPrunes::get().len(), 11);
+        assert!(WelfareTrafficPrunes::get().iter().all(|epoch| *epoch == 41));
+    });
+}
+
 fn decision_state(
     pid: ProposalId,
     class: ProposalClass,
@@ -386,6 +432,11 @@ fn run_settlement_seam_differential() {
                     now,
                 )
                 .expect("core settlement scenario is accepted");
+            if !oracle.cohorts.iter().any(|cohort| cohort.epoch == 0) {
+                welfare
+                    .calls
+                    .push(SeamCall::WelfarePrune(oracle.epoch.index));
+            }
             assert_ok!(Epoch::settle_cohort(
                 RuntimeOrigin::signed(keeper()),
                 0,
@@ -2348,10 +2399,10 @@ fn settlement_is_cursor_resumable_and_welfare_is_the_only_settlement_seam() {
             vec![(keeper(), CrankClass::DecisionCritical)]
         );
         assert_ok!(Epoch::settle_cohort(RuntimeOrigin::signed(keeper()), 0, 1));
-        assert_eq!(
-            SeamCalls::get().last(),
-            Some(&SeamCall::Welfare(0, 1, SettlementTarget::Baseline))
-        );
+        assert!(SeamCalls::get().ends_with(&[
+            SeamCall::Welfare(0, 1, SettlementTarget::Baseline),
+            SeamCall::WelfarePrune(3),
+        ]));
         assert!(!Cohorts::<Test>::contains_key(0));
         assert!(!Proposals::<Test>::contains_key(1));
         assert_eq!(preimage_request_count([1; 32]), 0);
@@ -2683,6 +2734,26 @@ fn ledger_and_welfare_failures_are_atomic_g1() {
         )));
         set_block(phase_block(3, phase_offsets::HOUSEKEEPING_NUM));
         SeamFailure::set(Some(SeamCall::Welfare(0, 1, SettlementTarget::Baseline)));
+        let before_state = Epoch::epoch_state().encode();
+        let before_events = System::events();
+        let before_calls = SeamCalls::get();
+        assert_noop!(
+            Epoch::settle_cohort(RuntimeOrigin::signed(keeper()), 0, 2),
+            Error::<Test>::Welfare
+        );
+        assert_eq!(Epoch::epoch_state().encode(), before_state);
+        assert_eq!(System::events(), before_events);
+        assert_eq!(SeamCalls::get(), before_calls);
+    });
+
+    new_test_ext().execute_with(|| {
+        assert_ok!(Epoch::seed(cohort_state(
+            1,
+            0,
+            CohortStatus::Measuring { until_epoch: 2 },
+        )));
+        set_block(phase_block(3, phase_offsets::HOUSEKEEPING_NUM));
+        SeamFailure::set(Some(SeamCall::WelfarePrune(3)));
         let before_state = Epoch::epoch_state().encode();
         let before_events = System::events();
         let before_calls = SeamCalls::get();
