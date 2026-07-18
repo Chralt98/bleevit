@@ -57,8 +57,7 @@
       "path": "zombienet/drills/06-pb-migration.zndsl",
       "tier": "release",
       "gated_on": [
-        "09 §3.2 migration-control surface (SQ-233): no migrations.force_failure/retry exists, so the MigrationHalt trigger can never go live in a drill and guardian playbook activation correctly refuses (TriggerInactive)",
-        "guardian playbook effect substrate (B1b SQ-176/SQ-144-effects): ActivatePlaybook's downstream effect dispatcher returns Err(\"guardian downstream effect is not represented on chain\") outside benchmarks, so the fifth approval fails even once the trigger is live"
+        "09 §3.2 migration-control surface (SQ-235): no migrations.force_failure/retry exists, so the MigrationHalt trigger can never go live in a drill and guardian playbook activation correctly refuses (TriggerInactive); the playbook effect substrate itself landed with B1b (#104)"
       ],
       "timeout_seconds": 1800,
       "spec": "09 §3.2/§7.1"
