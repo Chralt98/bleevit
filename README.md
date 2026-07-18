@@ -4,8 +4,8 @@
 
 # Bleavit — A self-governing system
 
-Futarchy was invented by Prof. Robin Hanson — thank you for your work; this project
-exists to build one.
+Futarchy was invented by Prof. Robin Hanson — thank you for your work; this
+project exists to build one.
 
 A **futarchy-governed Polkadot parachain**: token holders vote on *values* (what the
 chain should optimize), while conditional prediction markets decide *beliefs* (which
@@ -24,7 +24,7 @@ rollout that removes `sudo` at Phase 4.
 
 ## Status
 
-**Specification complete (2026-07-12) · Track M (M0–M3) finished (2026-07-15) · Track A complete — all 11 custom pallets are production FRAME pallets (2026-07-16) · B1a Cumulus runtime assembled (2026-07-16) · B3 collator node, chain-spec pipeline and genesis allocation/vesting (2026-07-16) · B4 XCM layer (2026-07-16) · B9 keeper reference implementation (2026-07-16) · B6 upgrade path e2e wired into the runtime (2026-07-17) · B7 Zombienet/Chopsticks environment definitions (2026-07-17) · S1 formal TLA⁺ models, ≥10⁶-case property suites and the ledger↔Python differential (2026-07-17).**
+**Specification complete (2026-07-12) · Track M (M0–M3), Track A, B1a, B3, B4, B5, B6, B7, B9, S1, S3 and S5 implemented · B1b Epoch runtime wiring is gate-green with compliance questions still open (2026-07-17).**
 
 - The authoritative spec is [`docs/architecture/`](docs/architecture/README.md) —
   16 component documents + decision record, produced by resolving all 101 findings
@@ -49,9 +49,10 @@ rollout that removes `sudo` at Phase 4.
 | `crates/futarchy-primitives/` | M1 shared primitive crate: `no_std` contract/view types, version constant, and kernel/chain/currency bounds |
 | `crates/futarchy-fixed/` | M2 deterministic 64.64 fixed-point LMSR/transcendental crate with generated regression fixtures |
 | [`reference-model/`](reference-model/pyproject.toml), [`tools/reference-model/generate-vectors.py`](tools/reference-model/generate-vectors.py) | M3 independent Python executable spec and CI-regenerated JSON vector corpus |
+| [`simulation/`](simulation/README.md), [`tools/simulation/run-calibration.py`](tools/simulation/run-calibration.py) | S4 agent-based Phase-0 economic simulation (15 §4.9): executed-trade LMSR ledger with adversarial agents, committed deterministic calibration evidence; sim-gated parameter publication parked pending SQ-231 |
 | `pallets/`, `crates/*-core/` | Track A (complete): each Track-A `crates/<name>-core/` is the frame-free functional core (differential oracle) and each matching `pallets/<name>/` its production `#[frame_support::pallet]` shell (origin-checked calls, bounded 02-frozen storage, try-state, benchmarks, doc-15 suites) |
 | `pallets/inflow-caps/` | B4 residual state-only pallet: the shared Phase-3 cumulative per-account USDC inflow meter and total-local-issuance mint admission check (09 §5.2); no dispatchables or standalone weights, because callers include it in their transaction/weight envelopes |
-| `runtime/bleavit-runtime/` | B1a + A8/A11 + B4 residual + B5 + B6: the real Cumulus parachain runtime — `construct_runtime!` over the Track-A + standard/system pallets (`Epoch` index 61, `ExecutionGuard` index 62, `InflowCaps` index 63), `BaseCallFilter = SafetyFilter`, live constitution-backed DOT/USDC XCM trader rates, the XCM-health→welfare chain (X only; R pending SQ-150), the custody-synced treasury pot funding, the `DescriptorLeadTime` apply gate and full 09 §2 upgrade path, B5 generated weights/PoV budgets, plus genesis presets carrying the 08 §2.1 VIT allocation/vesting; Wasm-buildable (`--features substrate-wasm-builder`) |
+| `runtime/bleavit-runtime/` | B1a + A8/A11 + B4 residual + B5 + B6: the real Cumulus parachain runtime — `construct_runtime!` over the Track-A + standard/system pallets (`Epoch` index 61, `ExecutionGuard` index 62, `InflowCaps` index 63), `BaseCallFilter = SafetyFilter`, live constitution-backed DOT/USDC XCM trader rates, the XCM-health→welfare chain (X only; R pending SQ-195), disjoint epoch-bond escrow and custody-synced treasury pots, the full 09 §2 upgrade path, and generated weights/PoV budgets. B1b remains 🔨 for SQ-172, SQ-176 and SQ-178. |
 | `runtime/bleavit-xcm/` | B4 XCM layer (runtime-independent library the runtime wires): default-deny barrier (`Transact`/unpaid refused; Asset Hub/relay/Coretime origins only), pinned USDC/DOT matchers + reserve model (no teleports locally), constitution-governed weight trader, reserve-probe program + authenticated response router, coretime-renewal DOT funding leg (relay-teleport route), Phase-3 inflow-cap adapters, `pallet_xcm` call classifier |
 | `runtime-api/` | B2 `futarchy-runtime-api` crate: the `sp_api::decl_runtime_apis!` declaration of the frozen 11-method `FutarchyApi` (02 §3) over the view types in `futarchy-primitives`; wiring it into the runtime's `impl_runtime_apis!` is the follow-up |
 | `node/bleavit-node/` | B3: the collator node — a thin branding of the pinned `polkadot-omni-node` stack; the runtime ships in the chain spec, not in the node |
@@ -59,7 +60,7 @@ rollout that removes `sudo` at Phase 4.
 | [`keeper/`](keeper/README.md) | B9: the off-chain keeper reference implementation (`bleavit-keeper`) — a subxt-based service any operator can run to crank the chain's permissionless extrinsics (phase ticks, TWAP observations, decide, execute, settle, oracle/registry closes, cleanup), with Prometheus metrics per 12 §6.3. A separate cargo workspace so its dependency tree cannot disturb the runtime's exact pins; the on-chain rebate meter (08 §6.3) lives in the treasury pallet |
 | `zombienet/`, `chopsticks/`, `tools/env/` | B7: test-environment definitions as release artifacts (15 §4.7) — multi-node topologies + the 09 §7.1 drill suite, forked-state upgrade/playbook scenarios, and the pinned-tooling fetch/generate/validate scripts (`tools/env/pins.env` is the single pin home) |
 | [`models/`](models/README.md), `tools/verify/` | S1: TLA⁺ formal models of the conditional ledger and the T1–T24 proposal machine (15 §4.1) plus the pinned-TLC runner — main configs prove the invariants above anti-vacuity floors, witness configs must *violate* (reachability), mutation configs prove the invariants can fail |
-| `vendor/` | Vendored `core2 0.4.0` (every published version is yanked; the node's networking closure requires it) — see `vendor/README.md` |
+| [`fuzz/`](fuzz/README.md) | S2: `bleavit-fuzz` — cargo-fuzz (libFuzzer) targets for the three 15 §4.5 areas (SCALE payload decode, nested-wrapper filtering, LMSR trade paths), each asserting invariants (I-10/I-11/I-12) rather than mere no-panic. A separate nightly-pinned cargo workspace (like `keeper/`) so libFuzzer + nightly cannot disturb the runtime's exact pins; curated seed corpora + the `fuzz` CI job (`tools/ci/fuzz-gates.sh`) |
 | `frontend/` | Implementation root for Track F; currently a placeholder until the track begins |
 
 ## How this gets built
@@ -77,8 +78,8 @@ Humans and agents alike: read [AGENTS.md](AGENTS.md), then [PLAN.md](PLAN.md), t
 
 ## Toolchain (pinned)
 
-- **Runtime:** Rust / Polkadot SDK, release line `polkadot-stable2603` (umbrella crate
-  `polkadot-sdk = "2603.0.0"`), FRAME + Cumulus; Zombienet, Chopsticks, try-runtime,
+- **Runtime:** Rust / Polkadot SDK, release line `polkadot-stable2606` (umbrella crate
+  `polkadot-sdk = "2606.0.0"`; D-19), FRAME + Cumulus; Zombienet, Chopsticks, try-runtime,
   TLA⁺/Quint, cargo-fuzz, frame-benchmarking (01 §9, 15 §4).
 - **Frontend:** TypeScript, polkadot-api 2.x, smoldot 3.x, Vite 8, Dexie 4; Arweave
   via permaweb-deploy/Turbo; Playwright + Lighthouse CI (01 §9, 10, 12).

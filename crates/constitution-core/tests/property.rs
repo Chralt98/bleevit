@@ -181,21 +181,30 @@ proptest! {
             max_delta,
             cooldown_epochs: cooldown,
             last_changed_epoch: last_changed,
+            last_change_block: 0,
             class: ParamClass::Param,
             kernel_bounded: false,
         };
         let mut state = ConstitutionState::genesis();
-        state.params = vec![row];
-        state.try_state().unwrap();
+        // Keep the production genesis records so A8's four
+        // dec.v_min↔gate.v_min coupling pairs remain present and valid.  The
+        // synthetic row is independent and exercises only the generic I-6
+        // update envelope.
+        let property_index = state.params.len();
+        state.params.push(row);
+        prop_assert_eq!(state.try_state(), Ok(()));
         let mut epoch = last_changed;
 
         for (advance, candidate_raw) in actions {
             epoch = epoch.saturating_add(advance);
             let next = value(kind, candidate_raw);
             let before = state.clone();
-            let previous = before.params[0];
+            let previous = before.params[property_index];
             let expected = update_allowed(&previous, next, epoch);
-            let result = state.set_param(key, next, epoch);
+            // v4: `set_param` stamps `last_change_block`; a deterministic
+            // block derived from the epoch keeps the property run reproducible.
+            let block = epoch.saturating_mul(10).saturating_add(1);
+            let result = state.set_param(key, next, epoch, block);
             prop_assert_eq!(
                 result.is_ok(),
                 expected,
@@ -207,7 +216,7 @@ proptest! {
             if result.is_err() {
                 prop_assert_eq!(&state, &before, "rejected set_param mutated state");
             } else {
-                let stored = state.params[0];
+                let stored = state.params[property_index];
                 prop_assert_eq!(stored.value, next);
                 prop_assert!(stored.value.as_u128() >= previous.min.as_u128());
                 prop_assert!(stored.value.as_u128() <= previous.max.as_u128());
@@ -221,6 +230,9 @@ proptest! {
                     "max-delta interval bypass"
                 );
                 prop_assert_eq!(stored.last_changed_epoch, epoch);
+                // 02 §4's `ParamView.last_change` is sourced from this field, so
+                // an accepted update must stamp it (02 §7.3, contract v4).
+                prop_assert_eq!(stored.last_change_block, block);
             }
             prop_assert_eq!(state.try_state(), Ok(()));
         }
@@ -236,6 +248,7 @@ fn interval_row(current: u32, min: u32, max: u32, delta: MaxDelta) -> ParamRecor
         max_delta: Some(delta),
         cooldown_epochs: 0,
         last_changed_epoch: 0,
+        last_change_block: 0,
         class: ParamClass::Param,
         kernel_bounded: false,
     }
@@ -250,7 +263,7 @@ fn assert_interval_table(record: ParamRecord, cases: &[(u32, bool)]) {
             "oracle table candidate {candidate}"
         );
         assert_eq!(
-            record.checked_update(next, 0).is_ok(),
+            record.checked_update(next, 0, 0).is_ok(),
             *expected,
             "implementation table candidate {candidate}"
         );

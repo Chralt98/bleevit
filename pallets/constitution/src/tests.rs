@@ -150,7 +150,7 @@ fn phase_flag_bit_assignments_match_02_7_3() {
 
 #[test]
 fn contract_version_and_bounds_reexports_hold() {
-    assert_eq!(CONTRACT_VERSION, 3); // v3: oracle per-version triple key (A5; 02 §7.2/§13)
+    assert_eq!(CONTRACT_VERSION, 4); // v4: pre-genesis B2 contract-amendment batch (02 §13)
     assert_eq!(MAX_PARAMS, 128); // 13 §4 registry bound
     assert_eq!(MAX_CAPABILITIES, 64);
     assert_eq!(crate::MAX_METERS, 16);
@@ -163,6 +163,7 @@ fn contract_version_and_bounds_reexports_hold() {
 fn set_param_updates_in_bounds_key_and_emits() {
     new_test_ext().execute_with(|| {
         set_epoch(1); // cooldown 1 elapsed
+        System::set_block_number(42);
         assert_ok!(Constitution::set_param(
             RuntimeOrigin::signed(PARAM_ACC),
             key16(OBS_KEY),
@@ -171,6 +172,7 @@ fn set_param_updates_in_bounds_key_and_emits() {
         let record = Params::<Test>::get(key16(OBS_KEY)).unwrap();
         assert_eq!(record.value, ParamValue::U32(12));
         assert_eq!(record.last_changed_epoch, 1);
+        assert_eq!(record.last_change_block, 42);
         assert_eq!(
             last_event(),
             RuntimeEvent::Constitution(Event::ParamUpdated {
@@ -865,6 +867,7 @@ fn shell_and_core_agree_on_the_same_operation_sequence() {
             key16(OBS_KEY),
             ParamValue::U32(12),
             1,
+            1,
         )
         .unwrap();
 
@@ -979,9 +982,9 @@ fn extrinsic_value_types_do_not_admit_wrong_kinds_via_scale() {
 fn genesis_registry_matches_13_1_row_encodings() {
     new_test_ext().execute_with(|| {
         // Every 13 §1 row with a scalar concrete default and no open
-        // [VERIFY] tag is seeded (91 total, incl. per-class suffix keys and
+        // [VERIFY] tag is seeded (95 total, incl. per-class suffix keys and
         // rule-6 short keys); spot-pin the unit encodings per kind.
-        assert_eq!(Params::<Test>::count(), 91);
+        assert_eq!(Params::<Test>::count(), 95);
 
         // Per-class suffix keys (13 rule 6) — δ floors, kernel-capped.
         let delta_meta = Params::<Test>::get(key16(b"dec.delta.meta")).unwrap();
@@ -990,6 +993,45 @@ fn genesis_registry_matches_13_1_row_encodings() {
             ParamValue::Fixed(futarchy_primitives::FixedU64(60_000_000))
         );
         assert!(delta_meta.kernel_bounded);
+
+        for (key, value, min, max) in [
+            (
+                b"gate.v_min.param".as_slice(),
+                10_000_000_000,
+                5_000_000_000,
+                50_000_000_000,
+            ),
+            (
+                b"gate.v_min.trs".as_slice(),
+                25_000_000_000,
+                12_500_000_000,
+                125_000_000_000,
+            ),
+            (
+                b"gate.v_min.code".as_slice(),
+                60_000_000_000,
+                30_000_000_000,
+                300_000_000_000,
+            ),
+            (
+                b"gate.v_min.meta".as_slice(),
+                120_000_000_000,
+                60_000_000_000,
+                600_000_000_000,
+            ),
+        ] {
+            assert_eq!(
+                Params::<Test>::get(key16(key))
+                    .map(|record| { (record.value, record.min, record.max, record.class) }),
+                Some((
+                    ParamValue::Balance(value),
+                    ParamValue::Balance(min),
+                    ParamValue::Balance(max),
+                    ParamClass::Meta,
+                )),
+                "{key:?} must be a bounded genesis-seeded META record",
+            );
+        }
 
         // Rule-6 short key for a >16-byte dotted name.
         let slash = Params::<Test>::get(key16(b"intake.slash_pct")).unwrap();
@@ -1007,7 +1049,10 @@ fn genesis_registry_matches_13_1_row_encodings() {
 
         let window = Params::<Test>::get(key16(b"dec.window")).unwrap();
         assert_eq!(window.value, ParamValue::U32(43_200));
-        assert_eq!(window.min, ParamValue::U32(14_400));
+        assert_eq!(
+            window.min,
+            ParamValue::U32(crate::kernel::DECISION_WINDOW_FLOOR_BLOCKS)
+        );
         assert_eq!(window.max, ParamValue::U32(86_400));
         assert_eq!(window.max_delta, Some(crate::MaxDelta::Percent(20)));
 
@@ -1319,7 +1364,7 @@ fn randomized_differential_covers_errors_origins_and_epochs() {
                     };
                     let shell = Constitution::set_param(runtime_origin, key, value);
                     let model = core
-                        .dispatch_set_param(authority, key, value, epoch)
+                        .dispatch_set_param(authority, key, value, epoch, 1)
                         .map_err(crate::Pallet::<Test>::map_core_error);
                     assert_eq!(shell, model, "set_param result diverged at step {step}");
                 }

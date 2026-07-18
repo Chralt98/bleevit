@@ -9,6 +9,7 @@ build = "build.rs"
 [dependencies]
 # --- Local protocol crates (all twelve production FRAME pallets).
 futarchy-primitives = { path = "../../crates/futarchy-primitives", default-features = false }
+futarchy-runtime-api = { path = "../../runtime-api", default-features = false }
 bleavit-xcm = { path = "../bleavit-xcm", default-features = false }
 origins-core = { path = "../../crates/origins-core", default-features = false }
 pallet-constitution = { path = "../../pallets/constitution", default-features = false }
@@ -22,15 +23,15 @@ pallet-guardian = { path = "../../pallets/guardian", default-features = false }
 pallet-attestor = { path = "../../pallets/attestor", default-features = false }
 pallet-inflow-caps = { path = "../../pallets/inflow-caps", default-features = false }
 pallet-execution-guard = { path = "../../pallets/execution-guard", default-features = false }
-pallet-welfare = { path = "../../pallets/welfare", default-features = false }
 pallet-epoch = { path = "../../pallets/epoch", default-features = false }
+pallet-welfare = { path = "../../pallets/welfare", default-features = false }
 registry-core = { path = "../../crates/registry-core", default-features = false }
 
 parity-scale-codec = { version = "3.7.5", default-features = false, features = ["derive", "max-encoded-len"] }
 scale-info = { version = "2.11.6", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
-# --- FRAME core (polkadot-stable2603 exact pins from the workspace table).
+# --- FRAME core (polkadot-stable2606 exact pins from the workspace table).
 frame-support = { workspace = true }
 frame-system = { workspace = true }
 frame-executive = { workspace = true }
@@ -99,7 +100,7 @@ sp-version = { workspace = true }
 # PoV-budget tests (13 §5) measure the frame-free cores' storage-value shapes.
 market-core = { path = "../../crates/market-core" }
 conditional-ledger-core = { path = "../../crates/conditional-ledger-core" }
-sp-externalities = { version = "=0.32.0" }
+sp-externalities = { version = "=0.34.0" }
 sp-keyring = { workspace = true }
 sp-tracing = { workspace = true }
 cumulus-test-relay-sproof-builder = { workspace = true }
@@ -130,6 +131,7 @@ std = [
   "frame-system/std",
   "frame-try-runtime?/std",
   "futarchy-primitives/std",
+  "futarchy-runtime-api/std",
   "origins-core/std",
   "pallet-asset-tx-payment/std",
   "pallet-assets/std",
@@ -144,8 +146,8 @@ std = [
   "pallet-constitution/std",
   "pallet-conviction-voting/std",
   "pallet-execution-guard/std",
-  "pallet-futarchy-treasury/std",
   "pallet-epoch/std",
+  "pallet-futarchy-treasury/std",
   "pallet-guardian/std",
   "pallet-market/std",
   "pallet-message-queue/std",
@@ -211,8 +213,8 @@ runtime-benchmarks = [
   "pallet-constitution/runtime-benchmarks",
   "pallet-conviction-voting/runtime-benchmarks",
   "pallet-execution-guard/runtime-benchmarks",
-  "pallet-futarchy-treasury/runtime-benchmarks",
   "pallet-epoch/runtime-benchmarks",
+  "pallet-futarchy-treasury/runtime-benchmarks",
   "pallet-guardian/runtime-benchmarks",
   "pallet-market/runtime-benchmarks",
   "pallet-message-queue/runtime-benchmarks",
@@ -260,8 +262,8 @@ try-runtime = [
   "pallet-constitution/try-runtime",
   "pallet-conviction-voting/try-runtime",
   "pallet-execution-guard/try-runtime",
-  "pallet-futarchy-treasury/try-runtime",
   "pallet-epoch/try-runtime",
+  "pallet-futarchy-treasury/try-runtime",
   "pallet-guardian/try-runtime",
   "pallet-market/try-runtime",
   "pallet-message-queue/try-runtime",

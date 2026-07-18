@@ -19,7 +19,7 @@ jobs:
       # benefit; stock runners have ~14 GB free against a ~35 GB build.
       CARGO_INCREMENTAL: 0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Free runner disk space (the workspace build needs ~35 GB)
         run: |
           set -euo pipefail
@@ -38,31 +38,53 @@ jobs:
       - name: Rust workspace, runtime wasm, and try-runtime gates
         run: tools/ci/rust-workspace-gates.sh
 
+  fuzz:
+    name: Fuzzing (15 §4.5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-11-24
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.12.0 --locked
+      - name: Run invariant fuzz gates
+        run: tools/ci/fuzz-gates.sh
+
   supply-chain:
     name: Supply chain
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.89.0
       - uses: Swatinem/rust-cache@v2
-      - name: Check lockfiles and RustSec advisories
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check lockfiles, RustSec advisories, and GHSA-only advisories
         run: tools/ci/supply-chain-gates.sh
 
   reference-model:
     name: Reference model
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Run reference model tests
         run: PYTHONPATH=reference-model/src python3 -m unittest discover -s reference-model/tests
+      - name: Run economic-simulation tests
+        run: PYTHONPATH=reference-model/src:simulation/src python3 -m unittest discover -s simulation/tests
       - name: Run tooling tests
         shell: bash
         run: |
           set -euo pipefail
-          for suite in tools/deploy/tests tools/reference-model/tests tools/release/tests; do
+          for suite in tools/deploy/tests tools/reference-model/tests tools/release/tests tools/ci/tests; do
             if [[ -d "$suite" ]]; then
               python3 -m unittest discover -s "$suite"
             fi
@@ -76,20 +98,22 @@ jobs:
     name: Documentation links
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Check local Markdown links
         run: python3 tools/ci/check-doc-links.py
+      - name: Check PLAN.md table structure
+        run: python3 tools/ci/check-plan-tables.py
 
   # S1 formal models — 15 §4.1; 03 §11.
   model-checking:
     name: Model checking (TLC)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -105,7 +129,7 @@ jobs:
     name: Property suites (full count)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.89.0
       - uses: Swatinem/rust-cache@v2
       - name: Install native build dependencies
@@ -117,10 +141,10 @@ jobs:
     name: Weight regression
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Test weight regression gate
@@ -132,7 +156,7 @@ jobs:
     name: Benchmark smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           # substrate-wasm-builder needs the Wasm runtime target on a clean runner.
@@ -143,7 +167,7 @@ jobs:
         # needs `protoc`; the workspace build needs libclang (bindgen).
         run: sudo apt-get update && sudo apt-get install -y libclang-dev protobuf-compiler
       - name: Install FRAME omni-bencher
-        run: cargo install --locked frame-omni-bencher --version 0.15.0
+        run: cargo install --locked frame-omni-bencher --version 0.22.0
       - name: Build benchmark runtime Wasm
         run: cargo build --locked --release -p bleavit-runtime --features runtime-benchmarks
       - name: Execute every pallet benchmark
@@ -166,11 +190,11 @@ jobs:
     name: Environment definitions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Install environment validator dependencies
@@ -196,8 +220,8 @@ jobs:
     name: Generated limit coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Run limit-coverage checker tests

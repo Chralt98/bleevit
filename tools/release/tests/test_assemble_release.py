@@ -94,8 +94,11 @@ class AssembleReleaseTests(unittest.TestCase):
         self.supply_summary.write_text(
             json.dumps(
                 {
-                    "schema": "bleavit.supply-chain.v1",
+                    "schema": "bleavit.supply-chain.v2",
                     "ignored_advisory_ids": ["RUSTSEC-2026-0001"],
+                    "waived_ghsa_only": [
+                        {"id": "GHSA-vxx9-2994-q338", "package": "yamux", "version": "0.12.1"}
+                    ],
                     "workspaces": {
                         "root": {"allowed_warning_count": 2},
                         "keeper": {"allowed_warning_count": 0},
@@ -249,6 +252,34 @@ class AssembleReleaseTests(unittest.TestCase):
             )
             addressed = output / "dist" / f"{sha256(friendly)}-{name}"
             self.assertTrue(addressed.is_file())
+
+    def test_manifest_release_blocker_gates_complete_surface_recording(self) -> None:
+        manifest = json.loads(self.surface_manifest.read_text(encoding="utf-8"))
+        manifest["release_blockers"] = [
+            {
+                "id": "b1b.compliance",
+                "owner": "B1b",
+                "reason": "SQ-140..SQ-150 remain open",
+            }
+        ]
+        self.surface_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+        output = self.root / "manifest-blocker"
+        result = self.run_assemble(output, allow_missing=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        release = json.loads(
+            (output / "release-manifest.json").read_text(encoding="utf-8")
+        )
+        gaps = {item["id"]: item for item in release["readiness"]["missing"]}
+        self.assertEqual(
+            gaps["b1b.compliance"],
+            {
+                "id": "b1b.compliance",
+                "owner": "B1b",
+                "reason": "SQ-140..SQ-150 remain open",
+            },
+        )
+        self.assertFalse(release["readiness"]["publishable"])
 
     def test_build_info_shape_validator(self) -> None:
         valid = json.loads((self.runtime / "build-info.json").read_text(encoding="utf-8"))

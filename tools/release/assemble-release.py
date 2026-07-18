@@ -161,6 +161,28 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def load_manifest_release_blockers(path: Path) -> list[dict[str, str]]:
+    """Load explicit readiness blockers that apply even when every surface records."""
+    manifest = load_json(path)
+    rows = manifest.get("release_blockers", [])
+    if not isinstance(rows, list):
+        raise ValueError("surface manifest release_blockers must be an array")
+    blockers: list[dict[str, str]] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"surface manifest release_blockers[{index}] must be an object")
+        blocker: dict[str, str] = {}
+        for field in ("id", "owner", "reason"):
+            value = row.get(field)
+            if not isinstance(value, str) or not value:
+                raise ValueError(
+                    f"surface manifest release_blockers[{index}].{field} must be a non-empty string"
+                )
+            blocker[field] = value
+        blockers.append(blocker)
+    return blockers
+
+
 def decode_hex(value: Any, label: str) -> bytes:
     if not isinstance(value, str) or not value.startswith("0x"):
         raise ValueError(f"{label} must be a 0x-prefixed hex string")
@@ -426,13 +448,24 @@ def validate_fixture_binding(
 
 def validate_supply_chain_summary(summary: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    if summary.get("schema") != "bleavit.supply-chain.v1":
-        errors.append("supply-chain summary schema must be bleavit.supply-chain.v1")
+    if summary.get("schema") != "bleavit.supply-chain.v2":
+        errors.append("supply-chain summary schema must be bleavit.supply-chain.v2")
     ignored = summary.get("ignored_advisory_ids")
     if not isinstance(ignored, list) or any(
         not isinstance(item, str) or not item.startswith("RUSTSEC-") for item in ignored
     ):
         errors.append("ignored_advisory_ids must be an array of RustSec IDs")
+    # v2: the RustSec ignores are only half the accepted risk. The GHSA-only leg
+    # (15 §4.5; SQ-219) carries waivers cargo-audit never sees, and SQ-135's
+    # property is that a release manifest discloses the FULL waived set.
+    waived = summary.get("waived_ghsa_only")
+    if not isinstance(waived, list) or any(
+        not isinstance(row, dict)
+        or set(row) != {"id", "package", "version"}
+        or not all(isinstance(value, str) and value for value in row.values())
+        for row in waived
+    ):
+        errors.append("waived_ghsa_only must be an array of {id, package, version} objects")
     workspaces = summary.get("workspaces")
     if not isinstance(workspaces, dict) or set(workspaces) != {"root", "keeper"}:
         errors.append("workspaces must contain exactly root and keeper")
@@ -555,6 +588,19 @@ def main() -> int:
     gaps: list[dict[str, str]] = []
     corruptions: list[dict[str, str]] = []
     candidates: list[Candidate] = []
+
+    # Per-surface `blocked_by` explains a missing recording; it cannot gate a
+    # surface that records successfully. These manifest-level rows fail closed
+    # for known cross-surface compliance gaps (15 §5).
+    try:
+        for blocker in load_manifest_release_blockers(args.surface_manifest):
+            add_gap(gaps, blocker["id"], blocker["owner"], blocker["reason"])
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        add_corruption(
+            corruptions,
+            "surface_manifest.readiness",
+            f"cannot load release blockers: {error}",
+        )
 
     runtime_names = ("runtime.wasm", "metadata.scale", "runtime-info.json", "build-info.json")
     for name in runtime_names:

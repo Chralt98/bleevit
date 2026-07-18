@@ -7,7 +7,7 @@ use futarchy_primitives::{
     QueuedExecutionView, QuoteView, RatificationStatus, RuntimeVersionConstraint, TradeSide,
     VaultState, WelfareView,
 };
-use parity_scale_codec::{Decode, Encode};
+use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use sp_runtime::traits::Block as BlockT;
 
 use super::{runtime_decl_for_futarchy_api, FutarchyApi, MAX_QUEUED_EXECUTIONS};
@@ -211,6 +211,9 @@ fn nav() -> NavView {
         stream_remainders: 60,
         obligations: 50,
         haircut_flag: true,
+        spendable_nav: 0,
+        meter_utilization_bps: 7_500,
+        class_floors: [10, 20, 30, 40],
     }
 }
 
@@ -302,7 +305,7 @@ fn all_methods_are_callable_through_api_ref() {
 fn runtime_api_id_and_version_are_frozen() {
     assert_eq!(
         runtime_decl_for_futarchy_api::ID,
-        sp_core::hashing::blake2_64(b"FutarchyApi")
+        [52, 172, 53, 103, 236, 227, 15, 254]
     );
     assert_eq!(runtime_decl_for_futarchy_api::VERSION, 1);
 }
@@ -331,6 +334,8 @@ fn api_collection_bounds_match_contract() {
         BoundedVec::<CohortSummaryView, { bounds::RECENT_COHORT_SUMMARIES }>::BOUND,
         32
     );
+    assert_eq!(bounds::MAX_COHORT_PROPOSALS, 12);
+    assert_eq!(CohortSummaryView::max_encoded_len(), 158);
     assert_eq!(
         BoundedVec::<OracleRoundView, { bounds::MAX_OPEN_ORACLE_ROUNDS }>::BOUND,
         192
