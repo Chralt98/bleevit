@@ -57,6 +57,7 @@ mod apis;
 mod classifier;
 mod configs;
 mod genesis;
+pub mod telemetry;
 pub mod track_origins;
 pub mod views;
 pub mod weights;
@@ -67,6 +68,8 @@ mod pov_budgets;
 mod tests;
 #[cfg(test)]
 mod tests_s5;
+#[cfg(test)]
+mod tests_telemetry;
 #[cfg(test)]
 mod tests_s5_behavior;
 

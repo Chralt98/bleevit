@@ -464,7 +464,7 @@ pub type MigrationProgressMarker = frame_support::storage::types::StorageValue<
 >;
 
 const MIGRATION_FAILURE_HALT: u8 = 0b001;
-const MIGRATION_STALL_HALT: u8 = 0b010;
+pub(crate) const MIGRATION_STALL_HALT: u8 = 0b010;
 const APPLIED_DETECTION_HALT: u8 = 0b100;
 const UPGRADE_ABORT_TRIGGER: u8 = 0b1000;
 const EXECUTION_HALT_SOURCES: u8 =
@@ -512,7 +512,9 @@ pub(crate) fn retire_stuck_migration_cursor_for_remediation() -> bool {
     retire
 }
 
-fn active_migration_stall_is_live(cursor: &pallet_migrations::ActiveCursorOf<Runtime>) -> bool {
+pub(crate) fn active_migration_stall_is_live(
+    cursor: &pallet_migrations::ActiveCursorOf<Runtime>,
+) -> bool {
     MigrationProgressMarker::get().is_some_and(|(marker, since)| {
         marker == active_migration_marker(cursor)
             && System::block_number().saturating_sub(since) > kernel::MIGRATION_STALL_BLOCKS
