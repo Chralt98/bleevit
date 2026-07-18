@@ -343,7 +343,7 @@ class SurfaceManifestTests(unittest.TestCase):
                     "id": "oracle.bond_custody_absent",
                     "owner": "A9",
                     "reason": (
-                        "SQ-254: oracle and attestor registration bonds have no "
+                        "SQ-263: oracle and attestor registration bonds have no "
                         "economic custody — registration and slashing carry no capital cost"
                     ),
                 },

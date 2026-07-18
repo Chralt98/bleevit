@@ -1029,7 +1029,7 @@ reason = "13 §4 / 08 §1.2: market seed, settlement and reap transactionally mi
 [[entry]]
 key = "Treasury coretime obligations"
 class = "unwired"
-reason = "13 §4 / 09 §4: both 8-entry helper behaviors are covered (bounds + eviction tested), but production still lacks an authenticated Coretime quote/freshness source and the USDC-budget-line-to-DOT-route denomination rule (PLAN SQ-234/SQ-235); note/prune cannot be wired without inventing protocol semantics — re-owned to B12 at the B10 close."
+reason = "13 §4 / 09 §4: both 8-entry helper behaviors are covered (bounds + eviction tested), but production still lacks an authenticated Coretime quote/freshness source and the USDC-budget-line-to-DOT-route denomination rule (PLAN SQ-245/SQ-246); note/prune cannot be wired without inventing protocol semantics — re-owned to B12 at the B10 close."
 owner = "B12"
 
 [[entry]]
