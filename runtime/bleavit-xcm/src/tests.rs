@@ -3,7 +3,7 @@ use crate::{
     barrier::{AcceptedXcmOrigins, DenyTransact},
     caps::CappedInflows,
     coretime::coretime_renewal_program,
-    filter::{classify_pallet_xcm_call, XcmCallDisposition},
+    filter::{classify_pallet_xcm_call, ReserveTransferFilter, XcmCallDisposition},
     health::HealthTrackingRouter,
     identity::{
         asset_hub_location, bleavit_as_seen_from_asset_hub, coretime_location, dot_location,
@@ -22,7 +22,7 @@ use futarchy_primitives::chain_identity::{
     ASSET_HUB_PARA_ID, CORETIME_PARA_ID, FIXTURE_PARA_ID, USDC_ASSET_INDEX, USDC_PALLET_INSTANCE,
 };
 use oracle_core::{RES_PROBE_INTERVAL, RES_PROBE_TIMEOUT};
-use pallet_futarchy_treasury::BudgetLine;
+use pallet_futarchy_treasury::{BudgetLine, RenewalDispatch};
 use parity_scale_codec::Encode;
 use staging_xcm::{
     latest::{prelude::*, validate_send},
@@ -848,7 +848,11 @@ fn coretime_group_treasury_extrinsic_executes_local_program_and_sends_to_parent(
             BudgetLine::OpsCoretime,
             1_000,
         ));
-        assert_ok!(pallet_futarchy_treasury::Pallet::<Test>::note_coretime_renewal_quote(7, 500));
+        assert_ok!(Treasury::note_coretime_quote(
+            RuntimeOrigin::signed(alice()),
+            7,
+            500,
+        ));
         assert_ok!(<ForeignAssets as Mutate<AccountId>>::mint_into(
             dot_location(),
             &alice(),
@@ -862,13 +866,35 @@ fn coretime_group_treasury_extrinsic_executes_local_program_and_sends_to_parent(
         assert_eq!(ForeignAssets::balance(dot_location(), alice()), 0);
         assert_eq!(
             Treasury::line_balance(BudgetLine::OpsCoretime),
-            line_before - 500
+            line_before - 600
         );
         assert!(Treasury::treasury().funded_coretime_periods.contains(&7));
         let messages = sent_messages();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].0, Location::parent());
         assert!(matches!(messages[0].1 .0.first(), Some(WithdrawAsset(_))));
+    });
+}
+
+#[test]
+fn coretime_group_unset_renewal_account_fails_before_xcm_state_changes() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(<ForeignAssets as Mutate<AccountId>>::mint_into(
+            dot_location(),
+            &alice(),
+            600,
+        ));
+        let before = ForeignAssets::balance(dot_location(), alice());
+        RenewalAccount::set(None);
+
+        assert_eq!(
+            TestRenewalDispatcher::dispatch_renewal(7, 500),
+            Err(sp_runtime::DispatchError::Other(
+                "coretime renewal account is not configured",
+            )),
+        );
+        assert_eq!(ForeignAssets::balance(dot_location(), alice()), before);
+        assert!(sent_messages().is_empty());
     });
 }
 
@@ -880,7 +906,11 @@ fn coretime_group_local_router_failure_rolls_back_custody_and_quote_for_retry() 
             BudgetLine::OpsCoretime,
             1_000,
         ));
-        assert_ok!(pallet_futarchy_treasury::Pallet::<Test>::note_coretime_renewal_quote(8, 500));
+        assert_ok!(Treasury::note_coretime_quote(
+            RuntimeOrigin::signed(alice()),
+            8,
+            500,
+        ));
         assert_ok!(<ForeignAssets as Mutate<AccountId>>::mint_into(
             dot_location(),
             &alice(),
@@ -892,7 +922,10 @@ fn coretime_group_local_router_failure_rolls_back_custody_and_quote_for_retry() 
 
         let state = Treasury::treasury();
         assert_eq!(Treasury::line_balance(BudgetLine::OpsCoretime), line_before);
-        assert!(state.coretime_quotes.contains(&(8, 500)));
+        assert!(state
+            .coretime_quotes
+            .iter()
+            .any(|quote| quote.period_index == 8 && quote.price == 500));
         assert!(!state.funded_coretime_periods.contains(&8));
         assert_eq!(ForeignAssets::balance(dot_location(), alice()), 600);
         assert!(sent_messages().is_empty());
@@ -955,7 +988,6 @@ fn caps_group_full_inbound_program_under_caps_credits_and_records_the_beneficiar
 
 #[test]
 fn caps_group_over_global_cap_fails_at_mint_with_zero_issuance_and_zero_trap() {
-    // limit-coverage: phase3.tvl_cap
     new_test_ext().execute_with(|| {
         set_caps(99, u128::MAX);
         let issuance_before = ForeignAssets::total_supply(usdc_location());
@@ -982,7 +1014,6 @@ fn caps_group_over_global_cap_fails_at_mint_with_zero_issuance_and_zero_trap() {
 
 #[test]
 fn caps_group_per_account_rejection_still_gates_deposit_and_traps_minted_holding() {
-    // limit-coverage: phase3.dep_cap
     new_test_ext().execute_with(|| {
         set_caps(u128::MAX, 1);
         let outcome = execute_inbound_usdc(100, ALICE_BYTES, 43);
@@ -1218,6 +1249,27 @@ fn filter_group_every_stable2606_call_variant_has_the_conservative_disposition()
         classify_pallet_xcm_call(&claim),
         XcmCallDisposition::SignedAllowed
     );
+}
+
+#[test]
+fn reserve_transfer_filter_accepts_only_local_signed_dot_or_usdc() {
+    let signed = Location::new(
+        0,
+        [Junction::AccountId32 {
+            network: None,
+            id: [7; 32],
+        }],
+    );
+    let allowed = vec![asset(dot_location(), 1), asset(usdc_location(), 2)];
+    assert!(ReserveTransferFilter::contains(&(signed.clone(), allowed,)));
+    assert!(!ReserveTransferFilter::contains(&(
+        Location::new(1, [Junction::Parachain(CORETIME_PARA_ID)]),
+        vec![asset(dot_location(), 1)],
+    )));
+    assert!(!ReserveTransferFilter::contains(&(
+        signed,
+        vec![asset(Location::new(1, [Junction::Parachain(9_999)]), 1)],
+    )));
 }
 
 #[test]

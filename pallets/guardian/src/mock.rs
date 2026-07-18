@@ -42,6 +42,7 @@ impl pallet_balances::Config for Test {
 
 parameter_types! {
     pub static CurrentEpochValue: u32 = 0;
+    pub static ReviewDeadlineEpochValue: u32 = guardian_core::REVIEW_DEADLINE_EPOCHS;
     /// Global proposal-status feed (mock ignores the pid; tests set it).
     pub static StatusFeed: (ProposalStatus, bool) = (ProposalStatus::Queued, false);
     /// Global verified-trigger feed.
@@ -200,6 +201,7 @@ impl pallet_guardian::Config for Test {
     type RuntimeHoldReason = RuntimeHoldReason;
     type SovereignAccount = SovereignAccountValue;
     type CurrentEpoch = CurrentEpochValue;
+    type ReviewDeadlineEpochs = ReviewDeadlineEpochValue;
     type ProposalStatusProvider = TestStatus;
     type TriggerProvider = TestTriggers;
     type EffectDispatcher = TestEffects;
@@ -278,6 +280,7 @@ pub fn new_test_ext_empty() -> sp_io::TestExternalities {
 pub fn new_test_ext_with(
     guardian: pallet_guardian::GenesisConfig<Test>,
 ) -> sp_io::TestExternalities {
+    ReviewDeadlineEpochValue::set(guardian_core::REVIEW_DEADLINE_EPOCHS);
     let storage = RuntimeGenesisConfig {
         system: Default::default(),
         balances: pallet_balances::GenesisConfig {

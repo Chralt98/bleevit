@@ -820,6 +820,9 @@ pub mod bounds {
     pub const MAX_LIVE_MARKETS: u32 = 196;
     pub const BOOKS_PER_PROPOSAL: u32 = 6;
     pub const BASELINE_BOOKS: u32 = 4;
+    /// Maximum TWAP checkpoints and registered decision windows per market
+    /// (13 §4). Shared by market storage and the monitoring API row bound.
+    pub const MAX_TWAP_WINDOWS_PER_MARKET: u32 = 8;
     /// 13 §4: `pallet-migrations` may consume at most half the block service
     /// weight while a multi-block migration is active.
     pub const MIGRATION_SERVICE_WEIGHT_PERCENT: u32 = 50;
@@ -853,6 +856,10 @@ pub mod chain_identity {
     pub const ASSET_HUB_PARA_ID: u32 = 1000;
     /// Coretime chain (broker), sibling parachain id — renewal funding target (09 §4).
     pub const CORETIME_PARA_ID: u32 = 1005;
+    /// Relay-native DOT decimal places (02 §8 chain identity).
+    pub const DOT_DECIMALS: u8 = 10;
+    /// One whole DOT in planck, derived from [`DOT_DECIMALS`].
+    pub const DOT_PLANCKS_PER_DOT: u128 = 10_u128.pow(DOT_DECIMALS as u32);
     /// `PalletInstance` of `pallet-assets` on Asset Hub holding USDC (D-17).
     pub const USDC_PALLET_INSTANCE: u8 = 50;
     /// USDC asset index on Asset Hub (D-17; verified Circle-native id, 2026-07-16).
@@ -916,6 +923,11 @@ pub mod kernel {
     /// both use; the registry uses the frozen floor (07 §7 "72 h ... frozen
     /// constant"), never a live-amended value.
     pub const ORC_WINDOW_BLOCKS: u32 = 43_200;
+    /// Supported oracle dispute-ladder envelope (07 §6.1; 13 `orc.rounds`).
+    /// Live governance selects a cap inside this range; each opened game
+    /// snapshots that selection for its full lifecycle.
+    pub const ORC_ROUNDS_MIN: u8 = 2;
+    pub const ORC_ROUNDS_MAX: u8 = 4;
     /// Class-4 oracle report window after the measurement epoch closes (07 §5(1)).
     pub const ORC_REPORT_WINDOW_BLOCKS: u32 = 2 * BLOCKS_PER_DAY;
     pub const MAX_NESTED_LEVELS: u32 = 4;
@@ -975,8 +987,10 @@ pub mod kernel {
     pub const WT_QUORUM: u8 = 2;
     pub const ATT_MIN_MEMBERS: u32 = 3;
     pub const ATT_QUORUM: u32 = 2;
+    /// 13 §2 dead-man finality-stall threshold, measured in relay blocks.
     pub const DEAD_MAN_RELAY_BLOCKS: u32 = 4_800;
-    pub const DEAD_MAN_SNAPSHOT_OVERDUE_BLOCKS: u32 = 57_600;
+    /// 13 §2 dead-man snapshot grace: strictly more than four six-second days.
+    pub const DEAD_MAN_SNAPSHOT_OVERDUE_BLOCKS: u32 = 4 * BLOCKS_PER_DAY;
     pub const STALE_EPOCH_BOUND_BLOCKS: u32 = 100_800;
     pub const TICK_BATCH: u32 = 10;
     pub const REAP_BATCH: u32 = 100;

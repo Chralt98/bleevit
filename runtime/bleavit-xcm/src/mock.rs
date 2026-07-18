@@ -14,7 +14,7 @@ use crate::{
 };
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{AsEnsureOriginWithArg, Contains, Everything, NeverEnsureOrigin, Nothing},
+    traits::{AsEnsureOriginWithArg, Everything, NeverEnsureOrigin, Nothing},
     weights::Weight,
 };
 use frame_system::EnsureSigned;
@@ -115,6 +115,7 @@ impl pallet_oracle::ReportingContext for TestReporting {
 impl pallet_oracle::Config for Test {
     type AdjudicationOrigin = NeverEnsureOrigin<()>;
     type Reporting = TestReporting;
+    type Params = TestOracleParams;
     type MaxRoundCloseBatch = MaxRoundCloseBatch;
     type ProbeDispatch = TestProbeDispatcher;
     type ProbeTimeoutSink = ();
@@ -136,6 +137,16 @@ impl pallet_oracle::BenchmarkHelper<RuntimeOrigin> for TestOracleBenchmarkHelper
 
 parameter_types! {
     pub const CurrentEpoch: EpochId = 0;
+}
+
+pub struct TestOracleParams;
+impl pallet_oracle::OracleParamsProvider for TestOracleParams {
+    fn get() -> pallet_oracle::OracleParams {
+        pallet_oracle::OracleParams {
+            probe_amount: ProbeAmount::get(),
+            ..pallet_oracle::OracleParams::DEFAULT
+        }
+    }
 }
 
 pub struct TestTreasuryParams;
@@ -166,6 +177,18 @@ impl pallet_futarchy_treasury::TreasuryParams for TestTreasuryParams {
 
     fn keeper_rebate() -> u128 {
         0
+    }
+
+    fn coretime_dot_rate() -> u128 {
+        10_000_000_000
+    }
+
+    fn coretime_fee_dot() -> u128 {
+        CoretimeFeeBudget::get()
+    }
+
+    fn coretime_quote_ttl() -> u32 {
+        100
     }
 }
 
@@ -373,7 +396,7 @@ parameter_types! {
     pub const OurParaId: u32 = chain_identity::FIXTURE_PARA_ID;
     pub TreasuryLocation: Location = Location::new(0, [Junction::AccountId32 { network: None, id: ALICE_BYTES }]);
     pub const CoretimeFeeBudget: u128 = 100;
-    pub const RenewalAccount: [u8; 32] = [44; 32];
+    pub static RenewalAccount: Option<[u8; 32]> = Some([44; 32]);
     pub const RelayWeightLimit: Weight = Weight::from_parts(100, 100);
     pub const CoretimeWeightLimit: Weight = Weight::from_parts(100, 100);
 }
@@ -386,13 +409,8 @@ pub type TestCappedAssets =
 pub type TestResponseHandler = ProbeAwareResponseHandler<PalletXcm, OracleProbeSink>;
 pub type TestBarrier = BleavitBarrier<TestResponseHandler, UniversalLocation, MaxPrefixes>;
 pub type TestRouter = HealthTrackingRouter<RecordingSender, TestHealthSink>;
-pub type TestProbeDispatcher = XcmProbeDispatcher<
-    TestRouter,
-    ProbeAmount,
-    ProbeExecWeightBudget,
-    ProbeMaxResponseWeight,
-    OurParaId,
->;
+pub type TestProbeDispatcher =
+    XcmProbeDispatcher<TestRouter, ProbeExecWeightBudget, ProbeMaxResponseWeight, OurParaId>;
 pub type TestRenewalDispatcher = XcmRenewalDispatcher<
     XcmExecutor<XcmConfig>,
     RuntimeCall,
@@ -405,22 +423,6 @@ pub type TestRenewalDispatcher = XcmRenewalDispatcher<
     // bounds (re-review minor); the mock sizes them equally for simplicity.
     RelayWeightLimit,
 >;
-
-/// Mirrors B1a's outbound posture: a signed local account may reserve-transfer
-/// only the two pinned assets. The canonical Asset Hub destination restriction
-/// is independently enforced by `classify_pallet_xcm_call` (09 §6.2).
-pub struct TestReserveTransferFilter;
-impl Contains<(Location, Vec<Asset>)> for TestReserveTransferFilter {
-    fn contains((origin, assets): &(Location, Vec<Asset>)) -> bool {
-        let signed_origin = matches!(origin.unpack(), (0, [Junction::AccountId32 { .. }]));
-        signed_origin
-            && !assets.is_empty()
-            && assets.iter().all(|asset| {
-                asset.id.0 == crate::identity::usdc_location()
-                    || asset.id.0 == crate::identity::dot_location()
-            })
-    }
-}
 
 pub type LocalOriginConverter = (
     SovereignSignedViaLocation<TestLocationToAccountId, RuntimeOrigin>,
@@ -473,7 +475,7 @@ impl pallet_xcm::Config for Test {
     type XcmExecuteFilter = Everything;
     type XcmExecutor = XcmExecutor<XcmConfig>;
     type XcmTeleportFilter = Nothing;
-    type XcmReserveTransferFilter = TestReserveTransferFilter;
+    type XcmReserveTransferFilter = crate::filter::ReserveTransferFilter;
     type Weigher = FixedWeightBounds<UnitWeightCost, RuntimeCall, MaxInstructions>;
     type UniversalLocation = UniversalLocation;
     type RuntimeOrigin = RuntimeOrigin;
@@ -510,6 +512,8 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
         oracle: Default::default(),
         treasury: pallet_futarchy_treasury::GenesisConfig {
             main_usdc: 2_000_000,
+            coretime_quote_authority: Some(alice()),
+            coretime_renewal_account: Some([44; 32]),
             ..Default::default()
         },
         pallet_xcm: Default::default(),
@@ -533,6 +537,7 @@ pub fn reset_test_state() {
     TVL_CAP.with(|cap| *cap.borrow_mut() = u128::MAX);
     ACCOUNT_CAP.with(|cap| *cap.borrow_mut() = u128::MAX);
     ACCOUNT_INFLOWS.with(|inflows| inflows.borrow_mut().clear());
+    RenewalAccount::set(Some([44; 32]));
 }
 
 /// The executor type is intentionally named so the composability assertion can

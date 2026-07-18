@@ -16,7 +16,7 @@
 use crate::configs::RuntimeBlockWeights;
 use crate::{AccountId, Runtime};
 use frame_support::dispatch::DispatchClass;
-use frame_support::traits::Get;
+use frame_support::traits::{ConstU32, Get};
 use frame_support::weights::Weight;
 use pallet_epoch::{MAX_COHORT_PROPOSALS_BOUND, TICK_BATCH_BOUND};
 use pallet_execution_guard::MAX_CALLS_BOUND;
@@ -31,9 +31,8 @@ const MAX_LIVE_MARKETS: usize = 196;
 const MAX_LIVE_VAULTS: usize = 52;
 /// 13 §4: `RecentCohortSummaries` ring of 32.
 const COHORT_RING: usize = 32;
-/// 04 §7: `window_checkpoints: BoundedVec<(BlockNumber, Cum), 8>` — not yet
-/// implemented in `pallet-market` (the A3-deferred TWAP checkpoint series), so
-/// the 13 §5 item 7 budget takes it at its spec-derived maximum:
+/// 04 §7 / 13 §4: `TwapCheckpoints: BoundedVec<(BlockNumber, Cum), 8>` at
+/// its implemented maximum:
 /// 8 × (4 B `u32` block + 32 B u256 two-limb cumulative) + 1 length byte.
 const SPEC_TWAP_CHECKPOINTS_BYTES: usize = 8 * (4 + 32) + 1;
 /// The benchmark fixture ceiling for `apply_authorized_upgrade` code blobs
@@ -71,6 +70,7 @@ fn assert_fits(name: &str, w: Weight) {
 #[test]
 fn market_map_ceiling_within_13_5_budget() {
     let book = market_core::MarketBook::<AccountId>::max_encoded_len();
+    assert_eq!(book, 205, "MarketBook measured MaxEncodedLen drifted");
     // Pinned model: 13 §5 item 1 budgets ~512 B/book; the measured value is
     // recorded there. Growth past the model reopens the derivation (item 6).
     assert!(
@@ -113,7 +113,19 @@ fn chain_served_history_within_13_5_budget() {
         summary <= 256,
         "CohortSummary grew past the 13 §5 ~256 B model: {summary} B"
     );
-    let total = COHORT_RING * summary + MAX_LIVE_MARKETS * SPEC_TWAP_CHECKPOINTS_BYTES;
+    type TwapCheckpointRing = frame_support::BoundedVec<
+        (
+            futarchy_primitives::BlockNumber,
+            market_core::TwapCumulative,
+        ),
+        ConstU32<8>,
+    >;
+    let checkpoints = TwapCheckpointRing::max_encoded_len();
+    assert_eq!(
+        checkpoints, SPEC_TWAP_CHECKPOINTS_BYTES,
+        "TwapCheckpoints measured MaxEncodedLen drifted",
+    );
+    let total = COHORT_RING * summary + MAX_LIVE_MARKETS * checkpoints;
     assert!(
         total <= 70 * KIB,
         "chain-served history exceeds the 70 KiB D-6 layer-1 budget: {total} B"
@@ -181,7 +193,8 @@ fn all_futarchy_call_weights() -> alloc::vec::Vec<(&'static str, Weight)> {
     all.extend(
         pallet_call_weights!(pallet_futarchy_treasury as pallet_futarchy_treasury::WeightInfo {
             spend, open_stream, claim_stream, cancel_stream, fund_budget_line, issue_vit,
-            recover_foreign, execute_coretime_renewal,
+            recover_foreign, execute_coretime_renewal, note_coretime_quote,
+            prune_coretime_quote, set_coretime_authority,
         }),
     );
     all.extend(
@@ -226,7 +239,7 @@ fn every_futarchy_call_and_hook_fits_the_normal_class() {
     // Exact count of the 12 futarchy pallets' WeightInfo functions — update
     // in lockstep when a trait gains or loses a function, so a silently
     // dropped inventory entry cannot pass.
-    assert_eq!(all.len(), 101, "call inventory drifted");
+    assert_eq!(all.len(), 104, "call inventory drifted");
     for (name, w) in all {
         assert_fits(name, w);
     }

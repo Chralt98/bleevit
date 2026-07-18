@@ -37,7 +37,7 @@ def fixture_root(directory: str) -> Path:
     return root
 
 
-def milestone_plan(*, b10: str = "⬜", o3: str = "⬜") -> str:
+def milestone_plan(*, b13: str = "⬜", o3: str = "⬜") -> str:
     return f"""# PLAN fixture
 
 ## Milestones
@@ -46,7 +46,7 @@ def milestone_plan(*, b10: str = "⬜", o3: str = "⬜") -> str:
 
 | ID | Milestone | Spec | Depends | Status | Notes |
 |---|---|---|---|---|---|
-| B10 | Runtime telemetry | 12 §6.3 | — | {b10} | |
+| B13 | Runtime telemetry | 12 §6.3 | — | {b13} | |
 | O3 | Bootnode probes | 12 §6.2 | — | {o3} | |
 
 ## Next section
@@ -58,7 +58,7 @@ class CoverageCheckerTests(unittest.TestCase):
         failures, rows, inventory = checker.validate(ROOT)
         self.assertEqual(failures, [])
         self.assertEqual(len(rows), 20)
-        self.assertEqual(len(inventory), 31)
+        self.assertEqual(len(inventory), 32)
 
     def test_strict_extractor_rejects_table_header_drift(self) -> None:
         document = (ROOT / "docs" / "architecture" / "12-release-and-operations.md").read_text(encoding="utf-8")
@@ -106,10 +106,7 @@ class CoverageCheckerTests(unittest.TestCase):
             self.assertEqual(failures, [])
 
     def test_seam_expires_when_owner_is_complete(self) -> None:
-        samples = (
-            ("B10", {"b10": "✅"}, "bleavit_market_book_loss_usdc"),
-            ("O3", {"o3": "✅"}, "bleavit_bootnode_browser_dial_success"),
-        )
+        samples = (("O3", {"o3": "✅"}, "bleavit_bootnode_browser_dial_success"),)
         for owner, statuses, series in samples:
             with self.subTest(owner=owner), tempfile.TemporaryDirectory() as directory:
                 root = fixture_root(directory)

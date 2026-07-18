@@ -12,7 +12,7 @@ use std::{fs, path::PathBuf};
 
 use futarchy_primitives::{Branch, FixedU64};
 use market_core::{
-    contest_capital, observe_book, twap_between, BookKind, MarketBook, MarketParams,
+    contest_capital, observe_book, twap_between, BookKind, MarketBook, MarketParams, TwapCumulative,
 };
 use serde_json::Value;
 
@@ -66,7 +66,7 @@ fn neutral_book(params: &MarketParams, initial_1e9: u64) -> MarketBook<u8> {
         "scenario initial quote"
     );
     assert_eq!(book.last_observed_block, 0);
-    assert_eq!(book.cumulative_price_blocks, 0);
+    assert_eq!(book.cumulative_price_blocks, TwapCumulative::ZERO);
     assert!(params.obs_interval > 0);
     book.last_quote_1e9 = FixedU64(initial_1e9);
     book
@@ -97,7 +97,7 @@ fn twap_vectors_match_python_reference_model() {
                     .expect("observations array");
                 let expected = row["recorded"].as_array().expect("recorded array");
                 assert_eq!(observations.len(), expected.len(), "{name} shape");
-                let mut checkpoints = vec![(0u64, 0u128)];
+                let mut checkpoints = vec![(0u64, TwapCumulative::ZERO)];
                 for (observation, recorded) in observations.iter().zip(expected) {
                     let block = observation["block"].as_u64().expect("block");
                     book.last_quote_1e9 =
@@ -131,7 +131,7 @@ fn twap_vectors_match_python_reference_model() {
                 let blocks =
                     |span: u64| u32::try_from(span).expect("corpus blocks fit BlockNumber");
                 assert_eq!(
-                    twap_between(0, end_cumulative, blocks(end_block)),
+                    twap_between(TwapCumulative::ZERO, end_cumulative, blocks(end_block)),
                     Some(FixedU64(exact_1e9(&row["mean_0_20"], "mean_0_20"))),
                     "{name} full-window mean"
                 );
