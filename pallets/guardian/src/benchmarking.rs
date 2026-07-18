@@ -323,7 +323,12 @@ mod benches {
         let overdue = action_at_four::<T>(GuardianPower::DelayOnce { pid: 1 });
         Pallet::<T>::approve_action(T::BenchmarkHelper::signed([5; 32]), overdue)
             .map_err(|_| BenchmarkError::Stop("dispatch"))?;
-        T::BenchmarkHelper::prime_maintenance_epoch(REVIEW_DEADLINE_EPOCHS);
+        let deadline = ReviewDeadlines::<T>::get()
+            .iter()
+            .find(|review| review.action_id == overdue)
+            .map(|review| review.deadline_epoch)
+            .ok_or(BenchmarkError::Stop("overdue review deadline"))?;
+        T::BenchmarkHelper::prime_maintenance_epoch(deadline);
         let approvers = [[1; 32], [2; 32], [3; 32], [4; 32], [5; 32]];
         PendingActions::<T>::mutate(|actions| {
             for id in 1..MAX_PENDING_ACTIONS {
@@ -361,6 +366,15 @@ mod benches {
         assert!(ActivePlaybooks::<T>::get().is_empty());
         assert!(PendingActions::<T>::get().is_empty());
         assert!(ReviewDeadlines::<T>::get().is_empty());
+        let failed = FailedActions::<T>::get(overdue).expect("overdue review settled");
+        assert!(failed.recall_referendum.is_some());
+        assert!(
+            crate::pallet::MemberBonds::<T>::get()[..usize::from(GUARDIAN_THRESHOLD)]
+                .iter()
+                .all(|bond| *bond == GUARDIAN_BOND / 2)
+        );
+        assert!(!ReviewReferenda::<T>::contains_key(overdue));
+        assert!(!VetoReviewReferenda::<T>::contains_key(overdue));
         Ok(())
     }
 
