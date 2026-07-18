@@ -895,6 +895,14 @@ pub mod kernel {
     pub const RERUN_HURDLE_BUMP_1E9: u64 = 10_000_000;
     /// Capture-resistance multiplier `AttackCost >= 3 * InCapPrize` (D-4).
     pub const SECURITY_FACTOR: u128 = 3;
+    /// Kernel hard minimum for `sec.flow_cap` — the `C_hold` wash ceiling on
+    /// the measured non-POL contest-capital depth term, as a multiple of
+    /// `(b_acc + b_rej)` on the contract's 1e9 grid (13 §1; 08 §5.3: below ×7
+    /// the ceiling could reject honest exactly-grade proposals). The published
+    /// value is Phase-0 sim-gated; until published, consumers MUST use exactly
+    /// this floor — the smallest admissible ceiling, never a pass-widening
+    /// default (SQ-231 amendment, 2026-07-18).
+    pub const SEC_FLOW_CAP_FLOOR_1E9: u64 = 7_000_000_000;
     pub const DESCRIPTOR_LEAD_TIME_BLOCKS: u32 = 43_200;
     /// 09 §3.2 PB-MIGRATION trigger arm: an unchanged active cursor for more
     /// than this many blocks raises the migration halt.

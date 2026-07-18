@@ -22,6 +22,7 @@ from bleavit_reference_model.treasury import (
     dec_v_min,
     decision_delta,
     in_cap_prize,
+    l_hat,
     pol_b,
     round_down,
 )
@@ -36,6 +37,8 @@ from .config import (
 from .market import (
     BookSummary,
     ExecutedBook,
+    contest_capital,
+    execute_hold,
     execute_toward,
     execute_turnover,
     summarize_executed_book,
@@ -142,6 +145,7 @@ class SimulationResult:
     manipulator_displacement: Decimal
     informed_flow: Decimal
     noise_flow: Decimal
+    holder_flow: Decimal
     arbitrage_flow: Decimal
     manipulator_flow: Decimal
     welfare_grade: str
@@ -172,6 +176,7 @@ class SimulationResult:
             "full_accept": str(self.accept.full),
             "full_reject": str(self.reject.full),
             "gate_books": [row.evidence() for row in self.gate_books],
+            "holder_flow": str(self.holder_flow),
             "informed_flow": str(self.informed_flow),
             "initial_contest_accept": str(self.initial_contest_accept),
             "initial_contest_reject": str(self.initial_contest_reject),
@@ -236,8 +241,14 @@ def _execute_organic_window(
     noise_total = Decimal(desired_contest) * noise_share
     informed_name = f"informed:{book.name}"
     noise_name = f"noise:{book.name}"
+    holder_name = f"holder:{book.name}"
     _fund(book, informed_name, informed_total)
     _fund(book, noise_name, noise_total)
+    # SQ-231: grading measures held contest capital (04 §7a), not gross flow.
+    # Honest formation therefore carries a holding leg — balanced maker-bought
+    # pairs topped up to the stratum's target level — on top of the directional
+    # informed exposure; churn stays as flow telemetry only.
+    _fund(book, holder_name, Decimal(desired_contest))
     rng = proposal_rng(seed, proposal_id, salt + (0x4558 if extension else 0))
     arrival = (Decimal("0.45"), Decimal("0.70"), Decimal("0.88"), Decimal("1"), Decimal("1"), Decimal("1"))
     for index, block in enumerate(starts):
@@ -279,6 +290,13 @@ def _execute_organic_window(
             block=block,
             role="noise",
             first_side="long" if rng.randrange(2) else "short",
+        )
+        execute_hold(
+            book,
+            holder_name,
+            target_noi=Decimal(desired_contest),
+            block=block,
+            role="holder",
         )
 
 
@@ -430,15 +448,16 @@ def _signed_manip_floor(
     accept_price: Decimal,
     reject_price: Decimal,
     delta: Decimal,
-    contest_notional: Decimal,
+    contest_capital: Decimal,
     flow_cap: Decimal,
 ) -> tuple[Decimal, tuple[Decimal, Decimal]]:
+    """05 §5.6 diagnostic; V_win is the pair's 04 §7a contest capital (SQ-231)."""
     ceiling = Decimal("0.999")
     a0 = _clamp(accept_price, Decimal("0.001"), ceiling - delta)
     r0 = _clamp(reject_price, Decimal("0.001") + delta, ceiling)
     accept_cost = displacement_cost(b, a0, a0 + delta)
     reject_cost = displacement_cost(b, Decimal(1) - r0, Decimal(1) - (r0 - delta))
-    held = min(Decimal(contest_notional), Decimal(flow_cap) * Decimal(2) * b) * delta
+    held = min(Decimal(contest_capital), Decimal(flow_cap) * Decimal(2) * b) * delta
     return round_down(accept_cost + reject_cost + held), (round_down(accept_cost), round_down(reject_cost))
 
 
@@ -458,13 +477,20 @@ def _evaluate(
     delta: Decimal,
     extended: bool,
     b: Decimal,
+    flow_cap: Decimal,
 ) -> tuple[Decision, Grade, Decimal]:
     stale = _stale_decision(accept.stale_events + reject.stale_events, extended)
     grade = Grade.OK if (
         _book_valid(accept, contest_accept, v_min, config, gate=False)
         and _book_valid(reject, contest_reject, v_min, config, gate=False)
     ) else Grade.INSUFFICIENT
-    liquidity = Decimal(2) * b * LN2 + min(contest_accept, contest_reject)
+    # 08 §5.2 (SQ-231): L̂ = POL pair depth + min(pair contest capital,
+    # sec.flow_cap·(b_acc + b_rej)). The pair term is the binding per-book
+    # measure (the §5.4 worked rows count exactly one dec.v_min at
+    # exactly-grade volume), so the conservative min over the two books.
+    pol_depth = Decimal(2) * b * LN2
+    pair_contest = min(contest_accept, contest_reject)
+    liquidity = l_hat(pol_depth, pair_contest, flow_cap, b, b)
     if prize is None:
         return Decision(Outcome.REJECT, RejectReason.SECURITY_SIZING), Grade.INVALID, liquidity
     if stale is not None:
@@ -503,7 +529,11 @@ def _evaluate(
             if proposal.upgrade_payload or proposal.proposal_class not in ("code", "meta")
             else Decimal(0)
         ),
-        measured_liquidity=liquidity,
+        pol_depth=pol_depth,
+        contest_capital=pair_contest,
+        flow_cap=flow_cap,
+        b_accept=b,
+        b_reject=b,
         published_flow_per_day=None,
         decision_window=config.decision_window,
         attestation_ok=True,
@@ -545,7 +575,7 @@ def _gate_books(
             extension=extension,
         )
         summary = _summary(book, config, initial=Decimal("0.02"))
-        contest = book.contest_notional()
+        contest = contest_capital(book, decision_window=config.decision_window)
         valid = _book_valid(summary, contest, floor, config, gate=True)
         books.append(book)
         evidence.append(GateBookEvidence(gate, branch, contest, valid, summary))
@@ -576,6 +606,7 @@ def _extend_gate_books(
     for index, (book, previous) in enumerate(zip(books, prior)):
         initial = previous.summary.observed_close
         initial_quote = previous.summary.spot
+        carried_q = (book.q_long, book.q_short)
         book.events.clear()
         _execute_organic_window(
             book,
@@ -595,7 +626,12 @@ def _extend_gate_books(
             initial=initial,
             initial_quote=initial_quote,
         )
-        contest = book.contest_notional()
+        contest = contest_capital(
+            book,
+            decision_window=config.decision_window,
+            initial_q_long=carried_q[0],
+            initial_q_short=carried_q[1],
+        )
         evidence.append(
             GateBookEvidence(
                 previous.gate,
@@ -665,8 +701,12 @@ def simulate_proposal(
     reject_book = ExecutedBook("reject", b)
     _execute_organic_window(accept_book, truth=accept_truth, desired_contest=desired_accept, seed=seed, proposal_id=proposal.proposal_id, salt=0x414343, config=config, extension=False)
     _execute_organic_window(reject_book, truth=reject_truth, desired_contest=desired_reject, seed=seed, proposal_id=proposal.proposal_id, salt=0x52454A, config=config, extension=False)
-    initial_contest_accept = accept_book.contest_notional()
-    initial_contest_reject = reject_book.contest_notional()
+    initial_contest_accept = contest_capital(
+        accept_book, decision_window=config.decision_window
+    )
+    initial_contest_reject = contest_capital(
+        reject_book, decision_window=config.decision_window
+    )
     default_budget = budget_multiple * Decimal(3) * sizing_prize
     direct_budget = default_budget if absolute_direct_budget is None else Decimal(absolute_direct_budget)
     baseline_budget = default_budget if absolute_baseline_budget is None else Decimal(absolute_baseline_budget)
@@ -687,12 +727,14 @@ def simulate_proposal(
     baseline_rng = proposal_rng(seed, proposal.proposal_id // config.epoch_slate_size, 0x42464C4F57)
     baseline_formation = Decimal(config.baseline_flow_min_floor) + Decimal(config.baseline_flow_range_floor) * Decimal(str(baseline_rng.random()))
     _execute_organic_window(baseline_book, truth=baseline_truth, desired_contest=baseline_floor * baseline_formation, seed=seed, proposal_id=proposal.proposal_id // config.epoch_slate_size, salt=0x424153, config=config, extension=False)
-    _apply_baseline_attack(baseline_book, config=config, strategy=strategy, budget=baseline_budget, truth=baseline_truth, organic_contest=baseline_book.contest_notional())
+    _apply_baseline_attack(baseline_book, config=config, strategy=strategy, budget=baseline_budget, truth=baseline_truth, organic_contest=contest_capital(baseline_book, decision_window=config.decision_window))
     gate_ledgers, gate_evidence = _gate_books(proposal, seed=seed, config=config, v_min=v_min, extension=False)
     accept = _summary(accept_book, config)
     reject = _summary(reject_book, config)
     baseline = _summary(baseline_book, config)
-    baseline_contest = baseline_book.contest_notional()
+    contest_accept = contest_capital(accept_book, decision_window=config.decision_window)
+    contest_reject = contest_capital(reject_book, decision_window=config.decision_window)
+    baseline_contest = contest_capital(baseline_book, decision_window=config.decision_window)
     baseline_valid = _book_valid(baseline, baseline_contest, baseline_floor, config, gate=False)
     baseline_full = baseline.full if baseline_valid else previous_baseline
     baseline_trailing = baseline.trailing if baseline_valid else previous_baseline
@@ -704,14 +746,15 @@ def simulate_proposal(
         v_min=v_min,
         accept=accept,
         reject=reject,
-        contest_accept=accept_book.contest_notional(),
-        contest_reject=reject_book.contest_notional(),
+        contest_accept=contest_accept,
+        contest_reject=contest_reject,
         baseline_full=baseline_full,
         baseline_trailing=baseline_trailing,
         gate_books=gate_evidence,
         delta=delta,
         extended=False,
         b=b,
+        flow_cap=flow_cap,
     )
     final = initial
     extended = initial.outcome is Outcome.EXTEND
@@ -720,12 +763,27 @@ def simulate_proposal(
         # telemetry and TWAP cover only the actual three-day extension window.
         starts = (accept.observed_close, reject.observed_close, baseline.observed_close)
         raw_starts = (accept.spot, reject.spot, baseline.spot)
+        # Held exposure carries into the shifted window: the extension contest
+        # accumulator starts from the carried maker state, not from zero.
+        carried_q = {
+            book.name: (book.q_long, book.q_short)
+            for book in (accept_book, reject_book, baseline_book)
+        }
         for book in (accept_book, reject_book, baseline_book):
             book.events.clear()
         multiplier = Decimal(config.extension_flow_multiplier)
         _execute_organic_window(accept_book, truth=accept_truth, desired_contest=desired_accept * multiplier, seed=seed, proposal_id=proposal.proposal_id, salt=0x414343, config=config, extension=True)
         _execute_organic_window(reject_book, truth=reject_truth, desired_contest=desired_reject * multiplier, seed=seed, proposal_id=proposal.proposal_id, salt=0x52454A, config=config, extension=True)
         _execute_organic_window(baseline_book, truth=baseline_truth, desired_contest=baseline_floor * baseline_formation * multiplier, seed=seed, proposal_id=proposal.proposal_id // config.epoch_slate_size, salt=0x424153, config=config, extension=True)
+
+        def _extension_contest(book: ExecutedBook) -> Decimal:
+            return contest_capital(
+                book,
+                decision_window=config.decision_window,
+                initial_q_long=carried_q[book.name][0],
+                initial_q_short=carried_q[book.name][1],
+            )
+
         remaining_direct = sum(
             (
                 book.participants.get("manipulator").cash
@@ -745,14 +803,16 @@ def simulate_proposal(
             accept_truth=accept_truth,
             reject_truth=reject_truth,
             organic_pair_contest=min(
-                accept_book.contest_notional(), reject_book.contest_notional()
+                _extension_contest(accept_book), _extension_contest(reject_book)
             ),
             reuse_attacker_balance=True,
         )
         accept = _summary(accept_book, config, initial=starts[0], initial_quote=raw_starts[0])
         reject = _summary(reject_book, config, initial=starts[1], initial_quote=raw_starts[1])
         baseline = _summary(baseline_book, config, initial=starts[2], initial_quote=raw_starts[2])
-        baseline_contest = baseline_book.contest_notional()
+        contest_accept = _extension_contest(accept_book)
+        contest_reject = _extension_contest(reject_book)
+        baseline_contest = _extension_contest(baseline_book)
         baseline_valid = _book_valid(baseline, baseline_contest, baseline_floor, config, gate=False)
         baseline_full = baseline.full if baseline_valid else previous_baseline
         baseline_trailing = baseline.trailing if baseline_valid else previous_baseline
@@ -772,28 +832,26 @@ def simulate_proposal(
             v_min=v_min,
             accept=accept,
             reject=reject,
-            contest_accept=accept_book.contest_notional(),
-            contest_reject=reject_book.contest_notional(),
+            contest_accept=contest_accept,
+            contest_reject=contest_reject,
             baseline_full=baseline_full,
             baseline_trailing=baseline_trailing,
             gate_books=gate_evidence,
             delta=delta,
             extended=True,
             b=b,
+            flow_cap=flow_cap,
         )
-    contest_accept = accept_book.contest_notional()
-    contest_reject = reject_book.contest_notional()
     attack_cost = attack_cost_hat(liquidity, decision_window=config.decision_window)
     manip_floor, c_disp = _signed_manip_floor(
         b=b,
         accept_price=accept.full,
         reject_price=reject.full,
         delta=delta,
-        contest_notional=contest_accept + contest_reject,
+        contest_capital=contest_accept + contest_reject,
         flow_cap=flow_cap,
     )
     all_books = (accept_book, reject_book, baseline_book) + gate_ledgers
-    direct_books = (accept_book, reject_book)
     manipulator_flow = _role_notional(all_books, "manipulator")
     manipulator_deployed = sum(
         (event.cost + event.fee for book in all_books for event in book.events if event.role == "manipulator" and event.direction == "buy"),
@@ -833,6 +891,7 @@ def simulate_proposal(
         manipulator_displacement=displacement,
         informed_flow=_role_notional(all_books, "informed"),
         noise_flow=_role_notional(all_books, "noise"),
+        holder_flow=_role_notional(all_books, "holder"),
         arbitrage_flow=_role_notional(all_books, "arbitrage"),
         manipulator_flow=manipulator_flow,
         welfare_grade=grade.value,

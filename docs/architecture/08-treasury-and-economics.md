@@ -171,8 +171,12 @@ AttackCost̂(p) = F̂(p) · T_dec                         // USDC
   T_dec  = dec.window / 14,400 blocks-per-day           // = 3 days at default
   F̂(p)   = min( L̂(p)/2 ,  F̂_pub )  per day             // conservative minimum
   L̂(p)   = time-averaged effective POL depth of p's decision pair (2·b·ln 2 as seeded, from I-12 telemetry)
-          + non-POL contest notional over the decision window (the same measured
-            quantity graded against dec.v_min in step 5 — zero new telemetry)
+          + min( non-POL contest capital over the decision window
+                 ([04](04-markets-and-pricing.md) §7a: time-weighted marked net open interest —
+                  the same measure graded against dec.v_min in step 5; SQ-231 amendment:
+                  gross traded notional is manipulable by the attacker's own flow and no
+                  longer feeds the certificate),
+                 sec.flow_cap · (b_acc + b_rej) )       // the C_hold wash ceiling, now gate-bearing
   F̂_pub  = the published measured arbitrage-flow parameter (A-2 obligation,
             measured Phases 3–4); until published, F̂ = L̂/2.
 
@@ -201,13 +205,15 @@ pol.b(class, P)     = b_floor(class) · max(1, P / P_ref(class))
 
 Floors are the current defaults (*normative values: [13](13-parameters.md)*); the `pol.b` and δ slopes are **simulation-gated [VERIFY in Phase-0 calibration]** — the kernel guarantee below rests on the `v_min` term alone, so slope tuning cannot weaken it.
 
-**Why `v_min = 2·P` closes the rule identically.** If the proposal is decision-grade, measured contest notional ≥ `dec.v_min` ≥ 2P, so:
+**Why `v_min = 2·P` closes the rule identically.** If the proposal is decision-grade, measured **contest capital** ([04](04-markets-and-pricing.md) §7a) ≥ `dec.v_min` ≥ 2P, and the `sec.flow_cap` ceiling does not bind at exactly-grade organic depth (next paragraph), so:
 
 ```
 AttackCost̂ = 1.5 · L̂ ≥ 1.5 · (2·b·ln 2 + 2P) = 3P + 3·b·ln 2  >  3P   ∎
 ```
 
-i.e., every decision-grade, sizing-passing adoption satisfies `AttackCost̂ ≥ 3·InCapPrize` with a margin of `3·b·ln 2` that itself grows under the `pol.b` scaling. Proposals that cannot attract depth 2× their prize are rejected `SecuritySizing` — status-quo default, exactly the intended failure mode.
+i.e., every decision-grade, sizing-passing adoption satisfies `AttackCost̂ ≥ 3·InCapPrize` with a margin of `3·b·ln 2` that itself grows under the `pol.b` scaling. Proposals that cannot attract **held** depth 2× their prize are rejected `SecuritySizing` — status-quo default, exactly the intended failure mode. Since the SQ-231 amendment the 2P term is capital genuinely at risk through the window: supplying it as an attacker means holding net exposure the displacement-and-hold theory (§5.5, `C_hold`) already prices, so the certificate can no longer be self-funded by churn.
+
+**Ceiling non-bindingness (kernel-checked at the consuming engine).** The gate ceiling `sec.flow_cap · (b_acc + b_rej)` must not reject honest exactly-grade proposals: under the **normative `pol.b` seeding of this section** (`b = b_floor · max(1, P/P_ref)`), the binding ratio is `2P / (b_acc + b_rej) = P/b` — for `P ≤ P_ref` it is at most `P_ref/b_floor`, and for `P > P_ref` the scaling holds it constant at exactly `P_ref/b_floor` ≤ 6.7 across the §5.4 defaults table (PARAM/TREASURY/CODE 5.7, META 6.7). Any `sec.flow_cap ≥ 7` therefore leaves the identity intact; **7 is the row's hard minimum** (*normative bound: [13](13-parameters.md)*), and the Phase-0-calibrated value (sim-gated) sits above it. A book seeded at floor `b` while `v_min` carries the `2P` scaling (the §5.4(b) illustration as printed) is **not a configuration the normative seeding produces** — there the ratio can reach 8, which is why the illustration below also records its scaled-seeding form.
 
 ### 5.4 Worked recomputation at defaults (normative)
 
@@ -218,8 +224,9 @@ i.e., every decision-grade, sizing-passing adoption satisfies `AttackCost̂ ≥ 
 - Requirement 3P = 2,079,441 ≤ 2,204,208 ✔ — holds with margin 124,767 USDC (= 1.5 × 83,178 = 6.0%). Cap check: P = 693,147 ≤ AttackCost̂/3 = 734,736 ✔.
 
 **(b) The §30.2-equivalent TREASURY example.** Ask 200,000 at NAV 9,523,810:
-- `dec.v_min` = max(250,000, 400,000) = **400,000**; L̂ = 34,657 + 400,000 = 434,657; AttackCost̂ = **651,986**.
+- `dec.v_min` = max(250,000, 400,000) = **400,000**; at floor depth (a conservative illustration that under-states §5.3's own `pol.b` scaling) L̂ = 34,657 + 400,000 = 434,657; AttackCost̂ = **651,986**.
 - 3P = 600,000 ≤ 651,986 ✔ (margin 8.7%). Under the old flat defaults this identical proposal had AttackCost ≈ 51,986 vs required 600,000 — an 11.5× shortfall, now closed.
+- **Normative-seeding form (SQ-231 consistency note):** §5.3 scales `b = 25,000 · 200,000/142,329 ≈ 35,130` here, so L̂ = 48,700 + 400,000 = 448,700 and AttackCost̂ = 673,050 (margin 12.2%); the `sec.flow_cap` ceiling at its ×7 minimum is 7 · 70,260 = 491,820 ≥ 400,000 — not binding, per §5.3's non-bindingness bound. The floor-depth arithmetic above is kept as the conservative lower bound the identity already clears.
 
 **(c) PARAM at flat defaults (scaling not binding).** L̂ = 2 × 10,000 × ln 2 + 100,000 = 113,863; AttackCost̂ = 170,794; max passable envelope value = **56,931 USDC**. A PARAM delta whose certified envelope exceeds this must either attract more organic volume or fail sizing — the static-classification escape hatch of BE §13 is thereby bounded, not trusted.
 
@@ -227,7 +234,7 @@ i.e., every decision-grade, sizing-passing adoption satisfies `AttackCost̂ ≥ 
 
 ### 5.5 Honesty clause
 
-`AttackCost̂` is an *upper bound* estimate of the manipulation bleed (F̂·T bounds absorbed adverse flow, not realized loss per unit). The SF = 3 divisor, the conservative `min(·, F̂_pub)`, the requirement to hold displacement through full **and** trailing windows with convergence ([05](05-welfare-and-decision-engine.md)), and the `v_min` identity of §5.3 are the compensating margins. Because the gate is an upper bound, the engine also emits the finer *lower-bound* diagnostic **`ManipFloor̂ = C_disp + C_hold`** per decision ([05 §5.6](05-welfare-and-decision-engine.md)); it never gates in v1, but its published series is part of the same calibration obligation as F̂ — if `ManipFloor̂` persistently reads below `3·InCapPrize` for adopted proposals, δ and/or the `dec.v_min`/`pol.b` slopes MUST be tightened before caps rise. A-2 remains an **empirical** assumption: F̂ MUST be measured in Phases 3–4 and published before caps rise; deep-pocketed off-system attackers remain the residual (TM-18, [14](14-threat-model.md)).
+`AttackCost̂` is an *upper bound* estimate of the manipulation bleed (F̂·T bounds absorbed adverse flow, not realized loss per unit). The SF = 3 divisor, the conservative `min(·, F̂_pub)`, the requirement to hold displacement through full **and** trailing windows with convergence ([05](05-welfare-and-decision-engine.md)), the `v_min` identity of §5.3, and — since the SQ-231 amendment — the manipulation-resistant contest-capital input with its `sec.flow_cap` ceiling are the compensating margins. Because the gate is an upper bound, the engine also emits the finer *lower-bound* diagnostic **`ManipFloor̂ = C_disp + C_hold`** per decision ([05 §5.6](05-welfare-and-decision-engine.md)); it never gates in v1, but its published series is part of the same calibration obligation as F̂ — if `ManipFloor̂` persistently reads below `3·InCapPrize` for adopted proposals, δ and/or the `dec.v_min`/`pol.b` slopes MUST be tightened before caps rise. A-2 remains an **empirical** assumption: F̂ MUST be measured in Phases 3–4 and published before caps rise; deep-pocketed off-system attackers remain the residual (TM-18, [14](14-threat-model.md)).
 
 ---
 

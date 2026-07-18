@@ -26,22 +26,20 @@ SPEC.loader.exec_module(GATE)
 HEAD = "ab" * 20
 
 CORPUS_FAMILY_CONSUMERS = {
-    "decision_scenarios": (),
+    "contest_scenarios": ("market-core-twap-vectors",),
+    "decision_scenarios": ("decision-engine-reference-vectors",),
     "high_precision_corpus": ("fixed-reference-vectors",),
     "ledger_error_scenarios": ("ledger-core-reference-vectors",),
-    # This legacy family has no literal Rust consumer anywhere in crates/ or
-    # pallets/. Keep the fixture honest even though the review brief broadly
-    # describes the ledger families as consumed.
-    "ledger_scenarios": (),
+    "ledger_scenarios": ("ledger-core-reference-vectors",),
     "ledger_score_scenarios": ("ledger-core-reference-vectors",),
     "ledger_sequence_scenarios": ("ledger-core-reference-vectors",),
     "ledger_sweep_scenarios": ("ledger-pallet-reference-sweep",),
-    "lmsr_maker_example": (),
+    "lmsr_maker_example": ("fixed-reference-vectors",),
     "lmsr_vectors": ("fixed-reference-vectors",),
     "transcendental_corpus": ("fixed-reference-vectors",),
-    "treasury_scenarios": (),
-    "twap_scenarios": (),
-    "welfare_scenarios": (),
+    "treasury_scenarios": ("treasury-core-reference-vectors",),
+    "twap_scenarios": ("market-core-twap-vectors",),
+    "welfare_scenarios": ("welfare-core-reference-vectors",),
 }
 
 TEST_OUTPUTS = {
@@ -49,10 +47,22 @@ TEST_OUTPUTS = {
         0, stderr="Ran 26 tests in 0.123s\n\nOK\n"
     ),
     "fixed-reference-vectors": GATE.CommandResult(
-        0, stdout="test result: ok. 3 passed; 0 failed; 0 ignored\n"
+        0, stdout="test result: ok. 4 passed; 0 failed; 0 ignored\n"
     ),
     "ledger-core-reference-vectors": GATE.CommandResult(
-        0, stdout="test result: ok. 3 passed; 0 failed; 0 ignored\n"
+        0, stdout="test result: ok. 4 passed; 0 failed; 0 ignored\n"
+    ),
+    "decision-engine-reference-vectors": GATE.CommandResult(
+        0, stdout="test result: ok. 1 passed; 0 failed; 0 ignored\n"
+    ),
+    "welfare-core-reference-vectors": GATE.CommandResult(
+        0, stdout="test result: ok. 1 passed; 0 failed; 0 ignored\n"
+    ),
+    "treasury-core-reference-vectors": GATE.CommandResult(
+        0, stdout="test result: ok. 1 passed; 0 failed; 0 ignored\n"
+    ),
+    "market-core-twap-vectors": GATE.CommandResult(
+        0, stdout="test result: ok. 2 passed; 0 failed; 0 ignored\n"
     ),
     "ledger-pallet-core-differential": GATE.CommandResult(
         0, stdout="test result: ok. 1 passed; 0 failed; 0 ignored\n"
@@ -275,20 +285,20 @@ class PhaseGateTestCase(unittest.TestCase):
 
 
 class ReportAndRunnerTests(PhaseGateTestCase):
-    def test_report_schema_exit_code_sim_digest_and_partial_corpus(self) -> None:
+    def test_report_schema_full_pass_exit_zero_and_sim_digest(self) -> None:
         raw = self.write_sim(valid_sim_document())
         runner = StubRunner()
 
         code, report, stdout, stderr = self.invoke(runner)
 
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertIn("phase0_exit: false", stdout)
+        self.assertIn("phase0_exit: true", stdout)
         self.assertEqual(report["schema"], "bleavit.phase0-evidence.v1")
         self.assertEqual(report["git_commit"], HEAD)
         self.assertIs(report["tree_clean"], True)
         self.assertEqual(report["sim_evidence_sha256"], hashlib.sha256(raw).hexdigest())
-        self.assertFalse(report["phase0_exit"])
+        self.assertTrue(report["phase0_exit"])
 
     def test_every_test_leg_records_a_count_and_floor(self) -> None:
         _code, report, _stdout, _stderr = self.invoke(StubRunner())
@@ -296,8 +306,12 @@ class ReportAndRunnerTests(PhaseGateTestCase):
         legs = report["criteria"]["reference-equivalence"]["legs"]
         expected = {
             "python-reference-model": (26, 26),
-            "fixed-reference-vectors": (3, 3),
-            "ledger-core-reference-vectors": (3, 3),
+            "fixed-reference-vectors": (4, 4),
+            "ledger-core-reference-vectors": (4, 4),
+            "decision-engine-reference-vectors": (1, 1),
+            "welfare-core-reference-vectors": (1, 1),
+            "treasury-core-reference-vectors": (1, 1),
+            "market-core-twap-vectors": (2, 2),
             "ledger-pallet-core-differential": (1, 1),
             "ledger-pallet-reference-sweep": (1, 1),
             "fixed-full-sweep": (1, 1),
@@ -332,12 +346,12 @@ class ReportAndRunnerTests(PhaseGateTestCase):
             {"reference-equivalence", "sim-false-pass", "calibration-published"},
         )
         self.assertEqual(
-            report["criteria"]["reference-equivalence"]["status"], "pass-partial"
+            report["criteria"]["reference-equivalence"]["status"], "pass"
         )
         self.assertEqual(report["criteria"]["sim-false-pass"]["status"], "pass")
         self.assertEqual(report["criteria"]["calibration-published"]["status"], "pass")
         legs = report["criteria"]["reference-equivalence"]["legs"]
-        self.assertEqual(len(legs), 9)
+        self.assertEqual(len(legs), 13)
         for leg in legs:
             required = {"id", "command", "exit_code", "status"}
             self.assertTrue(required <= set(leg))
@@ -352,7 +366,7 @@ class ReportAndRunnerTests(PhaseGateTestCase):
         self.assertEqual(code, 1)
         self.assertEqual(stderr, "")
         self.assertEqual(
-            report["criteria"]["reference-equivalence"]["status"], "pass-partial"
+            report["criteria"]["reference-equivalence"]["status"], "pass"
         )
         self.assertEqual(report["criteria"]["sim-false-pass"]["status"], "pending-s4")
         self.assertEqual(
@@ -373,12 +387,12 @@ class ReportAndRunnerTests(PhaseGateTestCase):
         self.assertNotIn("pending S4", report["criteria"]["sim-false-pass"]["detail"])
         self.assertFalse(report["phase0_exit"])
 
-    def test_reduced_reference_is_partial_and_skips_sweep_but_overall_exit_one(self) -> None:
+    def test_reduced_reference_is_nonqualifying_and_skips_sweep_but_overall_exit_one(self) -> None:
         code, report, _stdout, _stderr = self.invoke(StubRunner(), reduced=True)
 
         self.assertEqual(code, 1)
         reference = report["criteria"]["reference-equivalence"]
-        self.assertEqual(reference["status"], "pass-partial")
+        self.assertEqual(reference["status"], "pass-reduced")
         self.assertEqual(
             [(leg["id"], leg["status"], leg["exit_code"]) for leg in reference["legs"][-2:]],
             [
@@ -467,8 +481,8 @@ class ReportAndRunnerTests(PhaseGateTestCase):
                 runner, reduced=False, sweep_dir=False
             )
 
-        self.assertEqual(code, 1)
-        self.assertFalse(report["phase0_exit"])
+        self.assertEqual(code, 0)
+        self.assertTrue(report["phase0_exit"])
         commands = [call["command"] for call in runner.calls]
         self.assertEqual(commands[0], ("git", "rev-parse", "HEAD"))
         self.assertIn(
@@ -532,7 +546,7 @@ class TestExecutionCountTests(PhaseGateTestCase):
             if leg.identifier == "fixed-reference-vectors"
         )
         output = (
-            "test result: ok. 1 passed; 0 failed; 0 ignored\n"
+            "test result: ok. 2 passed; 0 failed; 0 ignored\n"
             "Doc-tests futarchy_fixed\n"
             "test result: ok. 2 passed; 0 failed; 0 ignored\n"
         )
@@ -541,8 +555,8 @@ class TestExecutionCountTests(PhaseGateTestCase):
         row = GATE.execute_leg(self.root, leg, runner)
 
         self.assertEqual(row["status"], "pass")
-        self.assertEqual(row["tests_executed"], 3)
-        self.assertEqual(row["minimum_tests"], 3)
+        self.assertEqual(row["tests_executed"], 4)
+        self.assertEqual(row["minimum_tests"], 4)
         self.assertTrue(runner.calls[-1]["capture_output"])
 
     def test_unittest_count_is_parsed_only_from_stderr(self) -> None:
@@ -700,7 +714,7 @@ class TreeCleanlinessTests(PhaseGateTestCase):
 
         code, report, _stdout, stderr = self.invoke(runner)
 
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
         self.assertIs(report["tree_clean"], True)
 
@@ -810,7 +824,7 @@ class CorpusFamilyCoverageTests(PhaseGateTestCase):
         known = frozenset(leg.identifier for leg in (*ordinary, sweep))
         return GATE.load_corpus_family_coverage(self.vectors, known)
 
-    def test_actual_family_inventory_is_exhaustively_attested_or_unattested(self) -> None:
+    def test_actual_family_inventory_is_exhaustively_attested(self) -> None:
         coverage = self.coverage()
 
         expected_attested = {
@@ -818,23 +832,20 @@ class CorpusFamilyCoverageTests(PhaseGateTestCase):
             for family, consumers in CORPUS_FAMILY_CONSUMERS.items()
             if consumers
         }
-        expected_unattested = sorted(
-            family
-            for family, consumers in CORPUS_FAMILY_CONSUMERS.items()
-            if not consumers
-        )
         self.assertEqual(coverage["attested"], expected_attested)
-        self.assertEqual(coverage["unattested"], expected_unattested)
-        self.assertIn("ledger_scenarios", coverage["unattested"])
+        # G0 criterion A (SQ-244): every corpus family carries a Rust
+        # differential consumer; an unattested family would cap the criterion
+        # at pass-partial again.
+        self.assertEqual(coverage["unattested"], [])
 
-    def test_report_lists_attested_bindings_and_unattested_debt(self) -> None:
+    def test_report_lists_attested_bindings_and_full_pass(self) -> None:
         code, report, _stdout, _stderr = self.invoke(StubRunner())
 
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         reference = report["criteria"]["reference-equivalence"]
-        self.assertEqual(reference["status"], "pass-partial")
+        self.assertEqual(reference["status"], "pass")
         self.assertEqual(reference["corpus_families"], self.coverage())
-        self.assertFalse(report["phase0_exit"])
+        self.assertTrue(report["phase0_exit"])
 
     def test_unknown_family_in_corpus_is_a_loud_drift_error(self) -> None:
         document = corpus_fixture()

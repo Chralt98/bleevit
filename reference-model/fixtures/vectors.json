@@ -1,4 +1,93 @@
 {
+  "contest_scenarios": [
+    {
+      "contest_capital_0_20": "0.000000",
+      "inputs": {
+        "observations": [
+          {
+            "block": 10,
+            "price_long": "0.5",
+            "q_long": "0",
+            "q_short": "0"
+          },
+          {
+            "block": 20,
+            "price_long": "0.5",
+            "q_long": "0",
+            "q_short": "0"
+          }
+        ],
+        "q_pol_long": "0",
+        "q_pol_short": "0"
+      },
+      "name": "wash_round_trip_zero",
+      "recorded": [
+        "0.000000",
+        "0.000000"
+      ]
+    },
+    {
+      "contest_capital_0_30": "524.979187",
+      "contest_capital_10_30": "524.979187",
+      "cumulative_at_30": "15749.375610",
+      "inputs": {
+        "observations": [
+          {
+            "block": 10,
+            "price_long": "0.524979187478939986099193182604",
+            "q_long": "1000",
+            "q_short": "0"
+          },
+          {
+            "block": 20,
+            "price_long": "0.524979187478939986099193182604",
+            "q_long": "1000",
+            "q_short": "0"
+          },
+          {
+            "block": 30,
+            "price_long": "0.524979187478939986099193182604",
+            "q_long": "1000",
+            "q_short": "0"
+          }
+        ],
+        "q_pol_long": "0",
+        "q_pol_short": "0"
+      },
+      "name": "held_exposure_marks_capital_times_time",
+      "recorded": [
+        "524.979187",
+        "524.979187",
+        "524.979187"
+      ]
+    },
+    {
+      "contest_capital_0_20": "125.000000",
+      "inputs": {
+        "observations": [
+          {
+            "block": 10,
+            "price_long": "0.5",
+            "q_long": "1000",
+            "q_short": "1000"
+          },
+          {
+            "block": 20,
+            "price_long": "0.5",
+            "q_long": "1500",
+            "q_short": "1000"
+          }
+        ],
+        "q_pol_long": "1000",
+        "q_pol_short": "1000"
+      },
+      "name": "pol_seeded_positions_excluded",
+      "recorded": [
+        "0.000000",
+        "250.000000"
+      ]
+    }
+  ],
   "decision_scenarios": [
     {
       "inputs": {
@@ -214,6 +303,56 @@
       "name": "rate_limited",
       "outcome": "Reject",
       "reason": "RateLimited"
+    },
+    {
+      "inputs": {
+        "accept_full": "0.56",
+        "ask": "200000",
+        "b_accept": "25000",
+        "b_reject": "25000",
+        "contest_capital": "400000",
+        "delta": "0.05",
+        "flow_cap": "8",
+        "pol_depth": "34657.359028",
+        "proposal_class": "Treasury",
+        "reject_full_effective": "0.50"
+      },
+      "name": "adopt_contest_capital_l_hat",
+      "outcome": "Adopt"
+    },
+    {
+      "inputs": {
+        "accept_full": "0.56",
+        "ask": "200000",
+        "b_accept": "25000",
+        "b_reject": "25000",
+        "contest_capital": "100000",
+        "delta": "0.05",
+        "flow_cap": "8",
+        "pol_depth": "34657.359028",
+        "proposal_class": "Treasury",
+        "reject_full_effective": "0.50"
+      },
+      "name": "security_sizing_contest_shortfall",
+      "outcome": "Reject",
+      "reason": "SecuritySizing"
+    },
+    {
+      "inputs": {
+        "accept_full": "0.56",
+        "ask": "200000",
+        "b_accept": "25000",
+        "b_reject": "25000",
+        "contest_capital": "1000000000",
+        "delta": "0.05",
+        "flow_cap": "7",
+        "pol_depth": "34657.359028",
+        "proposal_class": "Treasury",
+        "reject_full_effective": "0.50"
+      },
+      "name": "security_sizing_flow_cap_ceiling",
+      "outcome": "Reject",
+      "reason": "SecuritySizing"
     }
   ],
   "high_precision_corpus": {
@@ -80802,6 +80941,30 @@
       "name": "scaled_defaults",
       "p_ref": "341588.8308335967185650339272874905940845300080616153152472408005696036173181816829363517996197851212",
       "pol_b": "121751.1119977449864418454401"
+    },
+    {
+      "attack_cost": "651986.038542",
+      "inputs": {
+        "b_accept": "25000",
+        "b_reject": "25000",
+        "contest_capital": "400000",
+        "flow_cap": "8",
+        "pol_depth": "34657.359028"
+      },
+      "l_hat": "434657.359028",
+      "name": "l_hat_contest_within_ceiling"
+    },
+    {
+      "attack_cost": "576986.038542",
+      "inputs": {
+        "b_accept": "25000",
+        "b_reject": "25000",
+        "contest_capital": "1000000000",
+        "flow_cap": "7",
+        "pol_depth": "34657.359028"
+      },
+      "l_hat": "384657.359028",
+      "name": "l_hat_flow_cap_ceiling_binds"
     }
   ],
   "twap_scenarios": [
@@ -80906,7 +81069,7 @@
         "S_daily": "0.831250000",
         "W": "0.000000000"
       },
-      "settlement_with_self": "0.000000000"
+      "settlement_with_self": "0.000000001"
     }
   ]
 }

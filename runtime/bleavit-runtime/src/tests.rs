@@ -284,7 +284,7 @@ fn seed_decision_grade_market(
     let observations = window
         .checked_div(interval)
         .ok_or(DispatchError::Other("observation coverage"))?;
-    let contest_notional_blocks = contest
+    let contest_capital_blocks = contest
         .checked_mul(Balance::from(window))
         .ok_or(DispatchError::Other("contest accumulator"))?;
     let windows =
@@ -295,7 +295,7 @@ fn seed_decision_grade_market(
                 end,
                 observations,
                 stale_events: 0,
-                contest_notional_blocks,
+                contest_capital_blocks,
                 contest_accrued_until: end,
                 contest_valid: true,
                 close_spot: Some(quote),
@@ -522,7 +522,7 @@ fn seed_two_window_baseline(
                 end: early_end,
                 observations,
                 stale_events: 0,
-                contest_notional_blocks: contest_blocks,
+                contest_capital_blocks: contest_blocks,
                 contest_accrued_until: early_end,
                 contest_valid: true,
                 close_spot: Some(early_quote),
@@ -534,7 +534,7 @@ fn seed_two_window_baseline(
                 end: late_end,
                 observations,
                 stale_events: 0,
-                contest_notional_blocks: contest_blocks,
+                contest_capital_blocks: contest_blocks,
                 contest_accrued_until: late_end,
                 contest_valid: true,
                 close_spot: Some(late_quote),
@@ -9838,7 +9838,7 @@ fn view_quote_and_buy_share_closed_registered_window_preflight() {
                 end: WINDOW_END,
                 observations: 0,
                 stale_events: 0,
-                contest_notional_blocks: 0,
+                contest_capital_blocks: 0,
                 contest_accrued_until: WINDOW_END,
                 contest_valid: true,
                 close_spot: None,
@@ -10775,7 +10775,7 @@ fn view_decision_stats_pins_effective_floor_pair_minima_gates_and_convergence() 
             pallet_market::DecisionWindows::<Runtime>::mutate(market, |windows| {
                 if let Some(record) = windows.iter_mut().find(|record| record.end == end) {
                     record.observations = observations;
-                    record.contest_notional_blocks =
+                    record.contest_capital_blocks =
                         volume.saturating_mul(Balance::from(params.decision_window));
                     record.close_spot = Some(close_spot);
                     true

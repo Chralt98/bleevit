@@ -53,19 +53,20 @@ DOC13_SECTION1_HEADER = (
 )
 CORPUS_METADATA_KEYS = frozenset(("schema", "precision"))
 CORPUS_FAMILY_BINDINGS: Mapping[str, tuple[str, ...] | None] = {
-    "decision_scenarios": None,
+    "contest_scenarios": ("market-core-twap-vectors",),
+    "decision_scenarios": ("decision-engine-reference-vectors",),
     "high_precision_corpus": ("fixed-reference-vectors",),
     "ledger_error_scenarios": ("ledger-core-reference-vectors",),
-    "ledger_scenarios": None,
+    "ledger_scenarios": ("ledger-core-reference-vectors",),
     "ledger_score_scenarios": ("ledger-core-reference-vectors",),
     "ledger_sequence_scenarios": ("ledger-core-reference-vectors",),
     "ledger_sweep_scenarios": ("ledger-pallet-reference-sweep",),
-    "lmsr_maker_example": None,
+    "lmsr_maker_example": ("fixed-reference-vectors",),
     "lmsr_vectors": ("fixed-reference-vectors",),
     "transcendental_corpus": ("fixed-reference-vectors",),
-    "treasury_scenarios": None,
-    "twap_scenarios": None,
-    "welfare_scenarios": None,
+    "treasury_scenarios": ("treasury-core-reference-vectors",),
+    "twap_scenarios": ("market-core-twap-vectors",),
+    "welfare_scenarios": ("welfare-core-reference-vectors",),
 }
 
 
@@ -457,7 +458,7 @@ def reference_legs(sweep_dir: Path) -> tuple[list[CommandLeg], CommandLeg, Comma
                 "reference_model_vectors",
             ),
             test_output="cargo",
-            minimum_tests=3,
+            minimum_tests=4,
         ),
         CommandLeg(
             "ledger-core-reference-vectors",
@@ -472,7 +473,67 @@ def reference_legs(sweep_dir: Path) -> tuple[list[CommandLeg], CommandLeg, Comma
                 "differential_vectors",
             ),
             test_output="cargo",
-            minimum_tests=3,
+            minimum_tests=4,
+        ),
+        CommandLeg(
+            "decision-engine-reference-vectors",
+            (
+                "cargo",
+                "test",
+                "-p",
+                "epoch-core",
+                "--release",
+                "--locked",
+                "--test",
+                "decision_vectors",
+            ),
+            test_output="cargo",
+            minimum_tests=1,
+        ),
+        CommandLeg(
+            "welfare-core-reference-vectors",
+            (
+                "cargo",
+                "test",
+                "-p",
+                "welfare-core",
+                "--release",
+                "--locked",
+                "--test",
+                "welfare_vectors",
+            ),
+            test_output="cargo",
+            minimum_tests=1,
+        ),
+        CommandLeg(
+            "treasury-core-reference-vectors",
+            (
+                "cargo",
+                "test",
+                "-p",
+                "futarchy-treasury-core",
+                "--release",
+                "--locked",
+                "--test",
+                "treasury_vectors",
+            ),
+            test_output="cargo",
+            minimum_tests=1,
+        ),
+        CommandLeg(
+            "market-core-twap-vectors",
+            (
+                "cargo",
+                "test",
+                "-p",
+                "market-core",
+                "--release",
+                "--locked",
+                "--test",
+                "twap_vectors",
+            ),
+            test_output="cargo",
+            minimum_tests=2,
         ),
         CommandLeg(
             "ledger-pallet-core-differential",
@@ -599,9 +660,13 @@ def load_corpus_family_coverage(
         used_consumer_legs.update(binding)
 
     expected_consumer_legs = {
+        "decision-engine-reference-vectors",
         "fixed-reference-vectors",
         "ledger-core-reference-vectors",
         "ledger-pallet-reference-sweep",
+        "market-core-twap-vectors",
+        "treasury-core-reference-vectors",
+        "welfare-core-reference-vectors",
     }
     if used_consumer_legs != expected_consumer_legs:
         raise PhaseGateError(

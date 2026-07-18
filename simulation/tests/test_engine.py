@@ -3,7 +3,7 @@ from decimal import Decimal
 import unittest
 
 from bleavit_reference_model.decision import Outcome
-from bleavit_reference_model.treasury import in_cap_prize
+from bleavit_reference_model.treasury import LN2, in_cap_prize, l_hat
 from bleavit_simulation.config import DEFAULT_SEED, SimulationConfig
 from bleavit_simulation.engine import (
     _extend_gate_books,
@@ -12,11 +12,26 @@ from bleavit_simulation.engine import (
     _stale_decision,
     simulate_proposal,
 )
+from bleavit_simulation.market import (
+    ExecutedBook,
+    contest_capital,
+    execute_turnover,
+)
 from bleavit_simulation.proposals import generate_proposal_with_config
 
 
 class ExecutedEngineTests(unittest.TestCase):
-    def test_known_wrong_pass_replay_preserves_thin_market_capture_seam(self):
+    def test_known_thin_book_flip_now_requires_genuinely_held_capital(self):
+        """SQ-231 regression on the pre-amendment thin-capture flip fixture.
+
+        Proposal 57 was the committed wrong-PASS replay: attack-generated
+        gross flow promoted a below-v_min pair and self-funded the step-9
+        certificate. Under the contest-capital measure the same flip still
+        exists at a high enough budget, but the promotion is backed by net
+        exposure the attacker genuinely holds through the window - the
+        realized liquidation loss exceeds 3*InCapPrize instead of the old
+        near-free churn - and L-hat obeys the sec.flow_cap ceiling.
+        """
         config = SimulationConfig(proposal_count=200)
         proposal = generate_proposal_with_config(DEFAULT_SEED, 57, config)
         zero = simulate_proposal(
@@ -36,7 +51,48 @@ class ExecutedEngineTests(unittest.TestCase):
         )
         self.assertGreater(attacked.manipulator_flow, 0)
         self.assertGreater(attacked.arbitrage_flow, 0)
-        self.assertGreater(attacked.attack_cost, zero.attack_cost)
+        # The certificate no longer self-funds: flipping this proposal costs
+        # the attacker more in realized losses than the 3P certificate bound.
+        self.assertGreater(
+            attacked.realized_manipulation_spend,
+            Decimal(3) * attacked.prize,
+        )
+        # L-hat is capped: POL depth + sec.flow_cap * (b_acc + b_rej).
+        flow_cap = Decimal(config.diagnostic_probe_flow_cap)
+        self.assertLessEqual(
+            attacked.measured_liquidity,
+            Decimal(2) * attacked.b * LN2 + flow_cap * Decimal(2) * attacked.b,
+        )
+
+    def test_wash_churn_no_longer_buys_the_certificate(self):
+        """A pure-churn manipulator adds gross flow but zero contest capital."""
+        config = SimulationConfig(proposal_count=1)
+        book = ExecutedBook("churn", Decimal("10000"))
+        book.account("manipulator", Decimal("500000"))
+        for block in (1, 7_201, 14_401):
+            execute_turnover(
+                book,
+                "manipulator",
+                gross_notional=Decimal("120000"),
+                block=block,
+                role="manipulator",
+                first_side="long",
+            )
+        self.assertGreater(book.contest_notional({"manipulator"}), Decimal("100000"))
+        self.assertEqual(
+            contest_capital(book, decision_window=config.decision_window),
+            Decimal(0),
+        )
+        self.assertEqual(
+            l_hat(
+                Decimal(2) * book.b * LN2,
+                contest_capital(book, decision_window=config.decision_window),
+                Decimal(config.diagnostic_probe_flow_cap),
+                book.b,
+                book.b,
+            ),
+            Decimal(2) * book.b * LN2,
+        )
 
     def test_real_gate_books_reach_both_ordered_vetoes(self):
         config = SimulationConfig(proposal_count=1)
@@ -132,7 +188,7 @@ class ExecutedEngineTests(unittest.TestCase):
             accept_price=Decimal("0.45"),
             reject_price=Decimal("0.58"),
             delta=Decimal("0.025"),
-            contest_notional=Decimal("500000"),
+            contest_capital=Decimal("500000"),
             flow_cap=Decimal(20),
         )
         self.assertGreater(value, 0)

@@ -27,10 +27,11 @@ python3 tools/phase-gates/check-phase0-exit.py \
 ```
 
 Reduced mode records both full-sweep legs as `skipped`, caps reference equivalence
-at a non-qualifying status, sets `phase0_exit` to false, and exits 1. While corpus
-families remain unbound, `pass-partial` takes precedence over `pass-reduced`; once
-all families are bound, a reduced run reports `pass-reduced`. All other incomplete,
-pending-S4, or failed criteria also exit 1; setup/tool failures exit 2.
+at a non-qualifying status, sets `phase0_exit` to false, and exits 1. Should a
+corpus family ever lose its Rust consumer binding, `pass-partial` takes precedence
+over `pass-reduced`; with every family bound (the current state), a reduced run
+reports `pass-reduced`. All other incomplete, pending-S4, or failed criteria also
+exit 1; setup/tool failures exit 2.
 
 The evidence-producing path refuses any tracked or untracked tree change before
 the legs run and re-checks after they finish. Only the resolved report, supplied
@@ -53,26 +54,37 @@ The exact Rust differential commands recorded by the checker are:
 ```sh
 cargo test -p futarchy-fixed --release --locked --lib reference_model_vectors
 cargo test -p conditional-ledger-core --release --locked --test differential_vectors
+cargo test -p epoch-core --release --locked --test decision_vectors
+cargo test -p welfare-core --release --locked --test welfare_vectors
+cargo test -p futarchy-treasury-core --release --locked --test treasury_vectors
+cargo test -p market-core --release --locked --test twap_vectors
 cargo test -p pallet-conditional-ledger --release --locked differential_matches_frame_free_core
 cargo test -p pallet-conditional-ledger --release --locked generated_sweep_vectors_match_real_pallet_housekeeping
 BLEAVIT_SWEEP_DIR=<dir> BLEAVIT_SWEEP_REQUIRE_FULL=1 cargo test -p futarchy-fixed --release --locked --test sweep -- --ignored --nocapture
 ```
 
 Test-command success is not enough: the checker captures output and requires
-positive executed-test floors (Python reference model 26; fixed vectors 3; ledger
-core vectors 3; each pallet differential 1; full sweep 1). Every test leg records
+positive executed-test floors (Python reference model 26; fixed vectors 4; ledger
+core vectors 4; decision/welfare/treasury vectors 1 each; market TWAP+contest
+vectors 2; each pallet differential 1; full sweep 1). Every test leg records
 `tests_executed`; missing output, a zero-test success, or a floor regression fails
 the leg.
 
-The vector corpus family mapping is exhaustive. Currently Rust-attested families
-are `lmsr_vectors`, `high_precision_corpus`, `transcendental_corpus`,
-`ledger_error_scenarios`, `ledger_score_scenarios`,
-`ledger_sequence_scenarios`, and `ledger_sweep_scenarios`. The following actual
-families have no Rust consumer and therefore cap criterion A at `pass-partial`:
-`decision_scenarios`, `ledger_scenarios`, `lmsr_maker_example`,
-`treasury_scenarios`, `twap_scenarios`, and `welfare_scenarios`. Their owning
-pallet milestones carry the differential-suite debt in `PLAN.md`; this gate only
-reports it and fails closed until those suites land.
+The vector corpus family mapping is exhaustive, and every actual family is
+Rust-attested (G0 criterion A, SQ-244): `lmsr_vectors`, `lmsr_maker_example`,
+`high_precision_corpus`, and `transcendental_corpus` bind to the futarchy-fixed
+leg; `ledger_scenarios`, `ledger_error_scenarios`, `ledger_score_scenarios`, and
+`ledger_sequence_scenarios` to the ledger-core leg; `ledger_sweep_scenarios` to
+the pallet sweep; `decision_scenarios` to the epoch-core decision replay;
+`welfare_scenarios` to the welfare-core grid-exact replay; `treasury_scenarios`
+to the treasury-core replay; and `twap_scenarios` plus `contest_scenarios` to the
+market-core accumulator replays. A family losing its consumer caps criterion A at
+`pass-partial` again; an unknown or renamed family is a loud drift error. Two
+decision rows and both settlement-score welfare rows currently pin documented
+spec-vs-implementation divergences inside their suites (see the KNOWN DIVERGENCE
+comments in `crates/epoch-core/tests/decision_vectors.rs` and
+`crates/welfare-core/tests/welfare_vectors.rs`); the pins are exact and
+self-destruct on any behavioral change.
 
 S4 owns production of `bleavit.sim-calibration.v1`. G0 only freezes and validates
 that consumer schema; its `git_commit` must equal the repository HEAD checked by

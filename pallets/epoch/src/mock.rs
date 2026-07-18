@@ -283,7 +283,7 @@ parameter_types! {
     pub static SpotOverrides: Vec<(MarketId, FixedU64)> = Vec::new();
     pub static MeasuredDepth: Balance = 1_000_000_000_000;
     pub static PublishedFlow: Option<Balance> = None;
-    pub static SecondInsufficiency: bool = false;
+    pub static WelfareInvalidMarkets: Vec<MarketId> = Vec::new();
     pub static OpenDispute: bool = false;
     pub static GuardianHold: bool = false;
     pub static DeadManEngaged: bool = false;
@@ -413,8 +413,25 @@ impl MarketAccess<AccountId32> for TestMarket {
         PublishedFlow::get()
     }
 
-    fn second_insufficiency(_pid: ProposalId) -> bool {
-        SecondInsufficiency::get()
+    fn welfare_grade(
+        market: MarketId,
+        end: BlockNumber,
+        class: ProposalClass,
+        params: &CoreEpochParams,
+    ) -> WelfareGrade {
+        // Faithful to the runtime partition: an unavailable/never-gradable
+        // book (or an explicit override) is Invalid; an ungraded-but-readable
+        // book models the remediable shortfalls (Insufficient).
+        if WelfareInvalidMarkets::get().contains(&market)
+            || UnavailableMarkets::get().contains(&market)
+        {
+            return WelfareGrade::Invalid;
+        }
+        if Self::decision_grade(market, end, BookRole::Decision, class, params) {
+            WelfareGrade::Ok
+        } else {
+            WelfareGrade::Insufficient
+        }
     }
 
     fn previous_settled_baseline_twap(_epoch: EpochId) -> Option<FixedU64> {
@@ -820,7 +837,7 @@ pub fn reset_doubles() {
     SpotOverrides::set(Vec::new());
     MeasuredDepth::set(1_000_000_000_000);
     PublishedFlow::set(None);
-    SecondInsufficiency::set(false);
+    WelfareInvalidMarkets::set(Vec::new());
     OpenDispute::set(false);
     GuardianHold::set(false);
     DeadManEngaged::set(false);

@@ -333,11 +333,11 @@ fn run_decision_seam_differential(case: DifferentialDecisionCase) {
             baseline_trailing: FixedU64(500_000_000),
             accept_spot: FixedU64(600_000_000),
             reject_spot: FixedU64(500_000_000),
-            welfare_grade_ok: true,
+            welfare_grade: WelfareGrade::Ok,
             baseline_grade_ok: true,
             previous_settled_baseline_twap: None,
-            welfare_second_insufficient: false,
-            gate_grade_ok: true,
+            survival_grade_ok: true,
+            security_grade_ok: true,
             gate_twaps: books.gates.map(|_| [FixedU64(0); 4]),
             measured_depth: MeasuredDepth::get(),
             published_flow_per_day: PublishedFlow::get(),
@@ -349,7 +349,7 @@ fn run_decision_seam_differential(case: DifferentialDecisionCase) {
             DifferentialDecisionCase::Adopt => {}
             DifferentialDecisionCase::Extend => {
                 MarketGrade::set(false);
-                input.welfare_grade_ok = false;
+                input.welfare_grade = WelfareGrade::Insufficient;
                 input.baseline_grade_ok = false;
             }
             DifferentialDecisionCase::GateVeto => {
@@ -2023,6 +2023,91 @@ fn gate_veto_precedes_a_passing_welfare_margin_i14() {
         assert!(!SeamCalls::get()
             .iter()
             .any(|call| matches!(call, SeamCall::Enqueue { .. })));
+    });
+}
+
+#[test]
+fn survival_veto_precedes_security_gate_invalidity_and_keeps_the_intake_bond() {
+    // 05 §5.4 steps 3-4 run per gate: Survival's validity, then Survival's
+    // veto, then Security's validity — so a Survival veto is reported even
+    // when the Security gate books are invalid. The distinction is economic:
+    // NotDecisionGrade slashes 10% of the intake bond (06 §4); a gate veto
+    // never does.
+    new_test_ext().execute_with(|| {
+        let books = markets(1, 0, true);
+        let gates = books.gates.expect("code proposal has gates");
+        UngradedMarkets::set(vec![gates[2], gates[3]]);
+        TwapOverrides::set(vec![
+            (gates[0], FixedU64(100_000_000)),
+            (gates[1], FixedU64(100_000_000)),
+        ]);
+        assert_ok!(Epoch::seed(decision_state(1, ProposalClass::Code)));
+        assert_ok!(Epoch::decide(RuntimeOrigin::signed(keeper()), 1));
+        assert_eq!(
+            Epoch::epoch_state().proposals[0].decision,
+            Some(DecisionOutcome::Reject(RejectReason::GateVetoSurvival))
+        );
+        assert!(
+            !System::events().iter().any(|record| matches!(
+                record.event,
+                RuntimeEvent::Epoch(Event::IntakeSlashed { .. })
+            )),
+            "a gate veto must not slash the intake bond"
+        );
+    });
+}
+
+#[test]
+fn survival_gate_invalidity_rejects_not_decision_grade_and_slashes_the_bond() {
+    // The step-3 counterpart: an invalid gate book with no preceding veto is
+    // Reject(NotDecisionGrade), which slashes 10% of the intake bond (06 §4).
+    new_test_ext().execute_with(|| {
+        let books = markets(1, 0, true);
+        let gates = books.gates.expect("code proposal has gates");
+        UngradedMarkets::set(vec![gates[0]]);
+        assert_ok!(Epoch::seed(decision_state(1, ProposalClass::Code)));
+        assert_ok!(Epoch::decide(RuntimeOrigin::signed(keeper()), 1));
+        assert_eq!(
+            Epoch::epoch_state().proposals[0].decision,
+            Some(DecisionOutcome::Reject(RejectReason::NotDecisionGrade))
+        );
+        assert!(System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::Epoch(Event::IntakeSlashed {
+                pid: 1,
+                reason: RejectReason::NotDecisionGrade,
+                amount: 1,
+            })
+        )));
+    });
+}
+
+#[test]
+fn first_pass_invalid_welfare_book_rejects_instead_of_extending() {
+    // 05 §5.4 step 5: only Grade::Insufficient may spend the single shared
+    // extension budget. A first-pass Invalid welfare book (sanity band, POL
+    // floor/undisturbed, second stale event, non-convergence) rejects with
+    // NotDecisionGrade immediately — and therefore slashes (06 §4) — instead
+    // of extending.
+    new_test_ext().execute_with(|| {
+        let books = markets(1, 0, false);
+        WelfareInvalidMarkets::set(vec![books.accept]);
+        assert_ok!(Epoch::seed(decision_state(1, ProposalClass::Param)));
+        assert_ok!(Epoch::decide(RuntimeOrigin::signed(keeper()), 1));
+        let proposal = &Epoch::epoch_state().proposals[0];
+        assert_eq!(
+            proposal.decision,
+            Some(DecisionOutcome::Reject(RejectReason::NotDecisionGrade))
+        );
+        assert!(!proposal.extended, "an Invalid grade must never extend");
+        assert!(System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::Epoch(Event::IntakeSlashed {
+                pid: 1,
+                reason: RejectReason::NotDecisionGrade,
+                amount: 1,
+            })
+        )));
     });
 }
 

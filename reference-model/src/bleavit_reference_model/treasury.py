@@ -36,6 +36,11 @@ DELTA_FLOORS = {
 }
 GATE_B = Decimal("7500")
 BASELINE_B = Decimal("25000")
+# 13 §1 sec.flow_cap: value is Phase-0 sim-gated ([VERIFY]); 7 is the kernel
+# hard minimum (08 §5.3 — below ×7 the ceiling could reject honest
+# exactly-grade proposals). The model therefore takes flow_cap as an input
+# from its consumers and enforces only the bound.
+FLOW_CAP_MIN = Decimal(7)
 
 
 @dataclass(frozen=True)
@@ -127,6 +132,30 @@ def in_cap_prize(
             else max(ask, envelope)
         )
     return round_up(prize)
+
+
+def _flow_cap(value) -> Decimal:
+    cap = _d(value)
+    if cap < FLOW_CAP_MIN:
+        raise ValueError("sec.flow_cap below its hard minimum of 7 (08 §5.3)")
+    return cap
+
+
+def l_hat(pol_depth, contest_capital, flow_cap, b_accept, b_reject) -> Decimal:
+    """08 §5.2 L-hat: POL pair depth + the capped non-POL contest term.
+
+    The non-POL term is min(contest capital of the decision pair over the
+    decision window (04 §7a — SQ-231: gross traded notional no longer feeds
+    the certificate), sec.flow_cap * (b_acc + b_rej)).
+    """
+    with localcontext() as ctx:
+        ctx.prec = WORK_PREC
+        pol_depth = _d(pol_depth)
+        contest = _d(contest_capital)
+        pair_b = _d(b_accept) + _d(b_reject)
+        if pol_depth < 0 or contest < 0 or _d(b_accept) < 0 or _d(b_reject) < 0:
+            raise ValueError("negative security-sizing input")
+        return pol_depth + min(contest, _flow_cap(flow_cap) * pair_b)
 
 
 def attack_cost_hat(
@@ -229,10 +258,16 @@ def nav_floor(
 def manip_floor_hat(
     books,
     delta,
-    contest_notional,
+    contest_capital,
     flow_cap,
 ) -> Decimal:
-    """05 §5.6 C_disp+C_hold diagnostic; it never gates."""
+    """05 §5.6 C_disp+C_hold diagnostic; it never gates.
+
+    `contest_capital` is V_win, the 04 §7a time-averaged marked value of net
+    outstanding trader positions over the window (SQ-231 amendment: gross
+    traded notional is not the measure); the sec.flow_cap ceiling bounds
+    wash-trade inflation of it.
+    """
     delta = _d(delta)
     with localcontext() as ctx:
         ctx.prec = WORK_PREC
@@ -249,6 +284,6 @@ def manip_floor_hat(
             )
             c_disp += b * ratio.ln()
             total_b += b
-        held_flow = min(_d(contest_notional), _d(flow_cap) * total_b)
+        held_flow = min(_d(contest_capital), _flow_cap(flow_cap) * total_b)
         c_hold = held_flow * delta
         return round_down(c_disp + c_hold)

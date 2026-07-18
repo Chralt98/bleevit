@@ -332,6 +332,25 @@ pub struct EpochInfo {
     pub next_length: BlockNumber,
 }
 
+/// 05 §5.2/§5.4 step 5: the tri-state welfare-book decision grade. Only the
+/// remediable-by-time shortfalls (contest capital below `dec.v_min(class)`,
+/// coverage below `dec.coverage`, a first stale event) grade `Insufficient`
+/// and may consume the single shared extension budget; every other failure
+/// (sanity band, POL floor/undisturbed, a second stale event,
+/// non-convergence, or an unreadable book) grades `Invalid` and rejects
+/// immediately with `NotDecisionGrade` (status-quo default, G-1).
+///
+/// The derived `Ord` is severity order (`Ok < Insufficient < Invalid`), so
+/// the worst of the Accept/Reject pair is `max`.
+#[derive(
+    Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, Ord, PartialEq, PartialOrd, TypeInfo,
+)]
+pub enum WelfareGrade {
+    Ok,
+    Insufficient,
+    Invalid,
+}
+
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub struct DecisionInputs {
     pub accept_full: FixedU64,
@@ -342,11 +361,15 @@ pub struct DecisionInputs {
     pub baseline_trailing: FixedU64,
     pub accept_spot: FixedU64,
     pub reject_spot: FixedU64,
-    pub welfare_grade_ok: bool,
+    /// Worst grade of the Accept/Reject welfare pair (05 §5.4 step 5).
+    pub welfare_grade: WelfareGrade,
     pub baseline_grade_ok: bool,
     pub previous_settled_baseline_twap: Option<FixedU64>,
-    pub welfare_second_insufficient: bool,
-    pub gate_grade_ok: bool,
+    /// 05 §5.4 steps 3-4 are per gate: Survival's validity, then Survival's
+    /// veto, then Security's validity, then Security's veto — a Survival
+    /// veto must be reported before Security's validity is ever inspected.
+    pub survival_grade_ok: bool,
+    pub security_grade_ok: bool,
     pub gate_twaps: Option<[FixedU64; 4]>,
     pub measured_depth: Balance,
     pub published_flow_per_day: Option<Balance>,
@@ -1594,19 +1617,25 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         let extended = p.extended;
         let has_gate_markets = p.markets.is_some_and(|markets| markets.gates.is_some());
         if has_gate_markets {
-            if !i.gate_grade_ok {
-                return Ok(DecisionOutcome::Reject(RejectReason::NotDecisionGrade));
-            }
             let Some([s_adopt, s_reject, c_adopt, c_reject]) = i.gate_twaps else {
                 return Ok(DecisionOutcome::Reject(RejectReason::NotDecisionGrade));
             };
             let [s_p_max, c_p_max] = params.gate_p_max;
             let [s_eps, c_eps] = params.gate_eps;
-            // 05 §5.1: veto iff adopt TWAP exceeds the absolute ruin cap p_max, or
-            // exceeds the reject TWAP by more than the relative margin eps, for either
-            // gate. Ordered before welfare — no upside overrides a veto (G-4, I-14).
+            // 05 §5.4 steps 3-4, per gate in order (Survival, then Security):
+            // the gate's book validity first, then its veto — a Survival veto
+            // is reported before Security's validity is ever inspected. Veto
+            // iff adopt TWAP exceeds the absolute ruin cap p_max, or exceeds
+            // the reject TWAP by more than the relative margin eps (05 §5.1).
+            // Ordered before welfare — no upside overrides a veto (G-4, I-14).
+            if !i.survival_grade_ok {
+                return Ok(DecisionOutcome::Reject(RejectReason::NotDecisionGrade));
+            }
             if s_adopt.0 > s_p_max.0 || s_adopt.0 > s_reject.0.saturating_add(s_eps.0) {
                 return Ok(DecisionOutcome::Reject(RejectReason::GateVetoSurvival));
+            }
+            if !i.security_grade_ok {
+                return Ok(DecisionOutcome::Reject(RejectReason::NotDecisionGrade));
             }
             if c_adopt.0 > c_p_max.0 || c_adopt.0 > c_reject.0.saturating_add(c_eps.0) {
                 return Ok(DecisionOutcome::Reject(RejectReason::GateVetoSecurity));
@@ -1614,12 +1643,15 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         } else if matches!(class, ProposalClass::Code | ProposalClass::Meta) {
             return Ok(DecisionOutcome::Reject(RejectReason::NotDecisionGrade));
         }
-        if !i.welfare_grade_ok {
-            return Ok(if !extended && !i.welfare_second_insufficient {
-                DecisionOutcome::Extend
-            } else {
-                DecisionOutcome::Reject(RejectReason::NotDecisionGrade)
-            });
+        // 05 §5.4 step 5: only Insufficient may spend the single shared
+        // extension budget; Invalid rejects immediately (a rerun re-enters
+        // Extended with `extended` already true, so it can never re-extend).
+        match i.welfare_grade {
+            WelfareGrade::Ok => {}
+            WelfareGrade::Insufficient if !extended => return Ok(DecisionOutcome::Extend),
+            WelfareGrade::Insufficient | WelfareGrade::Invalid => {
+                return Ok(DecisionOutcome::Reject(RejectReason::NotDecisionGrade));
+            }
         }
         if !i.baseline_grade_ok {
             let Some(_carried) = i.previous_settled_baseline_twap else {
@@ -2147,11 +2179,11 @@ mod tests {
             baseline_trailing: FixedU64(500_000_000),
             accept_spot: FixedU64(600_000_000),
             reject_spot: FixedU64(500_000_000),
-            welfare_grade_ok: true,
+            welfare_grade: WelfareGrade::Ok,
             baseline_grade_ok: true,
             previous_settled_baseline_twap: None,
-            welfare_second_insufficient: false,
-            gate_grade_ok: true,
+            survival_grade_ok: true,
+            security_grade_ok: true,
             gate_twaps: None,
             measured_depth: 1_000_000,
             published_flow_per_day: None,
@@ -2221,7 +2253,7 @@ mod tests {
         });
         s.proposals.push(p);
         let mut i = pass_input();
-        i.welfare_grade_ok = false;
+        i.welfare_grade = WelfareGrade::Insufficient;
         assert_eq!(
             s.decide(Origin::Keeper, &mut ledger, 1, 0, i).unwrap(),
             DecisionOutcome::Extend

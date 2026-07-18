@@ -11,6 +11,7 @@ from bleavit_reference_model.treasury import (
     BASELINE_B,
     B_FLOORS,
     DELTA_FLOORS,
+    FLOW_CAP_MIN,
     LN2,
     V_MIN_FLOORS,
     attack_cost_hat,
@@ -453,10 +454,12 @@ def _thin_market_capture(results: list[SimulationResult]) -> dict:
         ]
         return None if not values else [str(min(values)), str(max(values))]
     return {
-        "confirmed_spec_seam": (
-            "Attack-generated gross attacker+arbitrage flow can promote a below-v_min "
-            "decision book and simultaneously inflate step-9 L_hat/AttackCost_hat; "
-            "05 §5.6 caps wash flow only inside ManipFloor_hat.C_hold."
+        "mechanism_note": (
+            "Post-SQ-231 the grading/certificate measure is 04 §7a time-averaged "
+            "contest capital: wash churn nets out by LMSR path independence, so "
+            "promoting a below-v_min decision book requires genuinely held net "
+            "exposure across the window, and the sec.flow_cap ceiling bounds its "
+            "step-9 L_hat contribution."
         ),
         "false_pass_promoted_count": len(false_pass),
         "initial_min_book_vmin_ratio_range": bounds(promoted, True),
@@ -466,21 +469,36 @@ def _thin_market_capture(results: list[SimulationResult]) -> dict:
 
 
 def _flow_cap(results: list[SimulationResult], config: SimulationConfig) -> tuple[Decimal, dict]:
+    """Calibrate sec.flow_cap from the honest-book binding ratio.
+
+    Post-SQ-231 the step-9 ceiling binds when the pair's min-book contest
+    capital exceeds ``flow_cap · (b_acc + b_rej)``, so the calibration
+    statistic is exactly that ratio over decision-grade books; the published
+    candidate must not reject honest exactly-grade proposals and is clamped to
+    the 08 §5.3 hard minimum of 7.
+    """
     values = sorted(
-        (row.contest_accept + row.contest_reject) / (Decimal(2) * row.b)
+        min(row.contest_accept, row.contest_reject) / (Decimal(2) * row.b)
         for row in results
         if row.welfare_grade == "Ok"
     )
     if not values:
-        return Decimal(config.diagnostic_probe_flow_cap), {"sample_count": 0, "calibrated_multiplier": config.diagnostic_probe_flow_cap}
+        cap = max(Decimal(config.diagnostic_probe_flow_cap), FLOW_CAP_MIN)
+        return cap, {
+            "calibrated_multiplier": str(cap),
+            "hard_minimum": str(FLOW_CAP_MIN),
+            "sample_count": 0,
+        }
     index = min(len(values) - 1, int(Decimal(config.flow_cap_quantile) * len(values)))
     raw = values[index]
-    cap = raw.to_integral_value(rounding=ROUND_CEILING)
+    cap = max(raw.to_integral_value(rounding=ROUND_CEILING), FLOW_CAP_MIN)
     return cap, {
         "calibrated_multiplier": str(cap),
+        "hard_minimum": str(FLOW_CAP_MIN),
         "quantile": config.flow_cap_quantile,
         "quantile_value": str(raw),
         "sample_count": len(values),
+        "statistic": "min-book 04 §7a contest capital over decision-pair depth 2b",
     }
 
 
@@ -634,7 +652,8 @@ def run_full_calibration(*, seed: int = DEFAULT_SEED, config: SimulationConfig |
     return {
         "assumptions": {
             "a2_arbitrage": "A-2 corrective capacity is L/2 per day at elasticity 1; it is empirical and phase-revalidated.",
-            "baseline_contest_floor": "Synthetic 250,000-USDC Baseline contest floor, a TREASURY-tier analogy to 08 §4.3; pending a specification question.",
+            "baseline_contest_floor": "The 250,000-USDC Baseline contest floor is the TREASURY-tier dec.v_min.trs mandated by 05 §5.2 (SQ-232 resolution 2026-07-18).",
+            "contest_measure": "Per the SQ-231 amendment (04 §7a; 05 §5.2/§5.4/§5.6; 08 §5.2-§5.4), step-5 grading and the step-9 certificate consume time-averaged marked net open interest (contest capital) with the sec.flow_cap ceiling; gross traded notional is recorded as flow telemetry only. Organic formation is modeled as directional informed exposure plus balanced maker-bought pair holdings topped up to the stratum target - balanced pairs are settlement-riskless but lock capital for the window and count per the 04 §7a definition.",
             "coverage_leg": "Scheduled observations provide an always-clean coverage leg in Phase-0 synthetic runs.",
             "pol_leg": "POL is assumed seeded at the class schedule and undisturbed for step-5 grading.",
             "pre_registered_strata": {
@@ -661,7 +680,7 @@ def run_full_calibration(*, seed: int = DEFAULT_SEED, config: SimulationConfig |
         "provenance": {"python_version": list(python_version_tuple())},
         "publication_evidence": {"flow_cap": flow_evidence},
         "published": publication,
-        "schema": "bleavit.phase0-calibration.v3",
+        "schema": "bleavit.phase0-calibration.v4",
         "seed": seed,
         "subsample": {"proposal_ids": ids, "results": [by_id[proposal_id] for proposal_id in ids]},
         "thin_market_capture": thin,
