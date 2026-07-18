@@ -349,6 +349,10 @@ pub struct Guardian {
     pub pause_used_epoch_window_start: EpochId,
     pub pause_used_in_window: u8,
     pub current_epoch: EpochId,
+    /// Live `grd.review_dl` value hydrated by the pallet. Dispatch snapshots
+    /// this into each [`ReviewRecord`]; later amendments do not move records
+    /// that already exist.
+    pub review_deadline_epochs: EpochId,
     pub next_action_id: ActionId,
     pub events: Vec<Event>,
 }
@@ -369,6 +373,7 @@ impl Guardian {
             pause_used_epoch_window_start: 0,
             pause_used_in_window: 0,
             current_epoch: 0,
+            review_deadline_epochs: REVIEW_DEADLINE_EPOCHS,
             next_action_id: 0,
             events: Vec::new(),
         })
@@ -729,7 +734,9 @@ impl Guardian {
         let (approvers, approver_count) = self.approver_snapshot(action.id);
         self.reviews.push(ReviewRecord {
             action_id: action.id,
-            deadline_epoch: self.current_epoch.saturating_add(REVIEW_DEADLINE_EPOCHS),
+            deadline_epoch: self
+                .current_epoch
+                .saturating_add(self.review_deadline_epochs),
             ratified: false,
             recall_scheduled: false,
             approvers,
@@ -1011,6 +1018,51 @@ mod tests {
             .events
             .iter()
             .any(|e| matches!(e, Event::ForceRerun { pid: 42, .. })));
+    }
+    #[test]
+    fn review_deadline_uses_configured_value_and_is_snapshotted_at_dispatch() {
+        let created = Guardian::new(members());
+        assert!(created.is_ok());
+        let Ok(mut g) = created else {
+            return;
+        };
+        g.set_epoch(7);
+
+        let first = g.propose_action(acct(1), GuardianPower::SuspendOnGate, [1; 32], 0);
+        assert_eq!(first, Ok(0));
+        for n in 2..=5 {
+            assert!(g.approve_action(acct(n), 0, 1, ctx()).is_ok());
+        }
+        assert_eq!(
+            g.reviews
+                .iter()
+                .map(|review| review.deadline_epoch)
+                .collect::<Vec<_>>(),
+            [7u32.saturating_add(REVIEW_DEADLINE_EPOCHS)]
+        );
+
+        g.review_deadline_epochs = 4;
+        let second = g.propose_action(acct(1), GuardianPower::SuspendOnGate, [2; 32], 2);
+        assert_eq!(second, Ok(1));
+        for n in 2..=5 {
+            assert!(g.approve_action(acct(n), 1, 3, ctx()).is_ok());
+        }
+        assert_eq!(
+            g.reviews
+                .iter()
+                .map(|review| review.deadline_epoch)
+                .collect::<Vec<_>>(),
+            [9, 11]
+        );
+
+        g.review_deadline_epochs = 1;
+        assert_eq!(
+            g.reviews
+                .iter()
+                .map(|review| review.deadline_epoch)
+                .collect::<Vec<_>>(),
+            [9, 11]
+        );
     }
     #[test]
     fn recalled_vacancies_keep_the_threshold_at_absolute_five() {

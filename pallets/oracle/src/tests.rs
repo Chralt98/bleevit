@@ -11,16 +11,16 @@
 
 use crate::mock::*;
 use crate::pallet::{
-    Recomputable, Reporters, ReserveHealth, Rounds, WatchtowerActive, Watchtowers,
+    Recomputable, Reporters, ReserveHealth, RoundSchedules, Rounds, WatchtowerActive, Watchtowers,
 };
 use crate::{Error, Event};
 use frame_support::traits::ConstU32;
 use frame_support::{assert_noop, assert_ok, pallet_prelude::DispatchResult, BoundedVec};
 use futarchy_primitives::{Balance, EpochId, FixedU64, MetricId, MetricSpecVersion, H256};
 use oracle_core::{
-    hash_evidence, hash_report, round_bond, RoundState, SettlePath, COMPONENT_VALUE_MAX,
-    ORC_EXT_WINDOW_BLOCKS, ORC_REPORTER_STAKE, ORC_ROUNDS, ORC_WINDOW_BLOCKS, RES_PROBE_INTERVAL,
-    RES_PROBE_TIMEOUT, WT_STAKE,
+    hash_evidence, hash_report, round_bond, OracleParams, RoundState, SettlePath,
+    StoredRoundSchedule, COMPONENT_VALUE_MAX, ORC_EXT_WINDOW_BLOCKS, ORC_REPORTER_STAKE,
+    ORC_ROUNDS, ORC_WINDOW_BLOCKS, RES_PROBE_INTERVAL, RES_PROBE_TIMEOUT, WT_STAKE,
 };
 use parity_scale_codec::{Compact, Decode, Encode};
 use sp_runtime::DispatchError;
@@ -58,7 +58,7 @@ fn counter_value() -> FixedU64 {
 /// The value-scaled round-`r` bond for the mock's `StakeAtRisk` (07 §6.1), read
 /// from the core formula so the expectation tracks 13 rather than a literal.
 fn bond(round: u8) -> Balance {
-    round_bond(StakeAtRiskValue::get(), round).expect("round in 1..=R_max")
+    round_bond(StakeAtRiskValue::get(), round, &ParamsValue::get()).expect("round in 1..=R_max")
 }
 
 /// The `recompute_proof` argument type — its `ConstU32` bound is exactly
@@ -250,6 +250,40 @@ fn register_watchtower_happy_path_emits_and_counts() {
 }
 
 #[test]
+fn registration_stake_snapshots_follow_live_params_for_new_seats() {
+    new_test_ext().execute_with(|| {
+        register_reporter(1);
+        register_watchtower(2);
+
+        let mut amended = ParamsValue::get();
+        amended.reporter_stake = ORC_REPORTER_STAKE.saturating_add(1_000_000);
+        amended.watchtower_stake = WT_STAKE.saturating_add(2_000_000);
+        ParamsValue::set(amended);
+        register_reporter(3);
+        register_watchtower(4);
+
+        // Existing registrations keep their creation-time stake snapshot.
+        assert_eq!(
+            Reporters::<Test>::get(acc(1)).map(|info| info.stake),
+            Some(ORC_REPORTER_STAKE)
+        );
+        assert_eq!(
+            Watchtowers::<Test>::get(acc(2)).map(|info| info.stake),
+            Some(WT_STAKE)
+        );
+        // New registrations observe the amended live thresholds.
+        assert_eq!(
+            Reporters::<Test>::get(acc(3)).map(|info| info.stake),
+            Some(amended.reporter_stake)
+        );
+        assert_eq!(
+            Watchtowers::<Test>::get(acc(4)).map(|info| info.stake),
+            Some(amended.watchtower_stake)
+        );
+    });
+}
+
+#[test]
 fn register_watchtower_duplicate_is_already_registered() {
     new_test_ext().execute_with(|| {
         register_watchtower(1);
@@ -285,11 +319,13 @@ fn live_round_bound_rejects_the_129th_game() {
         register_reporter(1);
         assert_ok!(do_report(1, E, reported_value(), h(9)));
         let template = Rounds::<Test>::get((C, E, V)).expect("first round exists");
+        let schedule = RoundSchedules::<Test>::get((C, E, V)).expect("first schedule exists");
         let mut epoch = 100u32;
         while Rounds::<Test>::iter().count() < oracle_core::MAX_ROUNDS {
             let mut round = template;
             round.epoch = epoch;
             Rounds::<Test>::insert((C, epoch, V), round);
+            RoundSchedules::<Test>::insert((C, epoch, V), schedule);
             epoch = epoch.saturating_add(1);
         }
 
@@ -357,6 +393,13 @@ fn report_happy_path_opens_round_with_scaled_bond() {
         // 07 §6.2: `B_1 = max(10k, 250 bps × StakeAtRisk)` — the mock's 400k
         // scaled hits the floor exactly (`= 10_000_000_000`).
         assert_eq!(round.bond, bond(1));
+        assert_eq!(
+            RoundSchedules::<Test>::get((C, E, V)),
+            Some(StoredRoundSchedule {
+                round_one_bond: bond(1),
+                round_cap: ORC_ROUNDS,
+            })
+        );
         // 07 §5.2: 72 h (`orc.window`) challenge window from the report block.
         assert_eq!(round.challenge_deadline, 1 + ORC_WINDOW_BLOCKS);
         assert!(!round.extended);
@@ -375,6 +418,31 @@ fn report_happy_path_opens_round_with_scaled_bond() {
             .into(),
         );
         assert_ok!(Oracle::do_try_state());
+    });
+}
+
+#[test]
+fn round_bond_uses_live_floor_and_basis_points() {
+    new_test_ext().execute_with(|| {
+        register_reporter(1);
+
+        let mut amended = ParamsValue::get();
+        amended.bond_floor = 12_000_000_000;
+        amended.bond_bps = 100;
+        ParamsValue::set(amended);
+        assert_ok!(do_report(1, E, reported_value(), h(9)));
+        assert_eq!(
+            Rounds::<Test>::get((C, E, V)).map(|round| round.bond),
+            Some(amended.bond_floor)
+        );
+
+        amended.bond_bps = 500;
+        ParamsValue::set(amended);
+        assert_ok!(do_report(1, E + 1, reported_value(), h(9)));
+        assert_eq!(
+            Rounds::<Test>::get((C, E + 1, V)).map(|round| round.bond),
+            Some(20_000_000_000)
+        );
     });
 }
 
@@ -533,7 +601,17 @@ fn challenge_window_is_half_open_at_the_deadline() {
         register_reporter(1);
         assert_ok!(do_report(1, E, reported_value(), h(9)));
         assert_ok!(do_report(1, E + 1, reported_value(), h(9)));
+        let mut amended = ParamsValue::get();
+        amended.window = ORC_WINDOW_BLOCKS + 10;
+        ParamsValue::set(amended);
+        assert_ok!(do_report(1, E + 2, reported_value(), h(9)));
+        assert_ok!(do_report(1, E + 3, reported_value(), h(9)));
         let deadline = Rounds::<Test>::get((C, E, V)).unwrap().challenge_deadline;
+        let amended_deadline = deadline + 10;
+        assert_eq!(
+            Rounds::<Test>::get((C, E + 2, V)).map(|round| round.challenge_deadline),
+            Some(amended_deadline)
+        );
 
         // Last valid block succeeds.
         set_block(deadline - 1);
@@ -552,6 +630,28 @@ fn challenge_window_is_half_open_at_the_deadline() {
                 RuntimeOrigin::signed(acc(4)),
                 C,
                 E + 1,
+                V,
+                counter_value(),
+                h(10)
+            ),
+            Error::<Test>::WindowClosed
+        );
+        // The amended creation-time snapshot stays open at the old boundary.
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(4)),
+            C,
+            E + 2,
+            V,
+            counter_value(),
+            h(10)
+        ));
+        // Its own moved boundary remains half-open.
+        set_block(amended_deadline);
+        assert_noop!(
+            Oracle::challenge(
+                RuntimeOrigin::signed(acc(4)),
+                C,
+                E + 3,
                 V,
                 counter_value(),
                 h(10)
@@ -648,6 +748,34 @@ fn crank_quorum_and_no_challenge_settles_unchallenged() {
             .into(),
         );
         assert_ok!(Oracle::do_try_state());
+    });
+}
+
+#[test]
+fn quorum_finalization_reads_live_watchtower_quorum() {
+    new_test_ext().execute_with(|| {
+        register_reporter(1);
+        register_watchtower(2);
+        assert_ok!(do_report(1, E, reported_value(), h(9)));
+        let report_hash = hash_report(C, E, 1, reported_value(), h(9));
+        assert_ok!(Oracle::ack_observed(
+            RuntimeOrigin::signed(acc(2)),
+            C,
+            E,
+            V,
+            1,
+            report_hash
+        ));
+
+        let mut amended = ParamsValue::get();
+        amended.watchtower_quorum = 1;
+        ParamsValue::set(amended);
+        set_block(1 + ORC_WINDOW_BLOCKS);
+        assert_ok!(Oracle::crank_round_close(RuntimeOrigin::signed(acc(9)), 20));
+        assert_eq!(
+            Oracle::settled_component(C, E, V).map(|settled| settled.path),
+            Some(SettlePath::Unchallenged)
+        );
     });
 }
 
@@ -1080,6 +1208,8 @@ fn adjudicate_happy_path_settles_adjudicated() {
         let settled = Oracle::settled_component(C, E, V).unwrap();
         assert_eq!(settled.path, SettlePath::Adjudicated);
         assert_eq!(settled.value, verdict);
+        assert!(!Rounds::<Test>::contains_key((C, E, V)));
+        assert!(!RoundSchedules::<Test>::contains_key((C, E, V)));
         assert_eq!(
             oracle_events(),
             vec![
@@ -1156,26 +1286,32 @@ fn adjudicate_third_offense_slashes_and_ejects_reporter() {
     // that discipline.
     new_test_ext().execute_with(|| {
         register_reporter(1);
+        let mut amended = ParamsValue::get();
+        amended.reporter_stake = ORC_REPORTER_STAKE.saturating_add(1);
+        ParamsValue::set(amended);
+        register_reporter(2);
         assert_ok!(Oracle::note_recomputable(C, V));
         let disproof = proof_for(counter_value()); // recomputes to 0.44, disproving 0.62
-        for epoch in E..(E + 3) {
-            assert_ok!(Oracle::report(
-                RuntimeOrigin::signed(acc(1)),
-                C,
-                epoch,
-                V,
-                reported_value(),
-                hash_evidence(&disproof)
-            ));
-            assert_ok!(Oracle::recompute_proof(
-                RuntimeOrigin::signed(acc(5)),
-                C,
-                epoch,
-                V,
-                proof_arg(disproof.clone())
-            ));
+        for (reporter, first_epoch) in [(1, E), (2, E + 3)] {
+            for epoch in first_epoch..(first_epoch + 3) {
+                assert_ok!(Oracle::report(
+                    RuntimeOrigin::signed(acc(reporter)),
+                    C,
+                    epoch,
+                    V,
+                    reported_value(),
+                    hash_evidence(&disproof)
+                ));
+                assert_ok!(Oracle::recompute_proof(
+                    RuntimeOrigin::signed(acc(5)),
+                    C,
+                    epoch,
+                    V,
+                    proof_arg(disproof.clone())
+                ));
+            }
         }
-        assert_eq!(Reporters::<Test>::count(), 0); // ejected
+        assert_eq!(Reporters::<Test>::count(), 0); // both ejected
         let evs = oracle_events();
         assert!(evs.iter().any(|e| matches!(
             e,
@@ -1185,6 +1321,15 @@ fn adjudicate_third_offense_slashes_and_ejects_reporter() {
                 offense: 2
             } if *who == acc(1) && *amount == ORC_REPORTER_STAKE / 2
         )));
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            Event::ReporterSlashed {
+                who,
+                amount,
+                offense: 2
+            } if *who == acc(2)
+                && *amount == (amended.reporter_stake / 2).saturating_add(1)
+        )));
         // Codex F19: the third offense ejects only — no further `ReporterSlashed`.
         assert!(!evs
             .iter()
@@ -1192,6 +1337,9 @@ fn adjudicate_third_offense_slashes_and_ejects_reporter() {
         assert!(evs
             .iter()
             .any(|e| matches!(e, Event::ReporterEjected { who } if *who == acc(1))));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, Event::ReporterEjected { who } if *who == acc(2))));
         assert_ok!(Oracle::do_try_state());
     });
 }
@@ -1264,6 +1412,168 @@ fn request_adjudication_before_round_three_is_window_open() {
     });
 }
 
+#[test]
+fn amended_round_cap_moves_terminal_boundary_for_next_game_only() {
+    new_test_ext().execute_with(|| {
+        register_reporter(1);
+        assert_ok!(do_report(1, E, reported_value(), h(9)));
+
+        let mut amended = ParamsValue::get();
+        amended.rounds = 2;
+        ParamsValue::set(amended);
+        assert_ok!(do_report(1, E + 1, reported_value(), h(19)));
+        assert_eq!(
+            RoundSchedules::<Test>::get((C, E, V)).map(|schedule| schedule.round_cap),
+            Some(ORC_ROUNDS)
+        );
+        assert_eq!(
+            RoundSchedules::<Test>::get((C, E + 1, V)).map(|schedule| schedule.round_cap),
+            Some(2)
+        );
+
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(4)),
+            C,
+            E,
+            V,
+            counter_value(),
+            h(10)
+        ));
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(5)),
+            C,
+            E + 1,
+            V,
+            counter_value(),
+            h(20)
+        ));
+        set_block(1 + ORC_WINDOW_BLOCKS);
+        assert_ok!(Oracle::crank_round_close(RuntimeOrigin::signed(acc(9)), 20));
+        assert_eq!(
+            Rounds::<Test>::get((C, E, V)).map(|round| round.round),
+            Some(2)
+        );
+        assert_eq!(
+            Rounds::<Test>::get((C, E + 1, V)).map(|round| round.round),
+            Some(2)
+        );
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(4)),
+            C,
+            E,
+            V,
+            counter_value(),
+            h(11)
+        ));
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(5)),
+            C,
+            E + 1,
+            V,
+            counter_value(),
+            h(21)
+        ));
+
+        assert_noop!(
+            Oracle::request_adjudication(C, E, V, 77),
+            Error::<Test>::WindowOpen
+        );
+        assert_ok!(Oracle::request_adjudication(C, E + 1, V, 78));
+
+        set_block(1 + 2 * ORC_WINDOW_BLOCKS);
+        assert_ok!(Oracle::crank_round_close(RuntimeOrigin::signed(acc(9)), 20));
+        assert_eq!(
+            Rounds::<Test>::get((C, E, V)).map(|round| round.round),
+            Some(3)
+        );
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(4)),
+            C,
+            E,
+            V,
+            counter_value(),
+            h(12)
+        ));
+        assert_ok!(Oracle::request_adjudication(C, E, V, 79));
+        assert_ok!(Oracle::do_try_state());
+    });
+}
+
+#[test]
+fn mid_game_bond_amendment_does_not_reprice_later_rounds() {
+    new_test_ext().execute_with(|| {
+        register_reporter(1);
+        let opening = ParamsValue::get();
+        let opening_bond = round_bond(StakeAtRiskValue::get(), 1, &opening)
+            .expect("default game schedule is representable");
+        assert_ok!(do_report(1, E, reported_value(), h(9)));
+
+        let amended = OracleParams {
+            bond_floor: opening_bond.saturating_mul(2),
+            bond_bps: 1_000,
+            ..opening
+        };
+        ParamsValue::set(amended);
+        assert_ok!(do_report(1, E + 1, reported_value(), h(19)));
+        let next_game =
+            RoundSchedules::<Test>::get((C, E + 1, V)).expect("next game schedule freezes");
+        assert_eq!(
+            next_game.round_one_bond,
+            round_bond(StakeAtRiskValue::get(), 1, &amended)
+                .expect("amended game schedule is representable")
+        );
+
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(4)),
+            C,
+            E,
+            V,
+            counter_value(),
+            h(10)
+        ));
+        set_block(1 + ORC_WINDOW_BLOCKS);
+        assert_ok!(Oracle::crank_round_close(RuntimeOrigin::signed(acc(9)), 20));
+        let round_two = Rounds::<Test>::get((C, E, V)).expect("old game escalates");
+        assert_eq!(round_two.round, 2);
+        assert_eq!(
+            RoundSchedules::<Test>::get((C, E, V)).map(|schedule| schedule.round_one_bond),
+            Some(opening_bond)
+        );
+        assert_eq!(round_two.bond, opening_bond.saturating_mul(2));
+        assert_ok!(Oracle::do_try_state());
+
+        assert_ok!(Oracle::challenge(
+            RuntimeOrigin::signed(acc(4)),
+            C,
+            E,
+            V,
+            counter_value(),
+            h(11)
+        ));
+        set_block(1 + 2 * ORC_WINDOW_BLOCKS);
+        assert_ok!(Oracle::crank_round_close(RuntimeOrigin::signed(acc(9)), 20));
+        let round_three = Rounds::<Test>::get((C, E, V)).expect("old game reaches its cap");
+        assert_eq!(round_three.round, 3);
+        assert_eq!(round_three.bond, opening_bond.saturating_mul(4));
+        assert_ok!(Oracle::do_try_state());
+    });
+}
+
+#[test]
+fn try_state_survives_schedule_params_amendment_for_open_game() {
+    new_test_ext().execute_with(|| {
+        register_reporter(1);
+        assert_ok!(do_report(1, E, reported_value(), h(9)));
+        ParamsValue::set(OracleParams {
+            rounds: 2,
+            bond_floor: 100_000_000_000,
+            bond_bps: 1_000,
+            ..OracleParams::DEFAULT
+        });
+        assert_ok!(Oracle::do_try_state());
+    });
+}
+
 // =========================================================================
 // 9. Reserve health probe R (07 §8 — deterministic class-3, fail-static)
 // =========================================================================
@@ -1313,7 +1623,7 @@ mod probe_dispatch_seam {
     }
 
     std::thread_local! {
-        static DISPATCHED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+        static DISPATCHED: RefCell<Vec<(u64, Balance)>> = const { RefCell::new(Vec::new()) };
         static REBATES: RefCell<Vec<(AccountId32, CrankClass)>> = const { RefCell::new(Vec::new()) };
         static TIMEOUTS: Cell<u32> = const { Cell::new(0) };
     }
@@ -1321,8 +1631,16 @@ mod probe_dispatch_seam {
     pub struct RecordingProbeDispatch;
 
     impl pallet_oracle::ProbeDispatch for RecordingProbeDispatch {
-        fn probe_due(query_id: u64) {
-            DISPATCHED.with(|ids| ids.borrow_mut().push(query_id));
+        fn probe_due(query_id: u64, amount: Balance) {
+            DISPATCHED.with(|ids| ids.borrow_mut().push((query_id, amount)));
+        }
+    }
+
+    pub struct DispatchParams;
+
+    impl pallet_oracle::OracleParamsProvider for DispatchParams {
+        fn get() -> oracle_core::OracleParams {
+            oracle_core::OracleParams::DEFAULT
         }
     }
 
@@ -1349,6 +1667,7 @@ mod probe_dispatch_seam {
     impl pallet_oracle::Config for DispatchTest {
         type AdjudicationOrigin = frame_system::EnsureRoot<AccountId32>;
         type Reporting = DispatchReporting;
+        type Params = DispatchParams;
         type MaxRoundCloseBatch = MaxRoundCloseBatch;
         type ProbeDispatch = RecordingProbeDispatch;
         type ProbeTimeoutSink = RecordingProbeTimeoutSink;
@@ -1399,7 +1718,12 @@ mod probe_dispatch_seam {
                 pallet_oracle::ReserveHealth::<DispatchTest>::get().last_query_id,
                 1
             );
-            DISPATCHED.with(|ids| assert_eq!(&*ids.borrow(), &[1]));
+            DISPATCHED.with(|ids| {
+                assert_eq!(
+                    &*ids.borrow(),
+                    &[(1, oracle_core::OracleParams::DEFAULT.probe_amount)]
+                )
+            });
             TIMEOUTS.with(|count| assert_eq!(count.get(), 0));
             REBATES.with(|rebates| {
                 assert_eq!(
@@ -1419,7 +1743,12 @@ mod probe_dispatch_seam {
             assert_eq!(health.last_query_id, 1);
             assert_eq!(health.pending_since, None);
             assert_eq!(health.consecutive_fails, 1);
-            DISPATCHED.with(|ids| assert_eq!(&*ids.borrow(), &[1]));
+            DISPATCHED.with(|ids| {
+                assert_eq!(
+                    &*ids.borrow(),
+                    &[(1, oracle_core::OracleParams::DEFAULT.probe_amount)]
+                )
+            });
             TIMEOUTS.with(|count| assert_eq!(count.get(), 1));
             // The live dispatcher makes the fail-static timeout fold genuine
             // state-advancing keeper work, paid once even without a fresh send.
@@ -1618,6 +1947,7 @@ mod probe_dispatch_seam {
         impl pallet_oracle::Config for NoDispatchTest {
             type AdjudicationOrigin = frame_system::EnsureRoot<AccountId32>;
             type Reporting = DispatchReporting;
+            type Params = DispatchParams;
             type MaxRoundCloseBatch = MaxRoundCloseBatch;
             type ProbeDispatch = ();
             type ProbeTimeoutSink = ();
@@ -1690,6 +2020,23 @@ fn reserve_probe_before_interval_is_too_early() {
             Error::<Test>::ProbeTooEarly
         );
         assert_eq!(ProbeTimeoutCount::get(), 0);
+
+        // Keep the default at-bound assertion, then amend the interval and
+        // observe the next boundary move from the last successful send.
+        set_block(RES_PROBE_INTERVAL);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))));
+        assert_ok!(Oracle::reserve_probe_result(1, true));
+        let mut amended = ParamsValue::get();
+        amended.probe_interval = RES_PROBE_INTERVAL + 100;
+        ParamsValue::set(amended);
+        let next_due = RES_PROBE_INTERVAL.saturating_add(amended.probe_interval);
+        set_block(next_due - 1);
+        assert_noop!(
+            Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))),
+            Error::<Test>::ProbeTooEarly
+        );
+        set_block(next_due);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))));
     });
 }
 
@@ -1703,6 +2050,76 @@ fn reserve_probe_first_send_emits_query_one() {
         System::assert_has_event(Event::ReserveProbeSent { query_id: 1 }.into());
         assert!(!Oracle::reserve_unhealthy());
         assert_ok!(Oracle::do_try_state());
+    });
+}
+
+#[test]
+fn reserve_probe_dispatch_uses_live_probe_amount() {
+    new_test_ext().execute_with(|| {
+        let mut amended = ParamsValue::get();
+        amended.probe_amount = OracleParams::DEFAULT.probe_amount.saturating_add(77);
+        ParamsValue::set(amended);
+        ProbeDispatchLive::set(true);
+        set_block(amended.probe_interval);
+
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))));
+        assert_eq!(ProbeDispatches::get(), vec![(1, amended.probe_amount)]);
+    });
+}
+
+#[test]
+fn reserve_health_latches_read_live_fail_and_recover_thresholds() {
+    new_test_ext().execute_with(|| {
+        set_block(RES_PROBE_INTERVAL);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))));
+        let mut amended = ParamsValue::get();
+        amended.fail_threshold = 1;
+        ParamsValue::set(amended);
+        assert_ok!(Oracle::reserve_probe_result(1, false));
+        assert!(Oracle::reserve_unhealthy());
+
+        set_block(RES_PROBE_INTERVAL * 2);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))));
+        amended.recover_threshold = 1;
+        ParamsValue::set(amended);
+        assert_ok!(Oracle::reserve_probe_result(2, true));
+        assert!(!Oracle::reserve_unhealthy());
+    });
+}
+
+#[test]
+fn reserve_probe_result_reads_live_timeout() {
+    new_test_ext().execute_with(|| {
+        set_block(RES_PROBE_INTERVAL);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))));
+        let mut amended = ParamsValue::get();
+        amended.probe_timeout = 5;
+        amended.fail_threshold = 1;
+        ParamsValue::set(amended);
+
+        // A success at the amended half-open timeout boundary counts as fail.
+        set_block(RES_PROBE_INTERVAL + amended.probe_timeout);
+        assert_ok!(Oracle::reserve_probe_result(1, true));
+        assert!(Oracle::reserve_unhealthy());
+        assert_eq!(ReserveHealth::<Test>::get().consecutive_fails, 1);
+    });
+}
+
+#[test]
+fn reserve_probe_crank_folds_at_live_timeout_boundary() {
+    new_test_ext().execute_with(|| {
+        set_block(RES_PROBE_INTERVAL);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))));
+        let mut amended = ParamsValue::get();
+        amended.probe_timeout = 5;
+        ParamsValue::set(amended);
+
+        set_block(RES_PROBE_INTERVAL + amended.probe_timeout);
+        assert_ok!(Oracle::crank_reserve_probe(RuntimeOrigin::signed(acc(9))));
+        let health = ReserveHealth::<Test>::get();
+        assert_eq!(health.pending_since, None);
+        assert_eq!(health.consecutive_fails, 1);
+        assert_eq!(ProbeTimeoutCount::get(), 1);
     });
 }
 
@@ -1999,14 +2416,70 @@ fn valid_round(round: u8) -> RoundState {
     }
 }
 
+fn valid_schedule() -> StoredRoundSchedule {
+    StoredRoundSchedule {
+        round_one_bond: bond(1),
+        round_cap: ORC_ROUNDS,
+    }
+}
+
+fn insert_round_with_schedule(round: RoundState) {
+    Rounds::<Test>::insert((round.component, round.epoch, round.spec_version), round);
+    RoundSchedules::<Test>::insert(
+        (round.component, round.epoch, round.spec_version),
+        valid_schedule(),
+    );
+}
+
 #[test]
 fn try_state_rejects_an_out_of_range_round() {
-    // 07 §13 machine invariant: every live round is in `1..=R_max`.
+    // 07 §13 machine invariant: every live round is in its frozen cap.
     new_test_ext().execute_with(|| {
         assert_ok!(Oracle::do_try_state());
         let mut bad = valid_round(1);
         bad.round = 5; // out of `1..=3`
-        Rounds::<Test>::insert((C, E, V), bad);
+        insert_round_with_schedule(bad);
+        assert!(Oracle::do_try_state().is_err());
+    });
+}
+
+#[test]
+fn try_state_rejects_a_bond_outside_the_frozen_schedule() {
+    new_test_ext().execute_with(|| {
+        let mut bad = valid_round(2);
+        bad.bond = bad.bond.saturating_add(1);
+        insert_round_with_schedule(bad);
+        assert!(Oracle::do_try_state().is_err());
+    });
+}
+
+#[test]
+fn try_state_rejects_a_round_cap_outside_the_kernel_envelope() {
+    new_test_ext().execute_with(|| {
+        Rounds::<Test>::insert((C, E, V), valid_round(1));
+        RoundSchedules::<Test>::insert(
+            (C, E, V),
+            StoredRoundSchedule {
+                round_one_bond: bond(1),
+                round_cap: futarchy_primitives::kernel::ORC_ROUNDS_MAX.saturating_add(1),
+            },
+        );
+        assert!(Oracle::do_try_state().is_err());
+    });
+}
+
+#[test]
+fn try_state_rejects_a_live_round_without_its_frozen_schedule() {
+    new_test_ext().execute_with(|| {
+        Rounds::<Test>::insert((C, E, V), valid_round(1));
+        assert!(Oracle::do_try_state().is_err());
+    });
+}
+
+#[test]
+fn try_state_rejects_a_frozen_schedule_without_its_live_round() {
+    new_test_ext().execute_with(|| {
+        RoundSchedules::<Test>::insert((C, E, V), valid_schedule());
         assert!(Oracle::do_try_state().is_err());
     });
 }
@@ -2022,7 +2495,7 @@ fn try_state_rejects_a_live_round_for_a_settled_key() {
         assert_ok!(Oracle::do_try_state()); // settled, no live round
 
         // Inject a live round shadowing the settled entry.
-        Rounds::<Test>::insert((C, E, V), valid_round(1));
+        insert_round_with_schedule(valid_round(1));
         assert!(Oracle::do_try_state().is_err());
     });
 }
@@ -2153,6 +2626,10 @@ fn watchtower_liveness_second_consecutive_miss_slashes_and_ejects() {
         assert_ok!(Oracle::note_epoch_boundary(2, true)); // inactive #1
         assert_eq!(Watchtowers::<Test>::get(acc(2)).unwrap().inactive_epochs, 1);
 
+        let mut amended = ParamsValue::get();
+        amended.watchtower_stake = WT_STAKE.saturating_add(1);
+        ParamsValue::set(amended);
+        register_watchtower(3);
         System::reset_events();
         assert_ok!(Oracle::note_epoch_boundary(3, true)); // inactive #2 ⇒ slash + eject
         assert!(oracle_events().iter().any(|e| matches!(
@@ -2160,8 +2637,19 @@ fn watchtower_liveness_second_consecutive_miss_slashes_and_ejects() {
             Event::WatchtowerSlashed { who, amount }
                 if *who == acc(2) && *amount == WT_STAKE / 10
         )));
-        assert_eq!(Watchtowers::<Test>::count(), 0);
+        assert_eq!(Watchtowers::<Test>::count(), 1);
         assert!(Watchtowers::<Test>::get(acc(2)).is_none());
+
+        System::reset_events();
+        assert_ok!(Oracle::note_epoch_boundary(4, true)); // amended seat inactive #1
+        assert_ok!(Oracle::note_epoch_boundary(5, true)); // amended seat slash + eject
+        assert!(oracle_events().iter().any(|e| matches!(
+            e,
+            Event::WatchtowerSlashed { who, amount }
+                if *who == acc(3)
+                    && *amount == (amended.watchtower_stake / 10).saturating_add(1)
+        )));
+        assert_eq!(Watchtowers::<Test>::count(), 0);
         assert_ok!(Oracle::do_try_state());
     });
 }

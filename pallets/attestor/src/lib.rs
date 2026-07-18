@@ -39,9 +39,9 @@ mod mock;
 mod tests;
 
 pub use attestor_core::{
-    Attestation, AttestationId, AttestorInfo, AttestorOrigin, AttestorRegistry, ChallengeStatus,
-    Error as CoreError, Event as CoreEvent, ATTESTOR_BOND, CHALLENGE_BOND, CHALLENGE_WINDOW_BLOCKS,
-    FALSE_EJECTION_THRESHOLD, MIN_MEMBERS, QUORUM,
+    Attestation, AttestationId, AttestorInfo, AttestorOrigin, AttestorParams, AttestorRegistry,
+    ChallengeStatus, Error as CoreError, Event as CoreEvent, ATTESTOR_BOND, CHALLENGE_BOND,
+    CHALLENGE_WINDOW_BLOCKS, FALSE_EJECTION_THRESHOLD, MIN_MEMBERS, QUORUM,
 };
 
 use futarchy_primitives::AccountId as CoreAccountId;
@@ -58,6 +58,11 @@ pub const MAX_ATTESTORS: u32 = 16;
 /// by settled proposal would change the 02 §7.5 contract shape and must follow
 /// its versioning/migration discipline.
 pub const MAX_ATTESTATIONS: u32 = 256;
+
+/// Live attestor tunables sourced from `pallet-constitution::Params`.
+pub trait AttestorParamsProvider {
+    fn get() -> AttestorParams;
+}
 
 /// Maps authority roles to concrete origins for the v2 benchmark harness.
 #[cfg(feature = "runtime-benchmarks")]
@@ -95,6 +100,9 @@ pub mod pallet {
         RuntimeEvent: From<Event<Self>>,
     >
     {
+        /// Live constitution values for attestor bonds and challenge windows.
+        type Params: AttestorParamsProvider;
+
         /// `ConstitutionalValues` authority for `attestor.set_members`
         /// (06 §3.2 row 5).
         type ValuesOrigin: EnsureOrigin<Self::RuntimeOrigin>;
@@ -203,7 +211,7 @@ pub mod pallet {
             let raw: Vec<CoreAccountId> = members.iter().map(Self::to_core).collect();
             let mut registry = Self::load().unwrap_or_else(Self::empty_core);
             registry
-                .set_members(AttestorOrigin::ConstitutionalValues, raw)
+                .set_members(AttestorOrigin::ConstitutionalValues, raw, T::Params::get())
                 .map_err(Self::map_core_error)?;
             Self::persist(&registry)?;
             Self::drain_events(&mut registry);
@@ -229,6 +237,7 @@ pub mod pallet {
                     artifact_hash,
                     statement_hash,
                     Self::now(),
+                    T::Params::get(),
                 )
                 .map_err(Self::map_core_error)?;
             Self::persist(&registry)?;
@@ -301,13 +310,8 @@ pub mod pallet {
             futarchy_primitives::kernel::ATT_QUORUM
         }
 
-        /// Per-member arithmetic bond (25,000 VIT; 13 §1).
-        #[pallet::constant_name(AttestorBond)]
-        fn attestor_bond() -> futarchy_primitives::Balance {
-            ATTESTOR_BOND
-        }
-
-        /// Challenge window (43,200 blocks / 72 h; 06 §7).
+        /// Kernel floor envelope for live `att.window`: 43,200 blocks / 72 h
+        /// (02 §9(2); 13 rule 7). This is not the live tunable value.
         #[pallet::constant_name(ChallengeWindowBlocks)]
         fn challenge_window_blocks() -> futarchy_primitives::BlockNumber {
             CHALLENGE_WINDOW_BLOCKS
@@ -347,7 +351,7 @@ pub mod pallet {
                 .iter()
                 .map(Self::acct_to_core)
                 .collect::<Vec<_>>();
-            let registry = AttestorRegistry::new(raw);
+            let registry = AttestorRegistry::new(raw, T::Params::get());
             assert!(
                 registry.is_ok(),
                 "attestor genesis: at least three unique members required (06 §7)"

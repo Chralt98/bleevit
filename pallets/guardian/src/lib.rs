@@ -263,6 +263,11 @@ pub mod pallet {
         /// Wired to `pallet-epoch`'s clock by the runtime; a constant in mocks.
         type CurrentEpoch: Get<EpochId>;
 
+        /// Live `grd.review_dl` value from `pallet-constitution::Params`.
+        /// The runtime provider falls back to [`REVIEW_DEADLINE_EPOCHS`] when
+        /// the genesis record is unavailable; mocks expose a mutable seam.
+        type ReviewDeadlineEpochs: Get<EpochId>;
+
         /// Proposal-status feed for rerun admissibility (06 §5.3).
         type ProposalStatusProvider: GuardianProposalStatus;
 
@@ -842,11 +847,6 @@ pub mod pallet {
         fn guardian_bond() -> futarchy_primitives::Balance {
             GUARDIAN_BOND
         }
-        /// 06 §5.4: retrospective-review deadline (2 epochs).
-        #[pallet::constant_name(ReviewDeadlineEpochs)]
-        fn review_deadline_epochs() -> EpochId {
-            REVIEW_DEADLINE_EPOCHS
-        }
         /// 06 §5.2/§6.2/§6.3: hard pallet-level effect backstop.
         #[pallet::constant_name(PlaybookFreezeWindowBlocks)]
         fn playbook_freeze_window_blocks() -> BlockNumber {
@@ -1194,6 +1194,7 @@ pub mod pallet {
                 pause_used_epoch_window_start: 0,
                 pause_used_in_window: 0,
                 current_epoch: T::CurrentEpoch::get(),
+                review_deadline_epochs: T::ReviewDeadlineEpochs::get(),
                 next_action_id: 0,
                 events: Vec::new(),
             }
@@ -1217,6 +1218,7 @@ pub mod pallet {
                 pause_used_epoch_window_start: alloc.pause_window_start,
                 pause_used_in_window: alloc.pause_used_in_window,
                 current_epoch: T::CurrentEpoch::get(),
+                review_deadline_epochs: T::ReviewDeadlineEpochs::get(),
                 next_action_id: NextActionId::<T>::get(),
                 events: Vec::new(),
             })

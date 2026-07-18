@@ -32,6 +32,8 @@ pub const REPORT_WINDOW_BLOCKS: BlockNumber = 28_800;
 pub const RES_PROBE_INTERVAL: BlockNumber = 14_400;
 pub const RES_PROBE_TIMEOUT: BlockNumber = 600;
 pub const ORC_ROUNDS: u8 = 3;
+pub const ORC_ROUND_CAP_MIN: u8 = futarchy_primitives::kernel::ORC_ROUNDS_MIN;
+pub const ORC_ROUND_CAP_MAX: u8 = futarchy_primitives::kernel::ORC_ROUNDS_MAX;
 pub const ORC_BOND_FLOOR: Balance = 10_000_000_000;
 pub const ORC_BOND_BPS: u32 = 250;
 pub const ORC_REPORTER_STAKE: Balance = 100_000_000_000;
@@ -45,6 +47,52 @@ pub const ORC_MAX_PROOF_BYTES: usize = futarchy_primitives::kernel::ORC_MAX_PROO
 /// Component values are FixedU64 (1e9 scale) in [0, 1] before aggregation
 /// (05 §4.4 determinism rule 1).
 pub const COMPONENT_VALUE_MAX: u64 = 1_000_000_000;
+
+/// Live oracle and reserve-probe tunables sourced from the constitution.
+///
+/// The frame-free core receives one plain snapshot from its FRAME shell for
+/// each operation. [`Self::DEFAULT`] preserves the genesis behavior exactly;
+/// production adapters replace individual fields from live
+/// `pallet-constitution::Params` reads.
+#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub struct OracleParams {
+    pub window: BlockNumber,
+    pub rounds: u8,
+    pub bond_floor: Balance,
+    /// Basis points, i.e. 250 = 2.5%.
+    pub bond_bps: u32,
+    pub reporter_stake: Balance,
+    pub watchtower_stake: Balance,
+    pub watchtower_quorum: u8,
+    pub probe_interval: BlockNumber,
+    pub probe_timeout: BlockNumber,
+    pub fail_threshold: u8,
+    pub recover_threshold: u8,
+    pub probe_amount: Balance,
+}
+
+impl OracleParams {
+    pub const DEFAULT: Self = Self {
+        window: ORC_WINDOW_BLOCKS,
+        rounds: ORC_ROUNDS,
+        bond_floor: ORC_BOND_FLOOR,
+        bond_bps: ORC_BOND_BPS,
+        reporter_stake: ORC_REPORTER_STAKE,
+        watchtower_stake: WT_STAKE,
+        watchtower_quorum: WT_QUORUM,
+        probe_interval: RES_PROBE_INTERVAL,
+        probe_timeout: RES_PROBE_TIMEOUT,
+        fail_threshold: RES_FAIL_THRESHOLD,
+        recover_threshold: RES_RECOVER_THRESHOLD,
+        probe_amount: RES_PROBE_AMOUNT,
+    };
+}
+
+impl Default for OracleParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub struct ReporterInfo {
@@ -114,6 +162,17 @@ pub struct RoundState {
     pub stake_at_risk: Balance,
     pub cumulative_reporter_bond: Balance,
     pub cumulative_challenger_bond: Balance,
+}
+
+/// Internal per-game schedule frozen when round one opens. This deliberately
+/// lives beside [`RoundState`], whose SCALE layout is frozen by contract v4.
+#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub struct StoredRoundSchedule {
+    /// Every later `B_r` doubles from this value, so live amendments cannot
+    /// reprice an in-flight dispute (07 §6.1/§13).
+    pub round_one_bond: Balance,
+    /// Terminal adjudication is gated by this frozen `orc.rounds` value.
+    pub round_cap: u8,
 }
 
 #[derive(Clone, Copy, Debug, Decode, Default, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -280,6 +339,9 @@ pub struct Oracle {
     pub reporters: Vec<(AccountId, ReporterInfo)>,
     pub watchtowers: Vec<(AccountId, WatchtowerInfo)>,
     pub rounds: Vec<RoundState>,
+    /// Parallel internal schedule state, one entry per live round. The FRAME
+    /// shell persists this outside the contract-frozen `Rounds` value.
+    pub round_schedules: Vec<(RoundKey, StoredRoundSchedule)>,
     pub component_values: Vec<((MetricId, EpochId, MetricSpecVersion), SettledComponent)>,
     pub reserve_health: ReserveHealth,
     pub events: Vec<Event>,
@@ -302,7 +364,12 @@ pub struct Oracle {
 }
 
 impl Oracle {
-    pub fn register_reporter(&mut self, who: AccountId, now: BlockNumber) -> Result<(), Error> {
+    pub fn register_reporter_with_params(
+        &mut self,
+        who: AccountId,
+        now: BlockNumber,
+        params: &OracleParams,
+    ) -> Result<(), Error> {
         ensure!(!self.is_reporter(&who), Error::AlreadyRegistered);
         ensure!(
             self.reporters.len() < MAX_REPORTERS,
@@ -311,14 +378,14 @@ impl Oracle {
         self.reporters.push((
             who,
             ReporterInfo {
-                stake: ORC_REPORTER_STAKE,
+                stake: params.reporter_stake,
                 registered_at: now,
                 offenses: 0,
             },
         ));
         self.events.push(Event::ReporterRegistered {
             who,
-            stake: ORC_REPORTER_STAKE,
+            stake: params.reporter_stake,
         });
         Ok(())
     }
@@ -337,7 +404,12 @@ impl Oracle {
         Ok(())
     }
 
-    pub fn register_watchtower(&mut self, who: AccountId, now: BlockNumber) -> Result<(), Error> {
+    pub fn register_watchtower_with_params(
+        &mut self,
+        who: AccountId,
+        now: BlockNumber,
+        params: &OracleParams,
+    ) -> Result<(), Error> {
         ensure!(!self.is_watchtower(&who), Error::AlreadyRegistered);
         ensure!(
             self.watchtowers.len() < MAX_WATCHTOWERS,
@@ -346,14 +418,14 @@ impl Oracle {
         self.watchtowers.push((
             who,
             WatchtowerInfo {
-                stake: WT_STAKE,
+                stake: params.watchtower_stake,
                 registered_at: now,
                 inactive_epochs: 0,
             },
         ));
         self.events.push(Event::WatchtowerRegistered {
             who,
-            stake: WT_STAKE,
+            stake: params.watchtower_stake,
         });
         // A freshly-registered watchtower is active for the epoch it joined, so
         // it is never charged inactivity for that epoch (07 §4).
@@ -361,7 +433,7 @@ impl Oracle {
         Ok(())
     }
 
-    pub fn report(&mut self, input: ReportInput) -> Result<(), Error> {
+    pub fn report(&mut self, input: ReportInput, params: &OracleParams) -> Result<(), Error> {
         ensure!(self.is_reporter(&input.who), Error::NotRegistered);
         ensure!(input.now <= input.report_window_end, Error::WindowClosed);
         ensure!(
@@ -396,7 +468,11 @@ impl Oracle {
             Error::AlreadyFinal
         );
         ensure!(self.rounds.len() < MAX_ROUNDS, Error::RoundLimit);
-        let bond = round_bond(input.stake_at_risk, 1)?;
+        let bond = round_bond(input.stake_at_risk, 1, params)?;
+        // Reject a game whose complete frozen schedule cannot be represented;
+        // otherwise a legally-open round could become uncloseable on a later
+        // checked doubling (G-1).
+        stored_round_bond(bond, params.rounds, params.rounds)?;
         let report_hash = hash_report(
             input.component,
             input.epoch,
@@ -413,7 +489,7 @@ impl Oracle {
             value: input.value,
             evidence_hash: input.evidence_hash,
             bond,
-            challenge_deadline: input.now.saturating_add(ORC_WINDOW_BLOCKS),
+            challenge_deadline: input.now.saturating_add(params.window),
             extended: false,
             challenger: None,
             counter_value: None,
@@ -423,6 +499,17 @@ impl Oracle {
             cumulative_reporter_bond: bond,
             cumulative_challenger_bond: 0,
         });
+        self.round_schedules.push((
+            RoundKey {
+                component: input.component,
+                epoch: input.epoch,
+                spec_version: input.spec_version,
+            },
+            StoredRoundSchedule {
+                round_one_bond: bond,
+                round_cap: params.rounds,
+            },
+        ));
         self.events.push(Event::Reported {
             component: input.component,
             epoch: input.epoch,
@@ -557,7 +644,7 @@ impl Oracle {
                 // watchtower stake and eject.
                 self.events.push(Event::WatchtowerSlashed {
                     who: *who,
-                    amount: WT_STAKE / 10,
+                    amount: ceil_div(info.stake, 10),
                 });
                 ejected.push(*who);
             }
@@ -580,7 +667,12 @@ impl Oracle {
     /// the settled-value history rather than supplied by the caller, so a
     /// keeper can never inject a forged carry value and each neutralized round
     /// carries the value for its own component (07 §4/§10).
-    pub fn crank_round_close(&mut self, now: BlockNumber, batch: usize) -> Result<(), Error> {
+    pub fn crank_round_close_with_params(
+        &mut self,
+        now: BlockNumber,
+        batch: usize,
+        params: &OracleParams,
+    ) -> Result<(), Error> {
         let mut processed = 0usize;
         let mut i = 0usize;
         while i < self.rounds.len() && processed < batch {
@@ -593,8 +685,13 @@ impl Oracle {
                 self.rounds[i].epoch,
                 self.rounds[i].round,
             );
+            let schedule = self.round_schedule(RoundKey {
+                component,
+                epoch,
+                spec_version: self.rounds[i].spec_version,
+            })?;
             if self.rounds[i].challenger.is_none() {
-                if self.rounds[i].acks >= WT_QUORUM {
+                if self.rounds[i].acks >= params.watchtower_quorum {
                     let value = self.rounds[i].value;
                     self.settle_at(i, value, SettlePath::Unchallenged, false)?;
                 } else if !self.rounds[i].extended {
@@ -616,11 +713,13 @@ impl Oracle {
                     let carried = self.last_valid_value(component, epoch);
                     self.neutral_at(i, carried, 1)?;
                 }
-            } else if self.rounds[i].round < ORC_ROUNDS {
-                self.rounds[i].round += 1;
-                self.rounds[i].bond =
-                    round_bond(self.rounds[i].stake_at_risk, self.rounds[i].round)?;
-                self.rounds[i].challenge_deadline = now.saturating_add(ORC_WINDOW_BLOCKS);
+            } else if self.rounds[i].round < schedule.round_cap {
+                let next_round = self.rounds[i].round.checked_add(1).ok_or(Error::Overflow)?;
+                let next_bond =
+                    stored_round_bond(schedule.round_one_bond, next_round, schedule.round_cap)?;
+                self.rounds[i].round = next_round;
+                self.rounds[i].bond = next_bond;
+                self.rounds[i].challenge_deadline = now.saturating_add(params.window);
                 self.rounds[i].acks = 0;
                 // A fresh round has a new `report_hash`, so the prior round's
                 // acknowledgments can never match it again: drop them so
@@ -705,7 +804,11 @@ impl Oracle {
     pub fn request_adjudication(&mut self, key: RoundKey, referendum: u32) -> Result<(), Error> {
         let (component, epoch) = (key.component, key.epoch);
         let idx = self.find_round(key).ok_or(Error::RoundNotFound)?;
-        ensure!(self.rounds[idx].round >= ORC_ROUNDS, Error::WindowOpen);
+        let schedule = self.round_schedule(key)?;
+        ensure!(
+            self.rounds[idx].round >= schedule.round_cap,
+            Error::WindowOpen
+        );
         ensure!(self.rounds[idx].challenger.is_some(), Error::QuorumPending);
         self.events.push(Event::AdjudicationRequested {
             component,
@@ -728,12 +831,16 @@ impl Oracle {
         ensure!(value.0 <= COMPONENT_VALUE_MAX, Error::ValueOutOfBounds);
         let (component, epoch) = (key.component, key.epoch);
         let idx = self.find_round(key).ok_or(Error::RoundNotFound)?;
+        let schedule = self.round_schedule(key)?;
         // 07 §5.4: adjudication is the TERMINAL step of the game — the values
         // track resolves a round-`R_max` dispute that carries a live challenge.
         // A fresh or unchallenged round is not adjudicable, so the
         // `OracleResolution` origin cannot bypass the escalation ladder and
         // settle an arbitrary round (Codex F10).
-        ensure!(self.rounds[idx].round >= ORC_ROUNDS, Error::WindowOpen);
+        ensure!(
+            self.rounds[idx].round >= schedule.round_cap,
+            Error::WindowOpen
+        );
         ensure!(self.rounds[idx].challenger.is_some(), Error::QuorumPending);
         if reporter_wrong {
             self.record_reporter_offense(self.rounds[idx].reporter)?;
@@ -790,12 +897,16 @@ impl Oracle {
         Ok(())
     }
 
-    pub fn crank_reserve_probe(&mut self, now: BlockNumber) -> Result<u64, Error> {
+    pub fn crank_reserve_probe_with_params(
+        &mut self,
+        now: BlockNumber,
+        params: &OracleParams,
+    ) -> Result<u64, Error> {
         ensure!(
             now >= self
                 .reserve_health
                 .last_probe_at
-                .saturating_add(RES_PROBE_INTERVAL),
+                .saturating_add(params.probe_interval),
             Error::ProbeTooEarly
         );
         self.reserve_health.last_query_id = self
@@ -810,11 +921,12 @@ impl Oracle {
         Ok(query_id)
     }
 
-    pub fn reserve_probe_result(
+    pub fn reserve_probe_result_with_params(
         &mut self,
         now: BlockNumber,
         query_id: u64,
         passed: bool,
+        params: &OracleParams,
     ) -> Result<(), Error> {
         ensure!(
             query_id == self.reserve_health.last_query_id,
@@ -830,22 +942,26 @@ impl Oracle {
         // A response that lands at or after the `res.probe_timeout` deadline is
         // counted as a **fail** regardless of the reported outcome — a late or
         // absent answer is never healthy (07 §8; Codex F2).
-        let effective = passed && now < since.saturating_add(RES_PROBE_TIMEOUT);
-        self.apply_probe_result(query_id, effective);
+        let effective = passed && now < since.saturating_add(params.probe_timeout);
+        self.apply_probe_result(query_id, effective, params);
         Ok(())
     }
 
-    pub fn crank_probe_timeout(&mut self, now: BlockNumber) -> Result<(), Error> {
+    pub fn crank_probe_timeout_with_params(
+        &mut self,
+        now: BlockNumber,
+        params: &OracleParams,
+    ) -> Result<(), Error> {
         let since = self
             .reserve_health
             .pending_since
             .ok_or(Error::UnknownQuery)?;
         ensure!(
-            now >= since.saturating_add(RES_PROBE_TIMEOUT),
+            now >= since.saturating_add(params.probe_timeout),
             Error::WindowOpen
         );
         let query_id = self.reserve_health.last_query_id;
-        self.apply_probe_result(query_id, false);
+        self.apply_probe_result(query_id, false, params);
         Ok(())
     }
 
@@ -860,6 +976,10 @@ impl Oracle {
         );
         ensure!(self.rounds.len() <= MAX_ROUNDS, Error::RoundLimit);
         ensure!(
+            self.round_schedules.len() == self.rounds.len(),
+            Error::RoundLimit
+        );
+        ensure!(
             self.component_values.len() <= MAX_COMPONENT_VALUES,
             Error::AlreadyFinal
         );
@@ -873,9 +993,21 @@ impl Oracle {
             ensure!(self.is_watchtower(who), Error::NotRegistered);
         }
         for r in &self.rounds {
-            ensure!((1..=ORC_ROUNDS).contains(&r.round), Error::RoundNotFound);
+            let schedule = self.round_schedule(RoundKey {
+                component: r.component,
+                epoch: r.epoch,
+                spec_version: r.spec_version,
+            })?;
             ensure!(
-                r.bond >= round_bond(r.stake_at_risk, r.round)?,
+                (ORC_ROUND_CAP_MIN..=ORC_ROUND_CAP_MAX).contains(&schedule.round_cap),
+                Error::RoundNotFound
+            );
+            ensure!(
+                (1..=schedule.round_cap).contains(&r.round),
+                Error::RoundNotFound
+            );
+            ensure!(
+                r.bond == stored_round_bond(schedule.round_one_bond, r.round, schedule.round_cap,)?,
                 Error::BondBelowMinimum
             );
             // A live round for an already settled key would let a second
@@ -899,6 +1031,9 @@ impl Oracle {
                 .count();
             ensure!(usize::from(r.acks) == recorded_acks, Error::QuorumPending);
         }
+        for (key, _) in &self.round_schedules {
+            ensure!(self.find_round(*key).is_some(), Error::RoundNotFound);
+        }
         Ok(())
     }
 
@@ -913,7 +1048,15 @@ impl Oracle {
             self.component_values.len() < MAX_COMPONENT_VALUES,
             Error::AlreadyFinal
         );
+        let round = self.rounds.get(idx).ok_or(Error::RoundNotFound)?;
+        let key = RoundKey {
+            component: round.component,
+            epoch: round.epoch,
+            spec_version: round.spec_version,
+        };
+        let schedule_idx = self.round_schedule_index(key).ok_or(Error::RoundNotFound)?;
         let r = self.rounds.remove(idx);
+        self.round_schedules.remove(schedule_idx);
         // The game for this `(component, epoch, version)` is terminal: its
         // acknowledgment records are dead weight, so reap them — scoped to this
         // version so a sibling per-version game's acks survive (G-6/I-20;
@@ -1030,6 +1173,7 @@ impl Oracle {
         };
         info.offenses = info.offenses.saturating_add(1);
         let offense = info.offenses;
+        let slash_amount = ceil_div(info.stake, 2);
         // 07 §3 stake discipline: 50% of `orc.reporter_stake` on **exactly** the
         // second adjudicated-false report; **ejection** on the third (not a
         // further slash) — Codex F19. The §5.5 round-bond-stack forfeiture and
@@ -1037,7 +1181,7 @@ impl Oracle {
         if offense == 2 {
             self.events.push(Event::ReporterSlashed {
                 who,
-                amount: ORC_REPORTER_STAKE / 2,
+                amount: slash_amount,
                 offense,
             });
         }
@@ -1048,14 +1192,14 @@ impl Oracle {
         Ok(())
     }
 
-    fn apply_probe_result(&mut self, query_id: u64, passed: bool) {
+    fn apply_probe_result(&mut self, query_id: u64, passed: bool, params: &OracleParams) {
         self.reserve_health.pending_since = None;
         if passed {
             self.reserve_health.consecutive_passes =
                 self.reserve_health.consecutive_passes.saturating_add(1);
             self.reserve_health.consecutive_fails = 0;
             if self.reserve_health.unhealthy
-                && self.reserve_health.consecutive_passes >= RES_RECOVER_THRESHOLD
+                && self.reserve_health.consecutive_passes >= params.recover_threshold
             {
                 self.reserve_health.unhealthy = false;
                 self.events.push(Event::ReserveRecovered);
@@ -1065,7 +1209,7 @@ impl Oracle {
                 self.reserve_health.consecutive_fails.saturating_add(1);
             self.reserve_health.consecutive_passes = 0;
             if !self.reserve_health.unhealthy
-                && self.reserve_health.consecutive_fails >= RES_FAIL_THRESHOLD
+                && self.reserve_health.consecutive_fails >= params.fail_threshold
             {
                 self.reserve_health.unhealthy = true;
                 self.events.push(Event::ReserveUnhealthy);
@@ -1088,20 +1232,86 @@ impl Oracle {
                 && r.spec_version == key.spec_version
         })
     }
+    fn round_schedule_index(&self, key: RoundKey) -> Option<usize> {
+        self.round_schedules
+            .iter()
+            .position(|(stored, _)| *stored == key)
+    }
+    fn round_schedule(&self, key: RoundKey) -> Result<StoredRoundSchedule, Error> {
+        self.round_schedules
+            .iter()
+            .find_map(|(stored, schedule)| (*stored == key).then_some(*schedule))
+            .ok_or(Error::RoundNotFound)
+    }
 }
 
-pub fn round_bond(stake_at_risk: Balance, round: u8) -> Result<Balance, Error> {
-    ensure!((1..=ORC_ROUNDS).contains(&round), Error::RoundNotFound);
+/// Divide a slash base with rounding against the claimant. All callers use a
+/// non-zero protocol denominator; the explicit zero branch is fail-closed for
+/// any future misuse rather than panicking.
+fn ceil_div(value: Balance, divisor: Balance) -> Balance {
+    if divisor == 0 {
+        return value;
+    }
+    let quotient = value / divisor;
+    if value % divisor == 0 {
+        quotient
+    } else {
+        quotient.saturating_add(1)
+    }
+}
+
+pub fn round_bond(
+    stake_at_risk: Balance,
+    round: u8,
+    params: &OracleParams,
+) -> Result<Balance, Error> {
+    ensure!(
+        (ORC_ROUND_CAP_MIN..=ORC_ROUND_CAP_MAX).contains(&params.rounds),
+        Error::RoundNotFound
+    );
+    ensure!((1..=params.rounds).contains(&round), Error::RoundNotFound);
     let scaled = stake_at_risk
-        .checked_mul(ORC_BOND_BPS as Balance)
+        .checked_mul(params.bond_bps as Balance)
         .ok_or(Error::Overflow)?
         / 10_000;
-    let b1 = core::cmp::max(ORC_BOND_FLOOR, scaled);
-    b1.checked_mul(1u128 << (round - 1)).ok_or(Error::Overflow)
+    let b1 = core::cmp::max(params.bond_floor, scaled);
+    let multiplier = 1u128
+        .checked_shl(u32::from(round.saturating_sub(1)))
+        .ok_or(Error::Overflow)?;
+    b1.checked_mul(multiplier).ok_or(Error::Overflow)
 }
 
-pub fn can_admit_attested_component(delta_s_max_bps: u32) -> bool {
-    let coverage_bps = ((1u32 << ORC_ROUNDS) - 1).saturating_mul(ORC_BOND_BPS);
+/// Derive a game's current bond exclusively from its snapshotted round-one
+/// bond and round cap (07 §6.1/§13). This is deliberately independent of
+/// every live constitution parameter.
+pub fn stored_round_bond(
+    round_one_bond: Balance,
+    round: u8,
+    round_cap: u8,
+) -> Result<Balance, Error> {
+    ensure!(
+        (ORC_ROUND_CAP_MIN..=ORC_ROUND_CAP_MAX).contains(&round_cap),
+        Error::RoundNotFound
+    );
+    ensure!((1..=round_cap).contains(&round), Error::RoundNotFound);
+    let multiplier = 1u128
+        .checked_shl(u32::from(round.saturating_sub(1)))
+        .ok_or(Error::Overflow)?;
+    round_one_bond
+        .checked_mul(multiplier)
+        .ok_or(Error::Overflow)
+}
+
+pub fn can_admit_attested_component(delta_s_max_bps: u32, params: &OracleParams) -> bool {
+    if !(ORC_ROUND_CAP_MIN..=ORC_ROUND_CAP_MAX).contains(&params.rounds) {
+        return false;
+    }
+    let Some(round_multiplier) = 1u32.checked_shl(u32::from(params.rounds)) else {
+        return false;
+    };
+    let coverage_bps = round_multiplier
+        .saturating_sub(1)
+        .saturating_mul(params.bond_bps);
     coverage_bps >= delta_s_max_bps
 }
 
@@ -1177,6 +1387,59 @@ pub mod benchmarking {
 mod tests {
     use super::*;
 
+    /// Keep the pre-existing core tests focused on their original transition
+    /// assertions while production callers pass an explicit live snapshot.
+    trait DefaultOracleParams {
+        fn register_reporter(&mut self, who: AccountId, now: BlockNumber) -> Result<(), Error>;
+        fn register_watchtower(&mut self, who: AccountId, now: BlockNumber) -> Result<(), Error>;
+        fn crank_round_close(&mut self, now: BlockNumber, batch: usize) -> Result<(), Error>;
+        fn crank_reserve_probe(&mut self, now: BlockNumber) -> Result<u64, Error>;
+        fn reserve_probe_result(
+            &mut self,
+            now: BlockNumber,
+            query_id: u64,
+            passed: bool,
+        ) -> Result<(), Error>;
+        fn crank_probe_timeout(&mut self, now: BlockNumber) -> Result<(), Error>;
+    }
+
+    impl DefaultOracleParams for Oracle {
+        fn register_reporter(&mut self, who: AccountId, now: BlockNumber) -> Result<(), Error> {
+            Oracle::register_reporter_with_params(self, who, now, &OracleParams::DEFAULT)
+        }
+
+        fn register_watchtower(&mut self, who: AccountId, now: BlockNumber) -> Result<(), Error> {
+            Oracle::register_watchtower_with_params(self, who, now, &OracleParams::DEFAULT)
+        }
+
+        fn crank_round_close(&mut self, now: BlockNumber, batch: usize) -> Result<(), Error> {
+            Oracle::crank_round_close_with_params(self, now, batch, &OracleParams::DEFAULT)
+        }
+
+        fn crank_reserve_probe(&mut self, now: BlockNumber) -> Result<u64, Error> {
+            Oracle::crank_reserve_probe_with_params(self, now, &OracleParams::DEFAULT)
+        }
+
+        fn reserve_probe_result(
+            &mut self,
+            now: BlockNumber,
+            query_id: u64,
+            passed: bool,
+        ) -> Result<(), Error> {
+            Oracle::reserve_probe_result_with_params(
+                self,
+                now,
+                query_id,
+                passed,
+                &OracleParams::DEFAULT,
+            )
+        }
+
+        fn crank_probe_timeout(&mut self, now: BlockNumber) -> Result<(), Error> {
+            Oracle::crank_probe_timeout_with_params(self, now, &OracleParams::DEFAULT)
+        }
+    }
+
     fn acct(n: u8) -> AccountId {
         [n; 32]
     }
@@ -1193,18 +1456,21 @@ mod tests {
 
     macro_rules! report {
         ($oracle:expr, $who:expr, $now:expr, $component:expr, $epoch:expr, $spec_version:expr, $value:expr, $evidence_hash:expr, $stake_at_risk:expr, $report_window_end:expr, $expected_spec:expr $(,)?) => {
-            $oracle.report(ReportInput {
-                who: $who,
-                now: $now,
-                component: $component,
-                epoch: $epoch,
-                spec_version: $spec_version,
-                value: $value,
-                evidence_hash: $evidence_hash,
-                stake_at_risk: $stake_at_risk,
-                report_window_end: $report_window_end,
-                expected_spec: $expected_spec,
-            })
+            $oracle.report(
+                ReportInput {
+                    who: $who,
+                    now: $now,
+                    component: $component,
+                    epoch: $epoch,
+                    spec_version: $spec_version,
+                    value: $value,
+                    evidence_hash: $evidence_hash,
+                    stake_at_risk: $stake_at_risk,
+                    report_window_end: $report_window_end,
+                    expected_spec: $expected_spec,
+                },
+                &OracleParams::DEFAULT,
+            )
         };
     }
 
@@ -1275,11 +1541,27 @@ mod tests {
 
     #[test]
     fn value_scaled_bonds_and_admission_rule_match_defaults() {
-        assert_eq!(round_bond(400_000_000_000, 1), Ok(10_000_000_000));
-        assert_eq!(round_bond(1_200_000_000_000, 1), Ok(30_000_000_000));
-        assert_eq!(round_bond(1_200_000_000_000, 3), Ok(120_000_000_000));
-        assert!(can_admit_attested_component(1_750));
-        assert!(!can_admit_attested_component(1_751));
+        assert_eq!(
+            round_bond(400_000_000_000, 1, &OracleParams::DEFAULT),
+            Ok(10_000_000_000)
+        );
+        assert_eq!(
+            round_bond(1_200_000_000_000, 1, &OracleParams::DEFAULT),
+            Ok(30_000_000_000)
+        );
+        assert_eq!(
+            round_bond(1_200_000_000_000, 3, &OracleParams::DEFAULT),
+            Ok(120_000_000_000)
+        );
+        assert!(can_admit_attested_component(1_750, &OracleParams::DEFAULT));
+        assert!(!can_admit_attested_component(1_751, &OracleParams::DEFAULT));
+        let amended = OracleParams {
+            rounds: 2,
+            bond_bps: 500,
+            ..OracleParams::DEFAULT
+        };
+        assert!(can_admit_attested_component(1_500, &amended));
+        assert!(!can_admit_attested_component(1_501, &amended));
     }
 
     #[test]
@@ -1870,13 +2152,9 @@ mod tests {
     }
 
     #[test]
-    fn round_state_fields_match_contract_02_section_7_2() {
+    fn round_state_fields_match_contract_v4() {
         use scale_info::TypeDef;
-        // 02 §7.2 (contract v3) freezes `RoundState`'s field names and SCALE order;
-        // the triple key + these fields are the reconciled oracle surface (SQ-58).
-        // Lock them so the code can never silently re-diverge from the frozen
-        // contract again (rule 5) — the divergence SQ-58 was raised about.
-        const CONTRACT_FIELDS: [&str; 17] = [
+        const ROUND_STATE_FIELDS: [&str; 17] = [
             "component",
             "epoch",
             "round",
@@ -1900,7 +2178,7 @@ mod tests {
             TypeDef::Composite(c) => c.fields.iter().filter_map(|f| f.name).collect(),
             _ => panic!("RoundState must encode as a SCALE composite type"),
         };
-        assert_eq!(names, CONTRACT_FIELDS);
+        assert_eq!(names, ROUND_STATE_FIELDS);
     }
 
     #[test]

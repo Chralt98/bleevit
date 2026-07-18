@@ -3,7 +3,7 @@ use crate::{
     barrier::{AcceptedXcmOrigins, DenyTransact},
     caps::CappedInflows,
     coretime::coretime_renewal_program,
-    filter::{classify_pallet_xcm_call, XcmCallDisposition},
+    filter::{classify_pallet_xcm_call, ReserveTransferFilter, XcmCallDisposition},
     health::HealthTrackingRouter,
     identity::{
         asset_hub_location, bleavit_as_seen_from_asset_hub, coretime_location, dot_location,
@@ -955,7 +955,6 @@ fn caps_group_full_inbound_program_under_caps_credits_and_records_the_beneficiar
 
 #[test]
 fn caps_group_over_global_cap_fails_at_mint_with_zero_issuance_and_zero_trap() {
-    // limit-coverage: phase3.tvl_cap
     new_test_ext().execute_with(|| {
         set_caps(99, u128::MAX);
         let issuance_before = ForeignAssets::total_supply(usdc_location());
@@ -982,7 +981,6 @@ fn caps_group_over_global_cap_fails_at_mint_with_zero_issuance_and_zero_trap() {
 
 #[test]
 fn caps_group_per_account_rejection_still_gates_deposit_and_traps_minted_holding() {
-    // limit-coverage: phase3.dep_cap
     new_test_ext().execute_with(|| {
         set_caps(u128::MAX, 1);
         let outcome = execute_inbound_usdc(100, ALICE_BYTES, 43);
@@ -1218,6 +1216,27 @@ fn filter_group_every_stable2606_call_variant_has_the_conservative_disposition()
         classify_pallet_xcm_call(&claim),
         XcmCallDisposition::SignedAllowed
     );
+}
+
+#[test]
+fn reserve_transfer_filter_accepts_only_local_signed_dot_or_usdc() {
+    let signed = Location::new(
+        0,
+        [Junction::AccountId32 {
+            network: None,
+            id: [7; 32],
+        }],
+    );
+    let allowed = vec![asset(dot_location(), 1), asset(usdc_location(), 2)];
+    assert!(ReserveTransferFilter::contains(&(signed.clone(), allowed,)));
+    assert!(!ReserveTransferFilter::contains(&(
+        Location::new(1, [Junction::Parachain(CORETIME_PARA_ID)]),
+        vec![asset(dot_location(), 1)],
+    )));
+    assert!(!ReserveTransferFilter::contains(&(
+        signed,
+        vec![asset(Location::new(1, [Junction::Parachain(9_999)]), 1)],
+    )));
 }
 
 #[test]

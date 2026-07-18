@@ -14,7 +14,7 @@ use crate::{
 };
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{AsEnsureOriginWithArg, Contains, Everything, NeverEnsureOrigin, Nothing},
+    traits::{AsEnsureOriginWithArg, Everything, NeverEnsureOrigin, Nothing},
     weights::Weight,
 };
 use frame_system::EnsureSigned;
@@ -115,6 +115,7 @@ impl pallet_oracle::ReportingContext for TestReporting {
 impl pallet_oracle::Config for Test {
     type AdjudicationOrigin = NeverEnsureOrigin<()>;
     type Reporting = TestReporting;
+    type Params = TestOracleParams;
     type MaxRoundCloseBatch = MaxRoundCloseBatch;
     type ProbeDispatch = TestProbeDispatcher;
     type ProbeTimeoutSink = ();
@@ -136,6 +137,16 @@ impl pallet_oracle::BenchmarkHelper<RuntimeOrigin> for TestOracleBenchmarkHelper
 
 parameter_types! {
     pub const CurrentEpoch: EpochId = 0;
+}
+
+pub struct TestOracleParams;
+impl pallet_oracle::OracleParamsProvider for TestOracleParams {
+    fn get() -> pallet_oracle::OracleParams {
+        pallet_oracle::OracleParams {
+            probe_amount: ProbeAmount::get(),
+            ..pallet_oracle::OracleParams::DEFAULT
+        }
+    }
 }
 
 pub struct TestTreasuryParams;
@@ -386,13 +397,8 @@ pub type TestCappedAssets =
 pub type TestResponseHandler = ProbeAwareResponseHandler<PalletXcm, OracleProbeSink>;
 pub type TestBarrier = BleavitBarrier<TestResponseHandler, UniversalLocation, MaxPrefixes>;
 pub type TestRouter = HealthTrackingRouter<RecordingSender, TestHealthSink>;
-pub type TestProbeDispatcher = XcmProbeDispatcher<
-    TestRouter,
-    ProbeAmount,
-    ProbeExecWeightBudget,
-    ProbeMaxResponseWeight,
-    OurParaId,
->;
+pub type TestProbeDispatcher =
+    XcmProbeDispatcher<TestRouter, ProbeExecWeightBudget, ProbeMaxResponseWeight, OurParaId>;
 pub type TestRenewalDispatcher = XcmRenewalDispatcher<
     XcmExecutor<XcmConfig>,
     RuntimeCall,
@@ -405,22 +411,6 @@ pub type TestRenewalDispatcher = XcmRenewalDispatcher<
     // bounds (re-review minor); the mock sizes them equally for simplicity.
     RelayWeightLimit,
 >;
-
-/// Mirrors B1a's outbound posture: a signed local account may reserve-transfer
-/// only the two pinned assets. The canonical Asset Hub destination restriction
-/// is independently enforced by `classify_pallet_xcm_call` (09 §6.2).
-pub struct TestReserveTransferFilter;
-impl Contains<(Location, Vec<Asset>)> for TestReserveTransferFilter {
-    fn contains((origin, assets): &(Location, Vec<Asset>)) -> bool {
-        let signed_origin = matches!(origin.unpack(), (0, [Junction::AccountId32 { .. }]));
-        signed_origin
-            && !assets.is_empty()
-            && assets.iter().all(|asset| {
-                asset.id.0 == crate::identity::usdc_location()
-                    || asset.id.0 == crate::identity::dot_location()
-            })
-    }
-}
 
 pub type LocalOriginConverter = (
     SovereignSignedViaLocation<TestLocationToAccountId, RuntimeOrigin>,
@@ -473,7 +463,7 @@ impl pallet_xcm::Config for Test {
     type XcmExecuteFilter = Everything;
     type XcmExecutor = XcmExecutor<XcmConfig>;
     type XcmTeleportFilter = Nothing;
-    type XcmReserveTransferFilter = TestReserveTransferFilter;
+    type XcmReserveTransferFilter = crate::filter::ReserveTransferFilter;
     type Weigher = FixedWeightBounds<UnitWeightCost, RuntimeCall, MaxInstructions>;
     type UniversalLocation = UniversalLocation;
     type RuntimeOrigin = RuntimeOrigin;

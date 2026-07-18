@@ -35,8 +35,9 @@
 //! 02 §7.2/§13 were amended to the **triple key** and `INTEGRATION_CONTRACT_VERSION`
 //! bumped 2 → 3 under the user's joint backend+frontend sign-off (R-1) — a pre-
 //! genesis correction (no runtime deployed). `RoundState` re-embeds the triple for
-//! a `try_state` key-integrity check and carries the ack-keying/bond-freezing/§5.5
-//! fields; the FE reads the `OracleRoundView` projection (02 §4), not this struct.
+//! a `try_state` key-integrity check and carries the frozen ack-keying/§5.5 fields;
+//! the per-game bond schedule is internal parallel storage. The FE reads the
+//! `OracleRoundView` projection (02 §4), not either backing representation.
 //! I-18: no per-version settlement may be shadowed by another version's.
 //!
 //! ## Origins (07 §13; rule 6)
@@ -61,7 +62,8 @@
 //!   B-track runtime concern: the core models bond/stake amounts as `Balance`
 //!   fields, matching every other frame-free core (and A1).
 //! - Live `pallet-constitution::Params` sourcing of the META/PARAM oracle tunables
-//!   (`orc.*`, `wt.*`, `res.*`) is B1a wiring; the core carries the 13 defaults.
+//!   (`orc.*`, `wt.*`, `res.*`) enters through [`Config::Params`]; the frame-free
+//!   core carries the 13 defaults for fallback and standalone use.
 
 extern crate alloc;
 
@@ -80,10 +82,11 @@ mod tests;
 // The functional core is the semantic source of truth; re-export its surface
 // named (not glob — the pallet owns its own `Error`/`ReserveHealth` aliases).
 pub use oracle_core::{
-    round_bond, Error as CoreError, Event as CoreEvent, Oracle, ReportInput, ReporterInfo,
-    ReserveHealth as ReserveHealthValue, RoundKey, RoundState, SettlePath, SettledComponent,
-    WatchtowerInfo, MAX_ACK_RECORDS, MAX_COMPONENT_VALUES, MAX_REPORTERS, MAX_ROUNDS,
-    MAX_WATCHTOWERS, ORC_MAX_PROOF_BYTES, RES_PROBE_INTERVAL, RES_PROBE_TIMEOUT,
+    round_bond, stored_round_bond, Error as CoreError, Event as CoreEvent, Oracle, OracleParams,
+    ReportInput, ReporterInfo, ReserveHealth as ReserveHealthValue, RoundKey, RoundState,
+    SettlePath, SettledComponent, StoredRoundSchedule, WatchtowerInfo, MAX_ACK_RECORDS,
+    MAX_COMPONENT_VALUES, MAX_REPORTERS, MAX_ROUNDS, MAX_WATCHTOWERS, ORC_MAX_PROOF_BYTES,
+    ORC_ROUNDS, RES_PROBE_INTERVAL, RES_PROBE_TIMEOUT,
 };
 
 use futarchy_primitives::{BlockNumber, EpochId, MetricId, MetricSpecVersion};
@@ -102,6 +105,12 @@ pub const MAX_ACK_RECORDS_BOUND: u32 = MAX_ACK_RECORDS as u32;
 pub const MAX_PROOF_BYTES_BOUND: u32 = ORC_MAX_PROOF_BYTES as u32;
 /// Recomputable `(component, version)` declarations from the MetricSpec registry.
 pub const MAX_RECOMPUTABLE_BOUND: u32 = 64;
+
+/// Live oracle and reserve-probe tunables sourced from
+/// `pallet-constitution::Params`.
+pub trait OracleParamsProvider {
+    fn get() -> OracleParams;
+}
 
 /// The three cross-pallet inputs `report` derives rather than trusting the caller
 /// (07 §5.1 window, §2(4) frozen version, §6.1 `StakeAtRisk`). The runtime wires
@@ -151,7 +160,7 @@ pub trait ProbeDispatch {
         true
     }
 
-    fn probe_due(query_id: u64);
+    fn probe_due(query_id: u64, amount: futarchy_primitives::Balance);
 }
 
 impl ProbeDispatch for () {
@@ -159,7 +168,7 @@ impl ProbeDispatch for () {
         false
     }
 
-    fn probe_due(_: u64) {}
+    fn probe_due(_: u64, _: futarchy_primitives::Balance) {}
 }
 
 /// XCM-free observation seam fired after an unanswered reserve probe is folded.
@@ -222,6 +231,9 @@ pub mod pallet {
         /// The `report`-time cross-pallet reads (07 §5.1/§2(4)/§6.1).
         type Reporting: ReportingContext;
 
+        /// Live constitution-backed oracle and reserve-probe tunables.
+        type Params: OracleParamsProvider;
+
         /// Upper bound on rounds closed per `crank_round_close` call — a
         /// keeper-batch cap that bounds the crank's PoV (07 §13 "bounded
         /// batches"; not a 13 §1 tunable). Never hardcoded in the call body.
@@ -275,6 +287,20 @@ pub mod pallet {
             NMapKey<Blake2_128Concat, MetricSpecVersion>,
         ),
         RoundState,
+        OptionQuery,
+    >;
+
+    /// Internal (not FE-read): the round-one bond and terminal cap frozen when
+    /// each reporting game opens. Kept parallel to [`Rounds`] so the contract-v4
+    /// `RoundState` SCALE value remains byte-for-byte unchanged. One entry per
+    /// live round; the shared 128-game ceiling and `try_state` correspondence
+    /// bound this map.
+    #[pallet::storage]
+    pub type RoundSchedules<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        (MetricId, EpochId, MetricSpecVersion),
+        StoredRoundSchedule,
         OptionQuery,
     >;
 
@@ -514,7 +540,8 @@ pub mod pallet {
         pub fn register_reporter(origin: OriginFor<T>) -> DispatchResult {
             let who: [u8; 32] = ensure_signed(origin)?.into();
             let now = Self::now();
-            Self::mutate_core(|o| o.register_reporter(who, now))
+            let params = T::Params::get();
+            Self::mutate_core(|o| o.register_reporter_with_params(who, now, &params))
         }
 
         /// `oracle.deregister_reporter` — exit once every round the reporter
@@ -548,21 +575,25 @@ pub mod pallet {
             );
             let report_window_end = T::Reporting::report_window_end(epoch);
             let stake_at_risk = T::Reporting::stake_at_risk(component, epoch);
+            let params = T::Params::get();
             Self::mutate_core(|o| {
-                o.report(ReportInput {
-                    who,
-                    now,
-                    component,
-                    epoch,
-                    spec_version,
-                    value,
-                    evidence_hash,
-                    stake_at_risk,
-                    // Validated above against the live frozen-version set; the
-                    // core's equality check is then a no-op (Codex F7).
-                    report_window_end,
-                    expected_spec: spec_version,
-                })
+                o.report(
+                    ReportInput {
+                        who,
+                        now,
+                        component,
+                        epoch,
+                        spec_version,
+                        value,
+                        evidence_hash,
+                        stake_at_risk,
+                        // Validated above against the live frozen-version set; the
+                        // core's equality check is then a no-op (Codex F7).
+                        report_window_end,
+                        expected_spec: spec_version,
+                    },
+                    &params,
+                )
             })
         }
 
@@ -621,7 +652,8 @@ pub mod pallet {
         pub fn register_watchtower(origin: OriginFor<T>) -> DispatchResult {
             let who: [u8; 32] = ensure_signed(origin)?.into();
             let now = Self::now();
-            Self::mutate_core(|o| o.register_watchtower(who, now))
+            let params = T::Params::get();
+            Self::mutate_core(|o| o.register_watchtower_with_params(who, now, &params))
         }
 
         /// `oracle.ack_observed` — a registered watchtower asserts a round was
@@ -660,8 +692,10 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
             let now = Self::now();
             let batch = batch.min(T::MaxRoundCloseBatch::get()) as usize;
-            let progressed =
-                Self::mutate_core_with_rebate_progress(|o| o.crank_round_close(now, batch))?;
+            let params = T::Params::get();
+            let progressed = Self::mutate_core_with_rebate_progress(|o| {
+                o.crank_round_close_with_params(now, batch, &params)
+            })?;
             if progressed {
                 // B5 recalibrates this weight for the post-commit rebate write/payout.
                 T::KeeperRebate::rebate(&who, CrankClass::OracleLine);
@@ -680,15 +714,16 @@ pub mod pallet {
         pub fn crank_reserve_probe(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             let now = Self::now();
+            let params = T::Params::get();
             let mut fresh_query_id = None;
             let mut folded_timeout = false;
             Self::mutate_core(|o| {
                 let mut folded = false;
                 if let Some(since) = o.reserve_health.pending_since {
-                    if now >= since.saturating_add(RES_PROBE_TIMEOUT) {
+                    if now >= since.saturating_add(params.probe_timeout) {
                         // The outstanding probe never got a response: absence is
                         // never healthy (07 §8) — count it before sending anew.
-                        o.crank_probe_timeout(now)?;
+                        o.crank_probe_timeout_with_params(now, &params)?;
                         folded = true;
                         folded_timeout = true;
                     }
@@ -700,9 +735,9 @@ pub mod pallet {
                 if now
                     >= o.reserve_health
                         .last_probe_at
-                        .saturating_add(RES_PROBE_INTERVAL)
+                        .saturating_add(params.probe_interval)
                 {
-                    let query_id = o.crank_reserve_probe(now)?;
+                    let query_id = o.crank_reserve_probe_with_params(now, &params)?;
                     fresh_query_id = Some(query_id);
                     Ok(())
                 } else if folded {
@@ -717,7 +752,7 @@ pub mod pallet {
             let dispatch_live = T::ProbeDispatch::live();
             if dispatch_live {
                 if let Some(query_id) = fresh_query_id {
-                    T::ProbeDispatch::probe_due(query_id);
+                    T::ProbeDispatch::probe_due(query_id, params.probe_amount);
                 }
             }
             if dispatch_live && (fresh_query_id.is_some() || folded_timeout) {
@@ -806,7 +841,10 @@ pub mod pallet {
         /// current block.
         pub fn reserve_probe_result(query_id: u64, passed: bool) -> DispatchResult {
             let now = Self::now();
-            Self::mutate_core(|o| o.reserve_probe_result(now, query_id, passed))
+            let params = T::Params::get();
+            Self::mutate_core(|o| {
+                o.reserve_probe_result_with_params(now, query_id, passed, &params)
+            })
         }
 
         /// Escalate a round-3 dispute onto the `OracleResolution` track, recording
@@ -908,11 +946,26 @@ pub mod pallet {
             // Deterministic order so batch cranks are reproducible regardless of
             // storage hasher order.
             rounds.sort_unstable_by_key(|r| (r.component, r.epoch, r.spec_version, r.round));
+            let mut round_schedules = RoundSchedules::<T>::iter()
+                .map(|((component, epoch, spec_version), schedule)| {
+                    (
+                        RoundKey {
+                            component,
+                            epoch,
+                            spec_version,
+                        },
+                        schedule,
+                    )
+                })
+                .collect::<Vec<_>>();
+            round_schedules
+                .sort_unstable_by_key(|(key, _)| (key.component, key.epoch, key.spec_version));
             let component_values = ComponentValues::<T>::iter().collect::<Vec<_>>();
             Oracle {
                 reporters,
                 watchtowers,
                 rounds,
+                round_schedules,
                 component_values,
                 reserve_health: ReserveHealth::<T>::get(),
                 events: Vec::new(),
@@ -1005,6 +1058,30 @@ pub mod pallet {
                         .copied();
                     if existing != Some(*r) {
                         Rounds::<T>::insert((r.component, r.epoch, r.spec_version), *r);
+                    }
+                }
+            }
+            if before.round_schedules != after.round_schedules {
+                for (key, _) in &before.round_schedules {
+                    if !after
+                        .round_schedules
+                        .iter()
+                        .any(|(stored, _)| stored == key)
+                    {
+                        RoundSchedules::<T>::remove((key.component, key.epoch, key.spec_version));
+                    }
+                }
+                for (key, schedule) in &after.round_schedules {
+                    let existing = before
+                        .round_schedules
+                        .iter()
+                        .find(|(stored, _)| stored == key)
+                        .map(|(_, stored)| stored);
+                    if existing != Some(schedule) {
+                        RoundSchedules::<T>::insert(
+                            (key.component, key.epoch, key.spec_version),
+                            schedule,
+                        );
                     }
                 }
             }
@@ -1252,6 +1329,27 @@ pub mod pallet {
                 if (c, e, v) != (round.component, round.epoch, round.spec_version) {
                     return Err(TryRuntimeError::Other(
                         "Rounds: physical key diverges from embedded (component, epoch, version)",
+                    ));
+                }
+                let schedule = RoundSchedules::<T>::get((c, e, v)).ok_or(
+                    TryRuntimeError::Other("Rounds: live game is missing its frozen schedule"),
+                )?;
+                if !(futarchy_primitives::kernel::ORC_ROUNDS_MIN
+                    ..=futarchy_primitives::kernel::ORC_ROUNDS_MAX)
+                    .contains(&schedule.round_cap)
+                    || !(1..=schedule.round_cap).contains(&round.round)
+                    || stored_round_bond(schedule.round_one_bond, round.round, schedule.round_cap)
+                        != Ok(round.bond)
+                {
+                    return Err(TryRuntimeError::Other(
+                        "RoundSchedules: frozen schedule is outside the kernel envelope",
+                    ));
+                }
+            }
+            for (key, _) in RoundSchedules::<T>::iter() {
+                if !Rounds::<T>::contains_key(key) {
+                    return Err(TryRuntimeError::Other(
+                        "RoundSchedules: frozen schedule has no live round",
                     ));
                 }
             }

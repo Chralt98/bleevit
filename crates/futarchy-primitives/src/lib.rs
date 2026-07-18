@@ -908,6 +908,11 @@ pub mod kernel {
     /// both use; the registry uses the frozen floor (07 §7 "72 h ... frozen
     /// constant"), never a live-amended value.
     pub const ORC_WINDOW_BLOCKS: u32 = 43_200;
+    /// Supported oracle dispute-ladder envelope (07 §6.1; 13 `orc.rounds`).
+    /// Live governance selects a cap inside this range; each opened game
+    /// snapshots that selection for its full lifecycle.
+    pub const ORC_ROUNDS_MIN: u8 = 2;
+    pub const ORC_ROUNDS_MAX: u8 = 4;
     /// Class-4 oracle report window after the measurement epoch closes (07 §5(1)).
     pub const ORC_REPORT_WINDOW_BLOCKS: u32 = 2 * BLOCKS_PER_DAY;
     pub const MAX_NESTED_LEVELS: u32 = 4;
@@ -967,8 +972,10 @@ pub mod kernel {
     pub const WT_QUORUM: u8 = 2;
     pub const ATT_MIN_MEMBERS: u32 = 3;
     pub const ATT_QUORUM: u32 = 2;
+    /// 13 §2 dead-man finality-stall threshold, measured in relay blocks.
     pub const DEAD_MAN_RELAY_BLOCKS: u32 = 4_800;
-    pub const DEAD_MAN_SNAPSHOT_OVERDUE_BLOCKS: u32 = 57_600;
+    /// 13 §2 dead-man snapshot grace: strictly more than four six-second days.
+    pub const DEAD_MAN_SNAPSHOT_OVERDUE_BLOCKS: u32 = 4 * BLOCKS_PER_DAY;
     pub const STALE_EPOCH_BOUND_BLOCKS: u32 = 100_800;
     pub const TICK_BATCH: u32 = 10;
     pub const REAP_BATCH: u32 = 100;
