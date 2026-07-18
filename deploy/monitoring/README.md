@@ -79,11 +79,14 @@ integrity, byte-mismatch, resolver-divergence, signature/attestation,
 generation, channel-match, spec-coverage, repoint-lag, ANT-change, and webhook
 failure series. Existing keeper series are documented in `keeper/README.md`;
 the O5 inactivity rule uses the keeper's connected gauge and applies only to
-roles whose per-process `planned_total` has advanced. This excludes disabled
-roles while still alerting when an enabled role has planned work but has never
-succeeded. After a keeper restart, a never-cranked role is necessarily
-unobservable until it first plans work; production rules MUST still be
-instantiated per required role so activity in one role cannot mask another.
+roles whose per-process `planned_total` has advanced and whose last-success
+timestamp is non-zero. It fires one hour after the recorded success, with no
+additional Prometheus `for` delay. The blind spot is a role that has never
+succeeded since daemon start: disabled roles and post-restart-stuck roles both
+have timestamp zero and are indistinguishable. Production rules MUST still be
+instantiated per required role, as mandated by `keeper/README.md`, so activity
+in one role cannot mask another; the target-absent/`up == 0` meta-alerts below
+cover daemon-level failure.
 Collator/node exporters are scraped as substrate exporters and remain
 operator-version-specific; no rule assumes a non-frozen node metric name.
 

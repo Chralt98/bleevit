@@ -47,7 +47,7 @@ class ChainExporterIsolationTests(unittest.TestCase):
             raise MonitoringError("ReleaseChannel reserved flag bits are non-zero")
 
         exporter._release_channel = reject_channel  # type: ignore[method-assign]
-        exporter._events = lambda _block_hash: exporter.store.set(  # type: ignore[method-assign]
+        exporter._events = lambda _block_hash, _block: exporter.store.set(  # type: ignore[method-assign]
             "bleavit_chain_guardian_actions_total", 7
         )
 
@@ -69,7 +69,7 @@ class ChainExporterIsolationTests(unittest.TestCase):
             "bleavit_chain_release_channel_spec_version", 4
         )
 
-        def reject_events(_block_hash: str) -> None:
+        def reject_events(_block_hash: str, _block: int) -> None:
             raise MonitoringError("malformed System.Events")
 
         exporter._events = reject_events  # type: ignore[method-assign]

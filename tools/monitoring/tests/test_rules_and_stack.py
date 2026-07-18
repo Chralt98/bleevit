@@ -18,7 +18,7 @@ EXPECTED_EXPRESSIONS = {
     "BleavitCollateralizationDrift": "bleavit_ledger_collateral_drift_usdc != 0",
     "BleavitTreasuryMeterHigh": "bleavit_chain_treasury_meter_utilization_bps > 8000",
     "BleavitXcmAssetTrap": "bleavit_chain_xcm_trapped_assets > 0",
-    "BleavitKeeperInactive": "(time() - bleavit_keeper_last_successful_crank_timestamp_seconds) > 3600 and bleavit_keeper_planned_total > 0 and on() bleavit_keeper_connected == 1",
+    "BleavitKeeperInactive": "(time() - bleavit_keeper_last_successful_crank_timestamp_seconds) > 3600 and bleavit_keeper_last_successful_crank_timestamp_seconds > 0 and bleavit_keeper_planned_total > 0 and on() bleavit_keeper_connected == 1",
     "BleavitGuardianAction": "increase(bleavit_chain_guardian_actions_total[5m]) > 0",
     "BleavitMigrationCursorStalled": "bleavit_runtime_migration_cursor_stalled > 0",
     "BleavitStorageNearBound": "max(bleavit_chain_storage_map_entries / bleavit_chain_storage_map_bound) > 0.8 or bleavit_runtime_storage_max_utilization_ratio > 0.8",
@@ -26,7 +26,7 @@ EXPECTED_EXPRESSIONS = {
     "BleavitBootnodeCommitment": 'sum(bleavit_bootnode_browser_dial_success) < 8 or sum(bleavit_bootnode_browser_dial_success{port="443"}) < 2 or min(bleavit_bootnode_wss_certificate_days_remaining) < 14',
     "BleavitServedStateWindowShort": "max(bleavit_bootnode_served_state_retention_days) < 30",
     "BleavitReleaseIntegrity": "bleavit_release_monitor_bundle_byte_mismatches > 0 or bleavit_release_monitor_resolver_divergent_gateways >= 2 or bleavit_release_monitor_integrity_ok == 0",
-    "BleavitDescriptorLeadTimeUncovered": "(bleavit_chain_pending_upgrade_age_blocks > (0.5 * bleavit_chain_descriptor_lead_time_blocks)) and bleavit_release_monitor_covering_release == 0",
+    "BleavitDescriptorLeadTimeUncovered": "(bleavit_chain_pending_upgrade_age_blocks > (0.5 * bleavit_chain_descriptor_lead_time_blocks)) and on() (bleavit_release_monitor_covering_release == 0)",
     "BleavitReleaseChannelLagOrSecurityFlip": "bleavit_release_monitor_repoint_channel_lag_blocks > 600 or increase(bleavit_chain_release_channel_security_flips_total[5m]) > 0",
     "BleavitKeeperBudgetHigh": "bleavit_chain_keeper_budget_utilization_ratio > 0.8",
 }
@@ -63,6 +63,16 @@ class RuleAndStackTests(unittest.TestCase):
             for rule in group["rules"]
         }
         self.assertEqual(expressions, EXPECTED_EXPRESSIONS)
+
+    def test_keeper_inactivity_has_no_second_for_delay(self) -> None:
+        document = yaml.safe_load(RULES.read_text(encoding="utf-8"))
+        keeper_rule = next(
+            rule
+            for group in document["groups"]
+            for rule in group["rules"]
+            if rule["alert"] == "BleavitKeeperInactive"
+        )
+        self.assertNotIn("for", keeper_rule)
 
     def test_prometheus_scrapes_all_o5_jobs_and_keeps_o3_commented(self) -> None:
         path = ROOT / "deploy" / "monitoring" / "prometheus" / "prometheus.yml"

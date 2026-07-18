@@ -74,8 +74,7 @@ groups:
           threshold: "any trap"
 
       - alert: BleavitKeeperInactive
-        expr: (time() - bleavit_keeper_last_successful_crank_timestamp_seconds) > 3600 and bleavit_keeper_planned_total > 0 and on() bleavit_keeper_connected == 1
-        for: 1h
+        expr: (time() - bleavit_keeper_last_successful_crank_timestamp_seconds) > 3600 and bleavit_keeper_last_successful_crank_timestamp_seconds > 0 and bleavit_keeper_planned_total > 0 and on() bleavit_keeper_connected == 1
         labels: {severity: warning, runbook: RB-KEEPER, domain: "Keepers"}
         annotations:
           summary: "Keepers: a required role has no successful crank for one hour"
@@ -141,7 +140,7 @@ groups:
           threshold: "any byte mismatch; 2-of-3 resolver divergence"
 
       - alert: BleavitDescriptorLeadTimeUncovered
-        expr: (bleavit_chain_pending_upgrade_age_blocks > (0.5 * bleavit_chain_descriptor_lead_time_blocks)) and bleavit_release_monitor_covering_release == 0
+        expr: (bleavit_chain_pending_upgrade_age_blocks > (0.5 * bleavit_chain_descriptor_lead_time_blocks)) and on() (bleavit_release_monitor_covering_release == 0)
         labels: {severity: warning, runbook: RB-RELEASE, domain: "Descriptor lead time"}
         annotations:
           summary: "Descriptor lead time: no covering canonical release at half the live lead time"

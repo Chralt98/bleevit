@@ -40,6 +40,9 @@ from scale_metadata import MetadataDecodeError, decode_metadata  # noqa: E402
 
 LOG = logging.getLogger("bleavit-chain-alerts")
 
+# Operational resource bound for one catch-up pass; this is not a protocol parameter.
+MAX_EVENT_CATCH_UP_BLOCKS = 512
+
 
 def _series(name: str, kind: str, help_text: str, *labels: str) -> SeriesDefinition:
     return SeriesDefinition(name, kind, help_text, tuple(labels))
@@ -196,7 +199,7 @@ class ChainExporter:
         self.store = store or MetricStore(SERIES)
         self.metadata: dict[str, Any] | None = None
         self.metadata_spec_version: int | None = None
-        self.last_event_hash: str | None = None
+        self.last_event_block: int | None = None
         self.previous_security: bool | None = None
         self.security_flips_total = 0
         self.event_totals = {name: 0 for name in EVENT_FAMILIES}
@@ -323,8 +326,8 @@ class ChainExporter:
         )
         self.previous_security = channel.security
 
-    def _events(self, block_hash: str) -> None:
-        if block_hash == self.last_event_hash:
+    def _events(self, block_hash: str, block: int) -> None:
+        if self.last_event_block is not None and block <= self.last_event_block:
             return
         records = self._storage("System", "Events", block_hash)
         if not isinstance(records, list):
@@ -343,7 +346,59 @@ class ChainExporter:
         for name, count in observed.items():
             self.event_totals[name] += count
             self.store.set(name, self.event_totals[name])
-        self.last_event_hash = block_hash
+        self.last_event_block = block
+
+    def _block_hash(self, block: int) -> str:
+        block_hash = self.rpc.call("chain_getBlockHash", [block])
+        if not isinstance(block_hash, str):
+            raise MonitoringError(f"chain_getBlockHash returned no hash for block {block}")
+        return block_hash
+
+    def process_finalized(self, block_hash: str, block: int, *, full: bool) -> bool:
+        """Scrape a finalized head without dropping events from a buffered gap."""
+        if self.last_event_block is None:
+            first = block
+        elif block < self.last_event_block:
+            # Finalized heads cannot reorg. Ignore an out-of-order stale
+            # notification instead of moving gauges and decoder metadata backward.
+            return True
+        elif block == self.last_event_block:
+            # A repeated notification is event-idempotent. A due full scrape still
+            # refreshes the non-event domains at this finalized block.
+            return self.scrape(block_hash, block, full=full) if full else True
+        else:
+            first = self.last_event_block + 1
+
+        gap = block - first + 1
+        if gap > MAX_EVENT_CATCH_UP_BLOCKS:
+            skipped = gap - MAX_EVENT_CATCH_UP_BLOCKS
+            first += skipped
+            self.store.inc("bleavit_chain_scrape_errors_total", skipped)
+            LOG.error(
+                "finalized-event catch-up gap is %d blocks; skipping %d oldest blocks "
+                "and processing bounded window %d..%d",
+                gap,
+                skipped,
+                first,
+                block,
+            )
+            # Record the deliberate loss so a later notification cannot retry the
+            # skipped range and double-count the newest bounded window.
+            self.last_event_block = first - 1
+
+        complete = True
+        for current in range(first, block + 1):
+            current_hash = block_hash if current == block else self._block_hash(current)
+            complete = self.scrape(
+                current_hash,
+                current,
+                full=full and current == block,
+            ) and complete
+            if self.last_event_block != current:
+                # The event domain failed closed. Stop so the failed block remains
+                # the beginning of the next catch-up attempt.
+                return False
+        return complete
 
     def _storage_counts(self, block_hash: str) -> None:
         for pallet, item, bound_pallet, bound_name in COUNTED_MAPS:
@@ -519,7 +574,7 @@ class ChainExporter:
             lambda: self._release_channel(block_hash, block),
         )
         complete = self._run_domain(
-            "finalized events", EVENT_FAMILIES, lambda: self._events(block_hash)
+            "finalized events", EVENT_FAMILIES, lambda: self._events(block_hash, block)
         ) and complete
         if not full:
             return complete
@@ -584,20 +639,19 @@ def run(args: argparse.Namespace) -> int:
                     block_hash = rpc.call("chain_getFinalizedHead")
                     block = header_number(rpc.call("chain_getHeader", [block_hash]))
                 else:
-                    block_hash = header.get("hash")
-                    if not isinstance(block_hash, str):
-                        # Classic subscription headers do not carry their hash.
-                        block_hash = rpc.call("chain_getFinalizedHead")
-                        block = header_number(rpc.call("chain_getHeader", [block_hash]))
-                    else:
-                        block = header_number(header)
+                    # Classic finalized-head subscriptions carry a header, never
+                    # its hash. Resolve the hash from that header's own number so
+                    # buffered notifications cannot collapse onto the newest head.
+                    block = header_number(header)
+                    block_hash = exporter._block_hash(block)
                 try:
-                    exporter.scrape(
+                    full = now - last_full >= args.interval
+                    exporter.process_finalized(
                         block_hash,
                         block,
-                        full=now - last_full >= args.interval,
+                        full=full,
                     )
-                    if now - last_full >= args.interval:
+                    if full and exporter.last_event_block == block:
                         last_full = now
                 except (MonitoringError, ScaleValueError, MetadataDecodeError, ValueError) as error:
                     store.inc("bleavit_chain_scrape_errors_total")
