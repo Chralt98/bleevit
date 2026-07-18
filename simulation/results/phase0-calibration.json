@@ -6046,13 +6046,6 @@
     "proposal_count": 10000,
     "publication_margin": "0.10",
     "publication_round_usdc": 10000,
-    "python_version": [
-      3,
-      10,
-      12,
-      "final",
-      0
-    ],
     "sensitivity_sample_per_class": 64,
     "sigma_floors": {
       "code": "0.008",
@@ -6060,7 +6053,7 @@
       "param": "0.003",
       "treasury": "0.005"
     },
-    "source_model_sha256": "c65ba479e807d458336d789502e7facfbe6cdf4b800fd6668f303b749ecb9119",
+    "source_model_sha256": "47c63e787755f7a41bfa8137866253afc47f5b72fa9e39227e7203213dc51bd7",
     "subsample_size": 24,
     "thin_market_flow_multiplier": "0.72",
     "threshold_max_budget_multiple": "3.00",
@@ -6075,7 +6068,7 @@
       "treasury": "250000"
     }
   },
-  "config_digest": "f09735e645430366e2f1700d09f5159fc72f1aa35eb5eb47080838f697e5c44a",
+  "config_digest": "df53d254056dc5eacad8bec9d3c40189df1897f193c8fe46a46f3b895d676cfc",
   "gate_veto_counts": {
     "GateVetoSecurity": 320,
     "GateVetoSurvival": 1572
@@ -46999,6 +46992,15 @@
       "treasury": 2500
     }
   },
+  "provenance": {
+    "python_version": [
+      3,
+      10,
+      12,
+      "final",
+      0
+    ]
+  },
   "publication_evidence": {
     "flow_cap": {
       "calibrated_multiplier": "29",
@@ -47041,7 +47043,7 @@
       "pol.b_baseline": 25000
     }
   },
-  "schema": "bleavit.phase0-calibration.v2",
+  "schema": "bleavit.phase0-calibration.v3",
   "seed": 12820082396187590657,
   "subsample": {
     "proposal_ids": [

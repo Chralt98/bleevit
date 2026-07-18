@@ -188,7 +188,6 @@ class SimulationConfig:
                 "mkt_fee": str(TRADE_FEE),
                 "cap_proposal": str(CAP_PROPOSAL),
                 "source_model_sha256": source_model_digest(),
-                "python_version": list(python_version_tuple()),
             }
         )
         return payload
@@ -214,7 +213,6 @@ def source_model_digest() -> str:
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
-    digest.update(json.dumps(python_version_tuple(), separators=(",", ":")).encode())
     return digest.hexdigest()
 
 

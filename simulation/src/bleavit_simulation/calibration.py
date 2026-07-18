@@ -21,7 +21,7 @@ from bleavit_reference_model.treasury import (
     security_sizing_ok,
 )
 
-from .config import CLASSES, DEFAULT_SEED, SimulationConfig
+from .config import CLASSES, DEFAULT_SEED, SimulationConfig, python_version_tuple
 from .engine import SimulationResult, _strategy_for, simulate_proposal
 from .proposals import Proposal, generate_proposal_with_config
 
@@ -658,9 +658,10 @@ def run_full_calibration(*, seed: int = DEFAULT_SEED, config: SimulationConfig |
         "pol_sizing": _pol_sizing(primary),
         "proposal_count": config.proposal_count,
         "proposal_counts": {"by_class": {name: counts[name] for name in CLASSES}},
+        "provenance": {"python_version": list(python_version_tuple())},
         "publication_evidence": {"flow_cap": flow_evidence},
         "published": publication,
-        "schema": "bleavit.phase0-calibration.v2",
+        "schema": "bleavit.phase0-calibration.v3",
         "seed": seed,
         "subsample": {"proposal_ids": ids, "results": [by_id[proposal_id] for proposal_id in ids]},
         "thin_market_capture": thin,

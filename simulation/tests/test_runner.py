@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 import os
 import subprocess
@@ -16,10 +17,20 @@ ARTIFACT = ROOT / "simulation" / "results" / "phase0-calibration.json"
 
 
 class CalibrationRunnerTests(unittest.TestCase):
-    def test_config_binding_includes_reference_package_and_python_tuple(self):
+    def test_config_binding_covers_sources_but_not_the_interpreter(self):
         canonical = SimulationConfig().canonical()
-        self.assertEqual(canonical["python_version"], list(python_version_tuple()))
+        # The digest binds behavior-affecting inputs only; the generating
+        # interpreter is artifact provenance so the committed evidence
+        # verifies on any Python (the pinned subsample replay and the
+        # Merkle root catch real cross-version divergence).
+        self.assertNotIn("python_version", canonical)
         self.assertEqual(len(canonical["source_model_sha256"]), 64)
+        artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
+        recorded = artifact["provenance"]["python_version"]
+        self.assertEqual(len(recorded), 5)
+        for part in recorded[:3]:
+            self.assertIsInstance(part, int)
+        self.assertEqual(len(python_version_tuple()), 5)
 
     def test_check_revalidates_structure_and_reports_economic_status(self):
         env = os.environ.copy()

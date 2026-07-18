@@ -281,10 +281,21 @@ def check_artifact(path: Path) -> dict:
     payload = load_artifact(path)
     errors: list[str] = []
     config = SimulationConfig()
-    if payload.get("schema") != "bleavit.phase0-calibration.v2":
+    if payload.get("schema") != "bleavit.phase0-calibration.v3":
         errors.append("wrong evidence schema")
     if payload.get("seed") != DEFAULT_SEED:
         errors.append("default seed drift")
+    # Generating-interpreter provenance is informational: validated for shape,
+    # never compared against the running interpreter — cross-version
+    # reproducibility is enforced empirically by the byte-exact pinned
+    # subsample replay and the outcome-digest Merkle root below.
+    recorded_python = payload.get("provenance", {}).get("python_version")
+    if (
+        not isinstance(recorded_python, list)
+        or len(recorded_python) != 5
+        or not all(isinstance(part, int) for part in recorded_python[:3])
+    ):
+        errors.append("missing or malformed python-version provenance")
     if payload.get("config") != config.canonical():
         errors.append("recorded config differs from executable defaults")
     if payload.get("config_digest") != config.digest():
