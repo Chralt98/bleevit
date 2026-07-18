@@ -366,6 +366,12 @@ pub enum Event {
     },
     ProposalQualified(ProposalId),
     ProposalDeferred(ProposalId),
+    SlotsShrunk {
+        epoch: EpochId,
+        requested: u32,
+        funded: u32,
+        dropped: Vec<ProposalId>,
+    },
     MarketsOpened(ProposalId),
     DecisionExtended(ProposalId),
     ProposalQueued {
@@ -448,6 +454,9 @@ pub struct EpochState<AccountId> {
     pub resource_locks: Vec<([u8; 8], ProposalId)>,
     pub events: Vec<Event>,
     pub dead_man_armed: bool,
+    /// The detector has observed every active cause healthy, so the latched
+    /// flag now guards a proposal-free recovery epoch rather than a pause.
+    pub dead_man_recovery_ready: bool,
     pub ledger_frozen: bool,
     pub phase_flags: u32,
     /// Monotone proposal-id high-water mark; reaping never decreases it.
@@ -486,6 +495,7 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
             resource_locks: Vec::new(),
             events: Vec::new(),
             dead_man_armed: false,
+            dead_man_recovery_ready: false,
             ledger_frozen: false,
             phase_flags: 0,
             proposal_id_high_water: 0,
@@ -534,8 +544,14 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         // Every clock-sync caller therefore observes T20 stale status, even when
         // `decide` or `settle_cohort` is invoked before `tick`.
         self.latch_stale_epoch(now);
-        if self.dead_man_armed {
-            self.dead_man_paused_at.get_or_insert(now);
+        if self.dead_man_armed && !self.dead_man_recovery_ready {
+            if self.recovery_epoch.take().is_some() {
+                // A fresh trigger during recovery invalidates the partial
+                // healthy interval. Resume only into another full epoch.
+                self.dead_man_paused_at = Some(now);
+            } else {
+                self.dead_man_paused_at.get_or_insert(now);
+            }
             return;
         }
         if let Some(paused_at) = self.dead_man_paused_at.take() {
@@ -792,6 +808,98 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         self.rollovers.retain(|(proposal, _)| *proposal != pid);
         self.events.push(Event::ProposalQualified(pid));
         Ok(())
+    }
+
+    /// Apply the 08 §4.4 POL budget to the fully-qualified slate before any
+    /// Seed-phase market is opened. The qualification crank is canonical
+    /// descending-bond/ascending-id, but doing this once the whole slate exists
+    /// is essential: screening failures must not consume budget and callers may
+    /// not choose a cheaper subset by ordering Seed cranks.
+    ///
+    /// `commitments` carries the exact per-proposal live-Params prediction from
+    /// the runtime boundary. An unavailable or overflowing prediction is treated
+    /// as unfundable (G-1) and removed before budget ranking. The remaining
+    /// removal is from the reverse bond-priority end, so the funded slate is a
+    /// prefix of the fundable qualified ranking.
+    pub fn shrink_qualified_slots(
+        &mut self,
+        origin: Origin,
+        budget: Balance,
+        commitments: &[(ProposalId, Option<Balance>)],
+    ) -> Result<Vec<ProposalId>, Error> {
+        ensure!(matches!(origin, Origin::Keeper), Error::BadOrigin);
+        ensure!(self.epoch.phase == EpochPhase::Seed, Error::BadPhase);
+
+        let mut funded = self
+            .proposals
+            .iter()
+            .filter(|proposal| {
+                proposal.epoch == self.epoch.index && proposal.state == ProposalState::Qualified
+            })
+            .map(|proposal| (proposal.bond, proposal.id))
+            .collect::<Vec<_>>();
+        funded.sort_by(|(bond_a, pid_a), (bond_b, pid_b)| {
+            bond_b.cmp(bond_a).then_with(|| pid_a.cmp(pid_b))
+        });
+        let requested = u32::try_from(funded.len()).map_err(|_| Error::ArithmeticOverflow)?;
+        let mut dropped = Vec::new();
+
+        // An unavailable prediction cannot be funded at any rank. Remove these
+        // entries first so a high-bond unavailable proposal cannot force the
+        // needless removal of every cheaper, fully priced proposal below it.
+        funded.retain(|(_, pid)| {
+            let commitment = commitments
+                .iter()
+                .find_map(|(candidate, amount)| (*candidate == *pid).then_some(*amount))
+                .flatten();
+            if commitment.is_some() {
+                true
+            } else {
+                dropped.push(*pid);
+                false
+            }
+        });
+
+        loop {
+            let total = funded.iter().try_fold(0_u128, |sum, (_, pid)| {
+                commitments
+                    .iter()
+                    .find_map(|(candidate, amount)| (*candidate == *pid).then_some(*amount))
+                    .flatten()
+                    .and_then(|amount| sum.checked_add(amount))
+            });
+            if total.is_some_and(|total| total <= budget) {
+                break;
+            }
+            let Some((_, pid)) = funded.pop() else {
+                break;
+            };
+            dropped.push(pid);
+        }
+
+        if dropped.is_empty() {
+            return Ok(dropped);
+        }
+
+        for pid in &dropped {
+            ensure!(
+                self.proposal(*pid)?.state == ProposalState::Qualified,
+                Error::BadState
+            );
+            self.resource_locks.retain(|(_, owner)| owner != pid);
+            let proposal = self.proposal_mut(*pid)?;
+            proposal.state = ProposalState::Submitted;
+            proposal.decide_at = 0;
+            self.rollover_or_refund(*pid)?;
+        }
+        let funded_count = u32::try_from(funded.len()).map_err(|_| Error::ArithmeticOverflow)?;
+        self.events.push(Event::SlotsShrunk {
+            epoch: self.epoch.index,
+            requested,
+            funded: funded_count,
+            dropped: dropped.clone(),
+        });
+        Ok(dropped)
     }
     pub fn open_markets<L: LedgerOps<AccountId>>(
         &mut self,
@@ -1472,7 +1580,10 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
                 && self.epoch.next_length >= MIN_EPOCH_LENGTH
                 && self.epoch.length % PHASE_DENOM == 0
                 && self.epoch.next_length % PHASE_DENOM == 0
-                && self.rollovers.len() <= MAX_INTAKE_QUEUE,
+                && self.rollovers.len() <= MAX_INTAKE_QUEUE
+                && self
+                    .recovery_epoch
+                    .is_none_or(|recovery| recovery == self.epoch.index),
             Error::TryStateViolation
         );
         ensure!(
@@ -1700,7 +1811,17 @@ impl<AccountId: Clone + Eq> EpochState<AccountId> {
         if rolled == 0 {
             ensure!(self.rollovers.len() < MAX_INTAKE_QUEUE, Error::IntakeFull);
             self.rollovers.push((pid, 1));
-            self.proposal_mut(pid)?.epoch = self.epoch.index.saturating_add(1);
+            let next_epoch = self.epoch.index.saturating_add(1);
+            let proposal = self.proposal_mut(pid)?;
+            proposal.state = ProposalState::Submitted;
+            proposal.epoch = next_epoch;
+            if !self.intake_queue.contains(&pid) {
+                ensure!(
+                    self.intake_queue.len() < MAX_INTAKE_QUEUE,
+                    Error::IntakeFull
+                );
+                self.intake_queue.push(pid);
+            }
         } else {
             self.proposal_mut(pid)?.state = ProposalState::Cancelled;
             self.intake_queue.retain(|queued| *queued != pid);
@@ -2280,6 +2401,39 @@ mod tests {
         assert_eq!(
             s.decide_engine(1, &input, &floor),
             Ok(DecisionOutcome::Reject(RejectReason::SecuritySizing))
+        );
+    }
+    #[test]
+    fn shrink_drops_unavailable_commitment_before_lower_bond_fundable_slots() {
+        let mut state = EpochState::<[u8; 32]>::new();
+        state.epoch.phase = EpochPhase::Seed;
+        for (pid, bond) in [(1, 300), (2, 200), (3, 100)] {
+            let mut proposal = prop(pid, ProposalState::Qualified);
+            proposal.bond = bond;
+            state.proposals.push(proposal);
+        }
+
+        let dropped = state
+            .shrink_qualified_slots(
+                Origin::Keeper,
+                100,
+                &[(1, None), (2, Some(60)), (3, Some(40))],
+            )
+            .unwrap();
+
+        assert_eq!(dropped, vec![1]);
+        assert_eq!(state.proposal(1).unwrap().state, ProposalState::Submitted);
+        assert_eq!(state.proposal(1).unwrap().epoch, 1);
+        assert_eq!(state.proposal(2).unwrap().state, ProposalState::Qualified);
+        assert_eq!(state.proposal(3).unwrap().state, ProposalState::Qualified);
+        assert_eq!(
+            state.events.last(),
+            Some(&Event::SlotsShrunk {
+                epoch: 0,
+                requested: 3,
+                funded: 2,
+                dropped: vec![1],
+            })
         );
     }
     #[test]

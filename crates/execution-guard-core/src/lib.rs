@@ -1063,7 +1063,7 @@ pub mod benchmarking {
 mod tests {
     use super::*;
     use alloc::vec;
-    use attestor_core::AttestorRegistry;
+    use attestor_core::{AttestorParams, AttestorRegistry};
     use conditional_ledger_core::LedgerState;
     use epoch_core::{EpochState, MarketSet, Proposal};
     use futarchy_primitives::{BoundedVec, ProposalState, RejectReason};
@@ -1208,7 +1208,8 @@ mod tests {
         g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
         let (mut e, mut l) = epoch_with_queued();
         let guardian = guardian7();
-        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
+        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)], AttestorParams::DEFAULT)
+            .unwrap();
         g.execute(
             GuardOrigin::Signed,
             &mut e,
@@ -1238,7 +1239,8 @@ mod tests {
         g.held_resources.push((1, *b"resource"));
         g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
         let guardian = guardian7();
-        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
+        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)], AttestorParams::DEFAULT)
+            .unwrap();
         assert_eq!(
             g.check_dispatch_time(&g.queue[0], &guardian, &att, &pl(calls.clone()), 10)
                 .unwrap_err(),
@@ -1263,7 +1265,8 @@ mod tests {
         g.held_resources.push((1, *b"resource"));
         g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
         let guardian = guardian7();
-        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
+        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)], AttestorParams::DEFAULT)
+            .unwrap();
         assert_eq!(
             g.check_dispatch_time(&g.queue[0], &guardian, &att, &pl(cap_calls), 10)
                 .unwrap_err(),
@@ -1307,7 +1310,8 @@ mod tests {
         g.held_resources.push((1, *b"resource"));
         g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
         let guardian = guardian7();
-        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
+        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)], AttestorParams::DEFAULT)
+            .unwrap();
         assert_eq!(
             g.check_dispatch_time(&g.queue[0], &guardian, &att, &pl(calls), 10)
                 .unwrap_err(),
@@ -1334,9 +1338,13 @@ mod tests {
         q.declared_domains = vec![CallDomain::InternalRootAuthorizeUpgrade];
         g.held_resources.push((1, *b"resource"));
         g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
-        let mut att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
-        att.attest(acct(1), 1, ph, h(8), 0).unwrap();
-        att.attest(acct(2), 1, ph, h(8), 0).unwrap();
+        let mut att =
+            AttestorRegistry::new(vec![acct(1), acct(2), acct(3)], AttestorParams::DEFAULT)
+                .unwrap();
+        att.attest(acct(1), 1, ph, h(8), 0, AttestorParams::DEFAULT)
+            .unwrap();
+        att.attest(acct(2), 1, ph, h(8), 0, AttestorParams::DEFAULT)
+            .unwrap();
         let guardian = guardian7();
         g.check_dispatch_time(&g.queue[0], &guardian, &att, &pl(calls.clone()), 43_201)
             .unwrap();
@@ -1401,7 +1409,8 @@ mod tests {
         g.held_resources.push((1, *b"resource"));
         g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
         let guardian = guardian7();
-        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
+        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)], AttestorParams::DEFAULT)
+            .unwrap();
         // Different calls carrying the committed hash as a trusted field: rejected.
         let swapped = Payload {
             hash: ph,
@@ -1468,7 +1477,8 @@ mod tests {
         g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
         let (mut e, mut l) = epoch_with_queued();
         let guardian = guardian7();
-        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
+        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)], AttestorParams::DEFAULT)
+            .unwrap();
         // First attempt: the runtime dispatch reverts.
         g.execute(
             GuardOrigin::Signed,
@@ -1521,7 +1531,8 @@ mod tests {
         g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
         let (mut e, mut l) = epoch_with_queued();
         let guardian = guardian7();
-        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
+        let att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)], AttestorParams::DEFAULT)
+            .unwrap();
         g.execute(
             GuardOrigin::Signed,
             &mut e,
@@ -1604,9 +1615,13 @@ mod tests {
         q.declared_domains = vec![CallDomain::InternalRootAuthorizeUpgrade];
         g.held_resources.push((1, *b"resource"));
         g.enqueue(GuardOrigin::EpochDecision, q).unwrap();
-        let mut att = AttestorRegistry::new(vec![acct(1), acct(2), acct(3)]).unwrap();
-        att.attest(acct(1), 1, ph, h(8), 0).unwrap();
-        att.attest(acct(2), 1, ph, h(8), 0).unwrap();
+        let mut att =
+            AttestorRegistry::new(vec![acct(1), acct(2), acct(3)], AttestorParams::DEFAULT)
+                .unwrap();
+        att.attest(acct(1), 1, ph, h(8), 0, AttestorParams::DEFAULT)
+            .unwrap();
+        att.attest(acct(2), 1, ph, h(8), 0, AttestorParams::DEFAULT)
+            .unwrap();
         let guardian = guardian7();
         // Previously CapabilityDenied for META; now the full check list passes.
         g.check_dispatch_time(&g.queue[0], &guardian, &att, &pl(calls.clone()), 43_201)

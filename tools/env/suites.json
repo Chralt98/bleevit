@@ -33,9 +33,7 @@
       "kind": "zombienet",
       "path": "zombienet/drills/04-dead-man.zndsl",
       "tier": "g1",
-      "gated_on": [
-        "B10 dead-man detector (the A8/A11 freeze surfaces are wired; no runtime caller of note_dead_man_engaged yet)"
-      ],
+      "gated_on": [],
       "timeout_seconds": 100000,
       "spec": "15 §4.7; 09 §7.1; 13 §2"
     },
@@ -45,8 +43,7 @@
       "path": "zombienet/drills/05-coretime-renewal-under-dead-man.zndsl",
       "tier": "g1",
       "gated_on": [
-        "B10 dead-man detector (the A8/A11 freeze surfaces are wired; no runtime caller of note_dead_man_engaged yet)",
-        "B10 coretime renewal staging for the 09 §7.1 exit form (quote-noting seam + class-origin ops.coretime funding + RenewalDispatch wiring; until then the helper's exemption-reachability form proves freeze traversal only, not a renewal)"
+        "B12 coretime renewal staging for the 09 §7.1 exit form (quote-noting seam + class-origin ops.coretime funding + RenewalDispatch wiring — re-owned to B12 at the B10 close, PLAN SQ-245/SQ-246; until staged, the helper's exemption-reachability form proves freeze traversal only, not a renewal; the B10 dead-man detector landed, so engagement itself is live)"
       ],
       "timeout_seconds": 100000,
       "spec": "09 §4/§7.1"
@@ -57,7 +54,7 @@
       "path": "zombienet/drills/06-pb-migration.zndsl",
       "tier": "release",
       "gated_on": [
-        "09 §3.2 migration-control surface (SQ-244): no migrations.force_failure/retry exists, so the MigrationHalt trigger can never go live in a drill and guardian playbook activation correctly refuses (TriggerInactive); the playbook effect substrate itself landed with B1b (#104)"
+        "09 §3.2 migration-control surface (SQ-264): no migrations.force_failure/retry exists, so the MigrationHalt trigger can never go live in a drill and guardian playbook activation correctly refuses (TriggerInactive); the playbook effect substrate itself landed with B1b (#104)"
       ],
       "timeout_seconds": 1800,
       "spec": "09 §3.2/§7.1"
@@ -68,7 +65,7 @@
       "path": "zombienet/drills/07-xcm-reserve-transfer.zndsl",
       "tier": "release",
       "gated_on": [
-        "B10 production XCM composition (SQ-101's Location re-key landed, but AssetTransactor, Barrier, IsReserve, IsTeleporter, OriginConverter and the sender side are all fail-closed () today, and spec_version is still 1 — the helper's B4-readiness gate keys on both)"
+        "drill-07 helper readiness probe vs the unbumped runtime version (B10 landed the production XCM composition — AssetTransactor, Barrier, IsReserve, IsTeleporter, OriginConverter, sender — but spec_version is still 1 and the committed helper refuses bleavit/1; retire/re-key the probe at the first post-B10 run)"
       ],
       "timeout_seconds": 1800,
       "spec": "15 §4.7; 09 §6.1"
