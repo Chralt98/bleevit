@@ -34,7 +34,7 @@ Scope of the existing gate parameters is **every market-bearing class: PARAM, TR
 | `mkt.fee` | Perbill | bps | 30 | 5 | 100 | 10 | 1 | PARAM | [04](04-markets-and-pricing.md) |
 | `dec.window` | u32 | blocks | 43,200 (72 h) | 14,400 | 86,400 | 20% | 2 | META (vf) | [05](05-welfare-and-decision-engine.md) |
 | `dec.trailing` | u32 | blocks | 14,400 (24 h) | 3,600 | 28,800 | — | 2 | META | [05](05-welfare-and-decision-engine.md) |
-| `dec.delta` δ per class | Fixed | s-units | 0.015 / 0.025 / 0.040 / 0.060 — **floors of the Ask-scaled schedule, [08](08-treasury-and-economics.md) §5.3** | 0.005 | 0.10 (K cap incl. scaling) | 0.005 | 2 | META (vf) | [05](05-welfare-and-decision-engine.md), [08](08-treasury-and-economics.md) |
+| `dec.delta` δ per class | Fixed | s-units | 0.0375 / 0.0375 / 0.060 / 0.090 — **Phase-0-calibrated (V-12; ×1.5 the pre-calibration 0.015/0.025/0.040/0.060 for TREASURY/CODE/META, ×2.5 for PARAM — its small floor + unbacked capability-envelope prizes make marginal flips cheap) floors of the Ask-scaled schedule, [08](08-treasury-and-economics.md) §5.3; [15](15-invariants-and-testing.md) §4.9** | 0.005 | 0.10 (K cap incl. scaling) | 0.005 | 2 | META (vf) | [05](05-welfare-and-decision-engine.md), [08](08-treasury-and-economics.md) |
 | `dec.sigma` σ per class | Fixed | s-units | 0.003 / 0.005 / 0.008 / 0.010 | 0 | δ/2 | — | 2 | META | [05](05-welfare-and-decision-engine.md) |
 | `dec.delta_max` (convergence) | Fixed | — | 0.05 | 0.02 | 0.10 | — | 2 | META | [05](05-welfare-and-decision-engine.md) |
 | `dec.coverage` | Percent | % | 95 | 90 | 99 | — | 2 | META (vf) | [05](05-welfare-and-decision-engine.md) |

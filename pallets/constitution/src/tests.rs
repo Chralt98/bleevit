@@ -987,10 +987,11 @@ fn genesis_registry_matches_13_1_row_encodings() {
         assert_eq!(Params::<Test>::count(), 98);
 
         // Per-class suffix keys (13 rule 6) — δ floors, kernel-capped.
+        // Phase-0-calibrated (V-12): dec.delta.meta 0.090 on the 1e9 grid.
         let delta_meta = Params::<Test>::get(key16(b"dec.delta.meta")).unwrap();
         assert_eq!(
             delta_meta.value,
-            ParamValue::Fixed(futarchy_primitives::FixedU64(60_000_000))
+            ParamValue::Fixed(futarchy_primitives::FixedU64(90_000_000))
         );
         assert!(delta_meta.kernel_bounded);
 

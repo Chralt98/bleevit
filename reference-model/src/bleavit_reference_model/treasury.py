@@ -28,11 +28,18 @@ V_MIN_FLOORS = {
     "code": Decimal("600000"),
     "meta": Decimal("1200000"),
 }
+# Phase-0 calibrated dec.delta floors (13 §1; V-12, 2026-07-19), raised from the
+# pre-calibration 0.015/0.025/0.040/0.060 so that every class's decidable-harm
+# false-pass rate is < 1 % and no PROFITABLE manipulation flips a proposal below
+# 3·InCapPrize (15 §4.9). TREASURY/CODE/META took a uniform 1.5x; PARAM took 2.5x
+# — its small floor + unbacked capability-envelope prizes (SQ-173) make marginal
+# near-boundary flips cheap, so it needs the extra margin to reach 0 profitable
+# exploits. The 0.005 kernel floor (DECISION_DELTA_FLOOR) is unchanged.
 DELTA_FLOORS = {
-    "param": Decimal("0.015"),
-    "treasury": Decimal("0.025"),
-    "code": Decimal("0.040"),
-    "meta": Decimal("0.060"),
+    "param": Decimal("0.0375"),
+    "treasury": Decimal("0.0375"),
+    "code": Decimal("0.060"),
+    "meta": Decimal("0.090"),
 }
 GATE_B = Decimal("7500")
 BASELINE_B = Decimal("25000")

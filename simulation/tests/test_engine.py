@@ -322,16 +322,18 @@ class ExecutedEngineTests(unittest.TestCase):
     def test_noise_share_changes_a_marginal_decision(self):
         quiet = SimulationConfig(proposal_count=1, noise_flow_share="0.00")
         noisy = replace(quiet, noise_flow_share="0.99")
-        p_quiet = generate_proposal_with_config(31, 0, quiet)
-        p_noisy = generate_proposal_with_config(31, 0, noisy)
+        # Seed 38 is marginal at the V-12-calibrated δ (quiet -> Adopt, noisy
+        # -> Reject): decision-book noise suppresses the marginal Adopt.
+        p_quiet = generate_proposal_with_config(38, 0, quiet)
+        p_noisy = generate_proposal_with_config(38, 0, noisy)
         # Keep this sensitivity test focused on decision-book noise.
         p_quiet = replace(p_quiet, gate_exposure="no_gate")
         p_noisy = replace(p_noisy, gate_exposure="no_gate")
         quiet_result = simulate_proposal(
-            p_quiet, seed=31, config=quiet, budget_multiple=Decimal(0)
+            p_quiet, seed=38, config=quiet, budget_multiple=Decimal(0)
         )
         noisy_result = simulate_proposal(
-            p_noisy, seed=31, config=noisy, budget_multiple=Decimal(0)
+            p_noisy, seed=38, config=noisy, budget_multiple=Decimal(0)
         )
         self.assertNotEqual(quiet_result.outcome, noisy_result.outcome)
         self.assertEqual(quiet_result.noise_flow, Decimal(0))
@@ -339,7 +341,7 @@ class ExecutedEngineTests(unittest.TestCase):
         self.assertEqual(
             noisy_result.evidence(),
             simulate_proposal(
-                p_noisy, seed=31, config=noisy, budget_multiple=Decimal(0)
+                p_noisy, seed=38, config=noisy, budget_multiple=Decimal(0)
             ).evidence(),
         )
 

@@ -250,9 +250,9 @@ These two events are the frontend's entire price-history pillar (event-derived, 
 
 TREASURY proposal, decision pair, `b = 25,000` USDC/branch. Books open at 0.5/0.5; headroom seeded per book `= 25,000·ln 2 = 17,328.68` USDC of complete sets. Over the **d5–d18** Trading phase, informed flow moves ACCEPT-LONG to 0.560 and REJECT-LONG to 0.520.
 
-- Decision-window TWAPs: `P̄_acc = 0.5585`, `P̄_rej = 0.5210`, Baseline TWAP `= 0.5230`.
-- Reject-leg floor: `r_eff = max(0.5210, 0.5230 − σ=0.005) = 0.5210`. Uplift `= 0.0375 ≥ δ_TREASURY = 0.025` ✔.
-- Trailing 24 h TWAPs 0.5570 / 0.5222 ⇒ uplift 0.0348 ✔; convergence `|0.560 − 0.5585| = 0.0015 ≤ 0.05` ✔.
+- Decision-window TWAPs: `P̄_acc = 0.5620`, `P̄_rej = 0.5210`, Baseline TWAP `= 0.5230`.
+- Reject-leg floor: `r_eff = max(0.5210, 0.5230 − σ=0.005) = 0.5210`. Uplift `= 0.0410 ≥ δ_TREASURY = 0.0375` (V-12) ✔.
+- Trailing 24 h TWAPs 0.5620 / 0.5222 ⇒ uplift 0.0398 ≥ 0.0375 ✔; convergence `|0.560 − 0.5620| = 0.0020 ≤ 0.05` ✔.
 - Gate books: breach TWAPs S: 0.011 acc / 0.009 rej; C: 0.017 / 0.015 — under `p_max = 0.05`, within `ε = 0.02` ✔. **Adopt.**
 - **Maker loss realized (ACCEPT book walked 0.5 → 0.56):** with revenue recycled, expected divergence subsidy at final price `p` is `b·[ln 2 − H(p)]`, `H(p) = −p·ln p − (1−p)·ln(1−p)`:
 

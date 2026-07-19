@@ -227,7 +227,7 @@ live. For mock data these are the correct realistic values.
 |---|---|---|
 | `dec.window` / `dec.trailing` | 72 h / 24 h | decision-window banner, trailing overlay |
 | `dec.extension` | 3 days, at most once | `DecisionExtended` notice + new countdown |
-| `dec.delta` δ | 0.015 / 0.025 / 0.040 / 0.060 required ACCEPT-over-REJECT margin | "needs +δ margin" gauge |
+| `dec.delta` δ | 0.0375 / 0.0375 / 0.060 / 0.090 required ACCEPT-over-REJECT margin (V-12 Phase-0 calibrated) | "needs +δ margin" gauge |
 | `dec.sigma` σ | 0.003 / 0.005 / 0.008 / 0.010 baseline noise floor | decision-stats panel |
 | `dec.delta_max` | 0.05 spot-vs-TWAP convergence bound | "converged" check |
 | `dec.coverage` | 95% required observation coverage | coverage meter |

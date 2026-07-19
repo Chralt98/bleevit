@@ -376,6 +376,21 @@ def _threshold_brackets(
             row["diagnostic"] = "non_displacement_or_convergence_flip"
             griefing.append(row)
             continue
+        # 15 §4.9 / D-4 / 14 TM-18 (2026-07-19 user ruling — Decision log): the
+        # exit gate validates AttackCost̂ against PROFITABLE manipulation. A
+        # wrong-PASS flip whose cheapest realized cost still meets or exceeds the
+        # prize is unprofitable deep-pocket griefing — a TM-18 accepted residual
+        # δ-calibration provably cannot close (flip budgets are identical across
+        # the δ sweep) — so it is a recorded diagnostic, not a sub-3P/envelope
+        # violation. Profitable flips (realized cost < prize) stay full
+        # violations; the min over flip probes is the attacker-favourable cost.
+        prize_value = hi_result.prize or Decimal(0)
+        cheapest = min(flip_losses)
+        if prize_value > 0 and cheapest >= prize_value:
+            row["diagnostic"] = "unprofitable_griefing_cost_ge_prize"
+            row["cheapest_realized_cost_over_prize"] = str(cheapest / prize_value)
+            griefing.append(row)
+            continue
         bounds = [
             (
                 result.manip_floor or Decimal(0),
@@ -669,7 +684,8 @@ def run_full_calibration(*, seed: int = DEFAULT_SEED, config: SimulationConfig |
             },
             "reporting_gate": "Per 15 §4.9 and 08 §5.2/§5.5, publication gates on per-class |true_effect|>=delta harmful proposals and sub-3P brackets; the distribution-weighted aggregate remains reported.",
             "threshold_search": "Every observed attacked wrong-PASS candidate receives a state-identical zero-budget counterfactual and a binary bracket over one fixed attacker budget at the configured 5% relative tolerance; gated wrong-PASS probes allocate that same budget across the decision pair and real gate-book suppression, so a flip must clear both the welfare hurdle and both ordered veto tests. A pre-registered beneficial sample supplies griefing diagnostics.",
-            "envelope_validation": "05 §5.6/08 §5.5 applies only to causal wrong-PASS displacement flips; observed loss non-monotonicity is reported fail-closed as inconclusive rather than inferred from endpoints.",
+            "envelope_validation": "05 §5.6/08 §5.5 applies only to causal, PROFITABLE wrong-PASS displacement flips (realized cost < prize); observed loss non-monotonicity is reported fail-closed as inconclusive rather than inferred from endpoints.",
+            "profitable_exploit_gate": "15 §4.9 / D-4 / 14 TM-18 (2026-07-19 ruling): the sub-3P and envelope gates score PROFITABLE manipulation. A causal wrong-PASS flip whose cheapest realized cost is >= the prize is unprofitable deep-pocket griefing (TM-18 accepted residual; δ-calibration cannot close it) and is recorded as a griefing diagnostic, not a violation. Every profitable flip (cost < prize) remains a full sub-3P/envelope violation.",
             "undefined_prize": "An explicit undefined envelope proxy is represented as null and rejects SecuritySizing.",
         },
         "attack_cost_validation": attack,

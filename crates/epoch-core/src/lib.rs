@@ -84,10 +84,10 @@ impl EpochParams {
         decision_window: 43_200,
         trailing_window: 14_400,
         delta: [
-            FixedU64(15_000_000),
-            FixedU64(25_000_000),
-            FixedU64(40_000_000),
+            FixedU64(37_500_000),
+            FixedU64(37_500_000),
             FixedU64(60_000_000),
+            FixedU64(90_000_000),
             FixedU64(ONE),
         ],
         sigma: [
@@ -2539,14 +2539,14 @@ mod tests {
     }
     #[test]
     fn class_hurdle_params_match_spec() {
-        // 13 §1: dec.delta = 0.015/0.025/0.040/0.060 and dec.sigma =
-        // 0.003/0.005/0.008/0.010 for PARAM/TREASURY/CODE/META. CODE and META
-        // must differ (they were conflated at 0.040/0 previously).
+        // 13 §1 (V-12 Phase-0 calibrated): dec.delta = 0.0375/0.0375/0.060/0.090
+        // and dec.sigma = 0.003/0.005/0.008/0.010 for PARAM/TREASURY/CODE/META.
+        // CODE and META must differ (they were conflated at 0.040/0 previously).
         let params = EpochParams::DEFAULT;
-        assert_eq!(params.class_delta(ProposalClass::Param), 15_000_000);
-        assert_eq!(params.class_delta(ProposalClass::Treasury), 25_000_000);
-        assert_eq!(params.class_delta(ProposalClass::Code), 40_000_000);
-        assert_eq!(params.class_delta(ProposalClass::Meta), 60_000_000);
+        assert_eq!(params.class_delta(ProposalClass::Param), 37_500_000);
+        assert_eq!(params.class_delta(ProposalClass::Treasury), 37_500_000);
+        assert_eq!(params.class_delta(ProposalClass::Code), 60_000_000);
+        assert_eq!(params.class_delta(ProposalClass::Meta), 90_000_000);
         assert_eq!(params.class_sigma(ProposalClass::Param), 3_000_000);
         assert_eq!(params.class_sigma(ProposalClass::Treasury), 5_000_000);
         assert_eq!(params.class_sigma(ProposalClass::Code), 8_000_000);
@@ -2565,10 +2565,10 @@ mod tests {
                 decision_window: 43_200,
                 trailing_window: 14_400,
                 delta: [
-                    FixedU64(15_000_000),
-                    FixedU64(25_000_000),
-                    FixedU64(40_000_000),
+                    FixedU64(37_500_000),
+                    FixedU64(37_500_000),
                     FixedU64(60_000_000),
+                    FixedU64(90_000_000),
                     FixedU64(ONE),
                 ],
                 sigma: [
@@ -2607,8 +2607,9 @@ mod tests {
     }
     #[test]
     fn param_hurdle_adopts_at_spec_delta() {
-        // A PARAM margin of 0.017 clears the spec hurdle δ=0.015 (adopt) but would
-        // have failed the old hardcoded δ=0.020. Pins finding #4 into the engine.
+        // A PARAM margin of 0.040 clears the V-12-calibrated spec hurdle δ=0.0375
+        // (adopt), read from Params rather than any hardcoded value. Pins finding
+        // #4 into the engine.
         let mut s = EpochState::new();
         let mut ledger = LedgerState::<[u8; 32]>::new();
         ledger.create_vault(1, 1).unwrap();
@@ -2621,9 +2622,9 @@ mod tests {
         });
         s.proposals.push(p);
         let mut i = pass_input();
-        i.accept_full = FixedU64(517_000_000);
-        i.accept_trailing = FixedU64(517_000_000);
-        i.accept_spot = FixedU64(517_000_000);
+        i.accept_full = FixedU64(540_000_000);
+        i.accept_trailing = FixedU64(540_000_000);
+        i.accept_spot = FixedU64(540_000_000);
         assert_eq!(
             s.decide(Origin::Keeper, &mut ledger, 1, 0, i).unwrap(),
             DecisionOutcome::Adopt
@@ -2920,15 +2921,17 @@ mod tests {
         });
         s.proposals.push(proposal);
         let mut input = pass_input();
-        input.accept_full = FixedU64(517_000_000);
-        input.accept_trailing = FixedU64(517_000_000);
-        input.accept_spot = FixedU64(517_000_000);
+        // Margin 0.040 clears the V-12 DEFAULT δ_PARAM=0.0375 (Adopt) but not a
+        // stricter injected δ=0.045 (Reject).
+        input.accept_full = FixedU64(540_000_000);
+        input.accept_trailing = FixedU64(540_000_000);
+        input.accept_spot = FixedU64(540_000_000);
         assert_eq!(
             s.decide_engine(1, &input, &EpochParams::DEFAULT),
             Ok(DecisionOutcome::Adopt)
         );
         let mut strict = EpochParams::DEFAULT;
-        strict.delta[0] = FixedU64(20_000_000);
+        strict.delta[0] = FixedU64(45_000_000);
         assert_eq!(
             s.decide_engine(1, &input, &strict),
             Ok(DecisionOutcome::Reject(RejectReason::HurdleNotMet))
