@@ -916,6 +916,44 @@ pub fn genesis_capabilities() -> Vec<CapabilityRecord> {
 /// `gate.v_min` and
 /// `dis.merit_min` carry derived defaults and bind at their consuming
 /// engines. Kernel-bounded flags follow the enumeration in 13 rule 7.
+///
+/// Epoch-timing genesis seeds (`epoch.length`, `dec.window`, `dec.trailing`) are
+/// read through [`timing_defaults`] so the default-off `fast-timing` build
+/// (SQ-128, G1 drill 09) can seed a compressed epoch clock derived from
+/// `kernel::FAST_DAY_BLOCKS`. The `cfg(not(fast-timing))` arm below carries the
+/// exact frozen 13 §1 values, so the release registry — and the fixture that
+/// byte-asserts it (`tools/limit-coverage/genesis-keys.json`, the constitution
+/// genesis test) — is unchanged. The compressed arm keeps the relationships
+/// `EpochParams::validate` enforces (D3 `dec.window <= epoch·13/21`, D4
+/// `trailing <= window`); every other duration Param stays at its frozen value so
+/// the emergency/execution/oracle windows can never fire inside a minute-scale
+/// drill.
+#[cfg(not(feature = "fast-timing"))]
+mod timing_defaults {
+    pub const EPOCH_LENGTH: u32 = 302_400;
+    pub const EPOCH_LENGTH_MAX: u32 = 604_800;
+    pub const DEC_WINDOW: u32 = 43_200;
+    pub const DEC_WINDOW_MAX: u32 = 86_400;
+    pub const DEC_TRAILING: u32 = 14_400;
+    pub const DEC_TRAILING_MIN: u32 = 3_600;
+    pub const DEC_TRAILING_MAX: u32 = 28_800;
+}
+#[cfg(feature = "fast-timing")]
+mod timing_defaults {
+    use super::kernel::FAST_DAY_BLOCKS as DAY;
+    /// 21 · FAST_DAY (matches the 21-phase-unit epoch); clears the compressed
+    /// `MIN_EPOCH_LENGTH_BLOCKS` (14 · FAST_DAY) and stays a multiple of 21.
+    pub const EPOCH_LENGTH: u32 = 21 * DAY;
+    pub const EPOCH_LENGTH_MAX: u32 = 42 * DAY;
+    /// 3 · FAST_DAY (72 h); `<= EPOCH_LENGTH · 13/21` holds (3 <= 13).
+    pub const DEC_WINDOW: u32 = 3 * DAY;
+    pub const DEC_WINDOW_MAX: u32 = 6 * DAY;
+    /// 1 · FAST_DAY (24 h) trailing window; `<= DEC_WINDOW` holds.
+    pub const DEC_TRAILING: u32 = DAY;
+    pub const DEC_TRAILING_MIN: u32 = DAY / 4;
+    pub const DEC_TRAILING_MAX: u32 = 2 * DAY;
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn genesis_params() -> Vec<ParamRecord> {
     #[allow(clippy::too_many_arguments)]
@@ -945,9 +983,9 @@ pub fn genesis_params() -> Vec<ParamRecord> {
     alloc::vec![
         row(
             b"epoch.length",
-            ParamValue::U32(302_400),
+            ParamValue::U32(timing_defaults::EPOCH_LENGTH),
             ParamValue::U32(kernel::MIN_EPOCH_LENGTH_BLOCKS),
-            ParamValue::U32(604_800),
+            ParamValue::U32(timing_defaults::EPOCH_LENGTH_MAX),
             Some(MaxDelta::Percent(10)),
             2,
             ParamClass::Meta,
@@ -1005,9 +1043,9 @@ pub fn genesis_params() -> Vec<ParamRecord> {
         ),
         row(
             b"dec.window",
-            ParamValue::U32(43_200),
+            ParamValue::U32(timing_defaults::DEC_WINDOW),
             ParamValue::U32(kernel::DECISION_WINDOW_FLOOR_BLOCKS),
-            ParamValue::U32(86_400),
+            ParamValue::U32(timing_defaults::DEC_WINDOW_MAX),
             Some(MaxDelta::Percent(20)),
             2,
             ParamClass::Meta,
@@ -1015,9 +1053,9 @@ pub fn genesis_params() -> Vec<ParamRecord> {
         ),
         row(
             b"dec.trailing",
-            ParamValue::U32(14_400),
-            ParamValue::U32(3_600),
-            ParamValue::U32(28_800),
+            ParamValue::U32(timing_defaults::DEC_TRAILING),
+            ParamValue::U32(timing_defaults::DEC_TRAILING_MIN),
+            ParamValue::U32(timing_defaults::DEC_TRAILING_MAX),
             None,
             2,
             ParamClass::Meta,

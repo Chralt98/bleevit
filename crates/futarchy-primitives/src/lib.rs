@@ -870,6 +870,18 @@ pub mod kernel {
     pub const MILLISECS_PER_BLOCK: u64 = 6_000;
     /// Frozen six-second-block day used by security-sizing duration math (13 §3.1).
     pub const BLOCKS_PER_DAY: u32 = 14_400;
+    /// Compressed "day" used **only** by the default-off `fast-timing` test build
+    /// (SQ-128, G1 drill 09). It stands in for the 14,400-block day inside the
+    /// epoch-timing floors so the 09 §7.1 "three unattended epochs" drill proves
+    /// the epoch machinery over three real epochs (real Aura + relay consensus) in
+    /// minutes instead of the release-cadence ~63 days. This is the single knob the
+    /// whole compressed regime derives from; it does not exist in the production
+    /// build (no `#[cfg(not(...))]` arm), so nothing can read a compressed day off
+    /// the release binary. R-7/G-1: the feature only ever *shrinks* timing for a
+    /// documented test wasm — it is never the release runtime. See PLAN.md ·
+    /// Decision log (SQ-128) and `docs/architecture` 09 §7.1 / 13 §1.
+    #[cfg(feature = "fast-timing")]
+    pub const FAST_DAY_BLOCKS: u32 = 4;
     pub const MIN_SPLIT_USDC: u128 = super::currency::USDC_CENT;
     pub const MIN_TRANSFER_USDC: u128 = super::currency::USDC_CENT;
     pub const MIN_TRADE_USDC: u128 = 1_000_000;
@@ -880,7 +892,18 @@ pub mod kernel {
     pub const MKT_STALE_GAP_BLOCKS: u64 = 50;
     pub const POSITION_DEPOSIT_USDC: u128 = 100_000;
     /// Minimum META-amendable epoch length (14 days; 05 §3.1 / 13 §1).
+    ///
+    /// The default-off `fast-timing` feature (SQ-128) lowers this floor to a
+    /// proportionally compressed `14 × FAST_DAY_BLOCKS` so the drill-09 machinery
+    /// proof can boot a genuine epoch clock in minutes. `EpochParams::validate`
+    /// hard-asserts `epoch_length >= MIN_EPOCH_LENGTH_BLOCKS` at genesis, so the
+    /// compressed `epoch.length` Param default only boots once this floor drops
+    /// with it. The `cfg(not(fast-timing))` arm is byte-identical to the frozen
+    /// 14-day value; the feature only shrinks a floor for a test wasm (R-7/G-1).
+    #[cfg(not(feature = "fast-timing"))]
     pub const MIN_EPOCH_LENGTH_BLOCKS: u32 = 201_600;
+    #[cfg(feature = "fast-timing")]
+    pub const MIN_EPOCH_LENGTH_BLOCKS: u32 = 14 * FAST_DAY_BLOCKS;
     /// Guardian/playbook effect backstop (14 days at six-second blocks).
     ///
     /// 06 §5.2/§6.2/§6.3 and 13 §2: intake pauses, reserve split
@@ -888,7 +911,15 @@ pub mod kernel {
     /// this window without the one values-governed LedgerFreeze renewal.
     pub const PLAYBOOK_FREEZE_WINDOW_BLOCKS: u32 = 201_600;
     /// Kernel floor for the decision window (`dec.window`, 13 §1).
+    ///
+    /// Default build: one frozen day. Under `fast-timing` (SQ-128) it drops to one
+    /// `FAST_DAY_BLOCKS` so the compressed `dec.window` default still clears its
+    /// floor while satisfying `dec.window <= epoch_length·13/21`. Test-only; the
+    /// `cfg(not(fast-timing))` arm is byte-identical to the production value.
+    #[cfg(not(feature = "fast-timing"))]
     pub const DECISION_WINDOW_FLOOR_BLOCKS: u32 = BLOCKS_PER_DAY;
+    #[cfg(feature = "fast-timing")]
+    pub const DECISION_WINDOW_FLOOR_BLOCKS: u32 = FAST_DAY_BLOCKS;
     pub const DEC_EXTENSION_BLOCKS: u32 = 43_200;
     /// Per-class `dec.delta` kernel floor on the contract's 1e9 grid.
     pub const DECISION_DELTA_FLOOR: super::FixedU64 = super::FixedU64(5_000_000);
@@ -1489,5 +1520,40 @@ mod tests {
         );
         assert_eq!(kernel::DECISION_DELTA_FLOORS, [FixedU64(5_000_000); 4]);
         assert_eq!(kernel::DECISION_SIGMA_FLOORS, [FixedU64(0); 4]);
+    }
+
+    /// SQ-128: the default (production) build must carry the frozen 13 §1 epoch
+    /// floors byte-for-byte — the `fast-timing` feature must never leak into a
+    /// release binary. This runs in the default `cargo test --workspace` (feature
+    /// off) and pins the release values so an accidental gate edit fails loudly.
+    #[cfg(not(feature = "fast-timing"))]
+    #[test]
+    fn production_epoch_timing_floors_are_frozen() {
+        assert_eq!(kernel::MIN_EPOCH_LENGTH_BLOCKS, 201_600);
+        assert_eq!(kernel::DECISION_WINDOW_FLOOR_BLOCKS, 14_400);
+        assert_eq!(kernel::DECISION_WINDOW_FLOOR_BLOCKS, kernel::BLOCKS_PER_DAY);
+    }
+
+    /// Under the compressed test build the same floors derive from the single
+    /// `FAST_DAY_BLOCKS` knob and must keep the relationships `EpochParams::validate`
+    /// enforces (05 §5 / 13 §1): a 21·FAST_DAY epoch clears the 14·FAST_DAY floor
+    /// and the decision-window floor stays one compressed day. Guards against a
+    /// future knob change that would break genesis validation.
+    #[cfg(feature = "fast-timing")]
+    #[test]
+    fn fast_timing_floors_stay_internally_consistent() {
+        assert_eq!(
+            kernel::MIN_EPOCH_LENGTH_BLOCKS,
+            14 * kernel::FAST_DAY_BLOCKS
+        );
+        assert_eq!(
+            kernel::DECISION_WINDOW_FLOOR_BLOCKS,
+            kernel::FAST_DAY_BLOCKS
+        );
+        // The compressed epoch.length default (21·FAST_DAY) must clear the floor
+        // and stay a multiple of the phase denominator (D1/D2 in EpochParams).
+        let epoch_len = 21 * kernel::FAST_DAY_BLOCKS;
+        assert!(epoch_len >= kernel::MIN_EPOCH_LENGTH_BLOCKS);
+        assert_eq!(epoch_len % phase_offsets::DENOMINATOR, 0);
     }
 }

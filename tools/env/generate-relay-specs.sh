@@ -257,3 +257,43 @@ python3 "$repo_root/tools/deploy/validate-chain-spec.py" \
 # `executionGuard.migrationHalt` seed differs from the base drill spec).
 python3 "$repo_root/tools/deploy/validate-chain-spec.py" \
   --profile local "$out/bleavit-drill-migration.json"
+
+# G1 drill 09 fast-timing spec — 09 §7.1 / 13 §1; SQ-128. A SEPARATE runtime wasm
+# built with the default-off `fast-timing` feature seeds a compressed
+# `epoch.length` (21 × FAST_DAY = 84 blocks) plus proportionally compressed
+# `dec.window`/`dec.trailing`, all derived from `kernel::FAST_DAY_BLOCKS`. That
+# lets the "three unattended epochs" machinery proof advance three REAL epochs
+# (genuine Aura + relay consensus, keeper cranking) in minutes instead of the
+# release-cadence 907,200 blocks / ~63 days. It is a documented TEST-ONLY wasm —
+# never a release artifact: the release/deploy pipelines build default features
+# only, and the epoch-timing floors are frozen in the shipped binary (see the
+# `production_epoch_timing_floors_are_frozen` guard test). The compressed timing
+# lives entirely in the runtime; the drill genesis reuses the same guardian-seeded
+# `drill_patch` as the base drill (no balance/identity change), and `--verify`
+# below re-runs `EpochParams::validate` over the compressed genesis. Built into a
+# distinct CARGO_TARGET_DIR so it never clobbers the release wasm at line ~117.
+fast_wasm="$repo_root/target/fast-timing/release/wbuild/bleavit-runtime/bleavit_runtime.compact.compressed.wasm"
+CARGO_TARGET_DIR="$repo_root/target/fast-timing" cargo build \
+  -p bleavit-runtime --release --features substrate-wasm-builder,fast-timing --locked
+if [[ ! -s "$fast_wasm" ]]; then
+  echo "fast-timing runtime wasm was not produced at $fast_wasm" >&2
+  exit 1
+fi
+rm -f "$out/bleavit-drill-fast.json"
+"$builder" --chain-spec-path "$out/bleavit-drill-fast.json" create \
+  --chain-name "Bleavit Local Drills (fast-timing)" \
+  --chain-id bleavit_local_drills_fast \
+  -t local \
+  --relay-chain paseo-local \
+  --para-id 4242 \
+  --runtime "$fast_wasm" \
+  --properties "$properties" \
+  --verify \
+  patch "$drill_patch"
+if [[ ! -s "$out/bleavit-drill-fast.json" ]] || ! python3 -m json.tool "$out/bleavit-drill-fast.json" >/dev/null; then
+  rm -f "$out/bleavit-drill-fast.json"
+  echo "chain-spec-builder did not produce a valid fast-timing drill chain spec" >&2
+  exit 1
+fi
+python3 "$repo_root/tools/deploy/validate-chain-spec.py" \
+  --profile local "$out/bleavit-drill-fast.json"
