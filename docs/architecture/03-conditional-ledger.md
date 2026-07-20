@@ -202,6 +202,8 @@ The D-1 quarter-value rule is stated for LONG/SHORT; its application to `GateYes
 |---|---|---|---|---|
 | `sweep_dust(pid)` / `sweep_dust_baseline(epoch)` | Signed (keeper) | vault terminal + `RedemptionArchiveDelay` elapsed | drain ≤ `ReapBatch(=100)` `Positions` entries per call across the vault's 14 (resp. 2) `PositionId` prefixes; refund deposits to entry owners; residual escrow → INSURANCE; storage reaped when drained | `VaultReaped { pid, residue }` (proposal crank) / `BaselineVaultReaped { epoch, residue }` (Baseline crank) — each identifies its vault; only the name `VaultReaped` is frozen in [`02-integration-contract.md`](./02-integration-contract.md) §6 (fields open) |
 
+**Terminal markers are swept state (normative).** A vault's terminal markers exist to gate this housekeeping and are removed by it; they are therefore **not** a durable signal any other pallet may key on. Every transition that records a terminal block — `void`, `settle_scalar`, `settle_baseline` — MUST, in the same atomic storage layer, latch that block into the owning market for each of the vault's books, so the market's POL-obligation predicate never reads ledger state that this sweep can delete. The reap-ordering rule the latch establishes is normative in [`04-markets-and-pricing.md`](./04-markets-and-pricing.md) §2; latching MUST be idempotent and MUST NOT cause the terminal transition to fail (G-1).
+
 The BE §5.2.1 note on SGF §9.3 settlement perpetuity carries forward unchanged: after reaping, unredeemed claims remain redeemable through a Merkle-archived claims procedure executed by a TREASURY-class proposal (deliberate v1 compromise, recorded in BE §31).
 
 ### 5.5 Internal API for the D-3 trade wrapper (no extrinsic surface)
