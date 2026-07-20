@@ -64,9 +64,7 @@
       "kind": "zombienet",
       "path": "zombienet/drills/07-xcm-reserve-transfer.zndsl",
       "tier": "release",
-      "gated_on": [
-        "drill-07 helper readiness probe vs the unbumped runtime version (B10 landed the production XCM composition — AssetTransactor, Barrier, IsReserve, IsTeleporter, OriginConverter, sender — but spec_version is still 1 and the committed helper refuses bleavit/1; retire/re-key the probe at the first post-B10 run)"
-      ],
+      "gated_on": [],
       "timeout_seconds": 1800,
       "spec": "15 §4.7; 09 §6.1"
     },
