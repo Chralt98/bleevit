@@ -252,3 +252,8 @@ if [[ ! -s "$out/bleavit-drill-migration.json" ]] || ! python3 -m json.tool "$ou
 fi
 python3 "$repo_root/tools/deploy/validate-chain-spec.py" \
   --profile local "$out/bleavit-drill.json"
+# Validate the exact artifact the PB-MIGRATION drill boots too (defense in depth
+# against a future balance-affecting edit to the migration-patch step; only the
+# `executionGuard.migrationHalt` seed differs from the base drill spec).
+python3 "$repo_root/tools/deploy/validate-chain-spec.py" \
+  --profile local "$out/bleavit-drill-migration.json"

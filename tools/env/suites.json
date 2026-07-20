@@ -84,7 +84,9 @@
       "kind": "zombienet",
       "path": "zombienet/drills/09-three-unattended-epochs.zndsl",
       "tier": "g1",
-      "gated_on": [],
+      "gated_on": [
+        "SQ-128 ruled 2026-07-20 (compressed fast-timing local drill): the release-cadence 3-epoch soak (907,200 blocks / ~63 days) is subsumed by G2's >=6-epoch Paseo run; the G1 LOCAL drill is a compressed machinery proof needing the feature-gated fast-timing test runtime (small epoch length + proportionally scaled kernel timing constants in futarchy-primitives) — a scoped audit-scope-A follow-up, not yet implemented"
+      ],
       "timeout_seconds": 6001000,
       "spec": "15 §4.7; 09 §7.1; 13 §1"
     },
