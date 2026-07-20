@@ -33,8 +33,10 @@
       "kind": "zombienet",
       "path": "zombienet/drills/04-dead-man.zndsl",
       "tier": "g1",
-      "gated_on": [],
-      "timeout_seconds": 100000,
+      "gated_on": [
+        "G1 drill-04 dead-man detector/scenario mismatch (SQ-282): the fast-timing runtime compressed the stall ~16 h -> ~8 min (DEAD_MAN_RELAY_BLOCKS 4,800 -> 48; the first-ever run reached gap 48 in ~8 min, so timing is proven and no longer the blocker), but assert-dead-man engaged fails because observe_dead_man triggers on a relay-PARENT jump between consecutive parachain blocks (a parachain outage/catch-up signal), not a relay-FINALITY stall where the relay keeps producing and the parachain follows the unfinalized best (05 sec 4.8 F-signal VERIFY: PersistedValidationData exposes relay_parent_number, not the relay finalized head). Resolution is SQ-282 (outage-scenario drill, a finalized-head detector input, or a re-scope of 05 sec 4.8), not timing"
+      ],
+      "timeout_seconds": 1800,
       "spec": "15 §4.7; 09 §7.1; 13 §2"
     },
     {
@@ -74,9 +76,9 @@
       "path": "zombienet/drills/08-expedited-code-under-freeze.zndsl",
       "tier": "g1",
       "gated_on": [
-        "G1 freeze/proposal staging (attested queued proposal + active PB-LEDGER-FREEZE)"
+        "G1 freeze/proposal staging (attested queued expedited proposal + active PB-LEDGER-FREEZE at genesis, SQ-233); the ~3-day D-14 lead wait is eliminated on the fast-timing runtime (SQ-128: DESCRIPTOR_LEAD_TIME_BLOCKS 43,200 -> 12; the drill reads the live descriptorLeadTime metadata constant), so timing is no longer the blocker — only the freeze/expedited genesis staging remains"
       ],
-      "timeout_seconds": 301000,
+      "timeout_seconds": 1800,
       "spec": "09 §2.1/§3.2/§7.1"
     },
     {

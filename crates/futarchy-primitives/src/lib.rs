@@ -941,7 +941,19 @@ pub mod kernel {
     /// this floor — the smallest admissible ceiling, never a pass-widening
     /// default (SQ-231 amendment, 2026-07-18).
     pub const SEC_FLOW_CAP_FLOOR_1E9: u64 = 7_000_000_000;
+    /// D-14 expedited CODE-upgrade authorize→apply lead (three six-second days;
+    /// 09 §2.1/§3.1, 13 §2). Exposed to clients as the `descriptorLeadTime` pallet
+    /// metadata constant.
+    ///
+    /// Under the default-off `fast-timing` build (SQ-128, extended to drill 08) it
+    /// drops to a faithful `3 × FAST_DAY_BLOCKS` so the expedited-lane proof no longer
+    /// waits the release-cadence ~3 days. The `cfg(not(fast-timing))` arm is byte-
+    /// identical to the frozen 13 §2 value; the feature only shrinks the lead for a
+    /// documented test wasm (R-7/G-1), never the release runtime.
+    #[cfg(not(feature = "fast-timing"))]
     pub const DESCRIPTOR_LEAD_TIME_BLOCKS: u32 = 43_200;
+    #[cfg(feature = "fast-timing")]
+    pub const DESCRIPTOR_LEAD_TIME_BLOCKS: u32 = 3 * FAST_DAY_BLOCKS;
     /// 09 §3.2 PB-MIGRATION trigger arm: an unchanged active cursor for more
     /// than this many blocks raises the migration halt.
     pub const MIGRATION_STALL_BLOCKS: u32 = 900;
@@ -1017,7 +1029,19 @@ pub mod kernel {
     pub const ATT_MIN_MEMBERS: u32 = 3;
     pub const ATT_QUORUM: u32 = 2;
     /// 13 §2 dead-man finality-stall threshold, measured in relay blocks.
+    ///
+    /// Under the default-off `fast-timing` build (SQ-128, extended to drill 04) it
+    /// drops to a small fixed floor so the dead-man proof induces a real relay-finality
+    /// stall in ~minutes instead of the release-cadence ~16 h. Unlike the epoch floors
+    /// this does NOT scale off `FAST_DAY_BLOCKS`: faithful day-scaling (4,800 = ⅓ day)
+    /// would underflow to ~1 relay block and false-latch on healthy best-over-finalized
+    /// lag, so the compressed value is an independent floor chosen to clear healthy lag
+    /// with margin. The `cfg(not(fast-timing))` arm is byte-identical to the frozen
+    /// 13 §2 value; test-only, never the release runtime (R-7/G-1).
+    #[cfg(not(feature = "fast-timing"))]
     pub const DEAD_MAN_RELAY_BLOCKS: u32 = 4_800;
+    #[cfg(feature = "fast-timing")]
+    pub const DEAD_MAN_RELAY_BLOCKS: u32 = 48;
     /// 13 §2 dead-man snapshot grace: strictly more than four six-second days.
     pub const DEAD_MAN_SNAPSHOT_OVERDUE_BLOCKS: u32 = 4 * BLOCKS_PER_DAY;
     pub const STALE_EPOCH_BOUND_BLOCKS: u32 = 100_800;
@@ -1532,6 +1556,11 @@ mod tests {
         assert_eq!(kernel::MIN_EPOCH_LENGTH_BLOCKS, 201_600);
         assert_eq!(kernel::DECISION_WINDOW_FLOOR_BLOCKS, 14_400);
         assert_eq!(kernel::DECISION_WINDOW_FLOOR_BLOCKS, kernel::BLOCKS_PER_DAY);
+        // Drill-08 expedited-lane lead and drill-04 dead-man stall threshold: the
+        // release binary must carry the frozen 13 §2 values (the `fast-timing`
+        // compression must never leak into production).
+        assert_eq!(kernel::DESCRIPTOR_LEAD_TIME_BLOCKS, 43_200);
+        assert_eq!(kernel::DEAD_MAN_RELAY_BLOCKS, 4_800);
     }
 
     /// Under the compressed test build the same floors derive from the single
@@ -1555,5 +1584,16 @@ mod tests {
         let epoch_len = 21 * kernel::FAST_DAY_BLOCKS;
         assert!(epoch_len >= kernel::MIN_EPOCH_LENGTH_BLOCKS);
         assert_eq!(epoch_len % phase_offsets::DENOMINATOR, 0);
+        // Drill-08 expedited-lane lead: faithful three-day compression, strictly under
+        // the compressed epoch so an authorized upgrade still applies within one epoch
+        // (this relational check also rejects a degenerate FAST_DAY_BLOCKS = 0).
+        assert_eq!(
+            kernel::DESCRIPTOR_LEAD_TIME_BLOCKS,
+            3 * kernel::FAST_DAY_BLOCKS
+        );
+        assert!(kernel::DESCRIPTOR_LEAD_TIME_BLOCKS < epoch_len);
+        // Drill-04 dead-man stall threshold: an independent small floor (deliberately
+        // not day-scaled), large enough to clear healthy relay best-over-finalized lag.
+        assert_eq!(kernel::DEAD_MAN_RELAY_BLOCKS, 48);
     }
 }

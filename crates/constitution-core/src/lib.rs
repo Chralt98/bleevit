@@ -2039,9 +2039,16 @@ mod tests {
             CONTRACT_VERSION,
             futarchy_primitives::INTEGRATION_CONTRACT_VERSION
         );
+        // Release-invariance pin; under `fast-timing` this kernel value is compressed
+        // (SQ-128) and the canonical frozen-value guard lives in `futarchy-primitives`.
+        #[cfg(not(feature = "fast-timing"))]
         assert_eq!(kernel::DESCRIPTOR_LEAD_TIME_BLOCKS, 43_200);
     }
 
+    // epoch.length-specific 13 §1 admission boundaries (BelowMin/DeltaTooLarge/cooldown)
+    // verified at production magnitudes; the fast-timing build compresses those bounds
+    // (SQ-128), so this production-boundary case runs in the default build only.
+    #[cfg(not(feature = "fast-timing"))]
     #[test]
     fn param_update_enforces_bounds_delta_and_cooldown() {
         let mut rec = genesis_params()[0];
@@ -2062,6 +2069,10 @@ mod tests {
         assert_eq!(rec.last_change_block, 20);
     }
 
+    // epoch.length percent-delta recomputation at production magnitudes (13 §1); the
+    // machinery is also covered timing-agnostically by `factor_delta_bounds_both_directions`,
+    // so under the compressed fast-timing build this production case runs default-only.
+    #[cfg(not(feature = "fast-timing"))]
     #[test]
     fn percent_delta_is_recomputed_from_the_current_value() {
         // 13 §1: epoch.length Max Δ/decision = 10%. A fixed absolute step
@@ -2115,7 +2126,12 @@ mod tests {
     #[test]
     fn max_delta_allowance_matches_every_admission_rule() {
         let mut record = genesis_params()[0];
-        assert_eq!(record.max_delta_allowance(), Ok(30_240));
+        // epoch.length carries a Percent(10) Δ cap, so the scalar allowance is 10% of
+        // its current (default) value — timing-agnostic across the fast-timing build.
+        assert_eq!(
+            record.max_delta_allowance(),
+            Ok((timing_defaults::EPOCH_LENGTH / 10) as u128)
+        );
 
         record.max_delta = Some(MaxDelta::Absolute(ParamValue::U32(17)));
         assert_eq!(record.max_delta_allowance(), Ok(17));
