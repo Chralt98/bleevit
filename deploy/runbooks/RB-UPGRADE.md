@@ -42,11 +42,20 @@ rewrite, or rollback to old bytes ([12 §6.3](../../docs/architecture/12-release
    Confirm repeated finalized samples carry the same active cursor marker, or
    that the SDK cursor is `Stuck`; rule out a stale monitor or slow but advancing
    migration.
-3. Read `ExecutionGuard::MigrationHalt`, `PendingUpgrade`,
-   `PendingUpgradeCheckpoint`, `LastUpgradeAuthorized`, and the relevant
-   `ExecutionGuard::Queue` entry. Capture its `pre_upgrade_checkpoint` parent
-   block hash and state root as the immutable audit anchor
-   ([09 §2.1/§3.2](../../docs/architecture/09-execution-upgrades-and-rollout.md)).
+3. Read `ExecutionGuard::MigrationHalt`, `PendingUpgrade`, `LastUpgradeAuthorized`
+   and the relevant `ExecutionGuard::Queue` entry.
+   **The 09 §3.2(2) pre-migration anchor is not yet implemented — do not wait for
+   it and do not read `PendingUpgradeCheckpoint` expecting to find it.** That item
+   is killed at the relay go-ahead callback, one block before any migration can
+   step, and the queue row's `pre_upgrade_checkpoint` is never written at all; both
+   cells are structurally empty at diagnosis time (SQ-127/SQ-144, ruled 2026-07-20
+   — capture moves to code-application time and single-homes in its own storage
+   item; owed as PLAN.md milestone B19). Until it lands, reconstruct the anchor
+   off-chain: take the block at which `UpgradeApplied` was observed, and use the
+   **parent** of that block — its header hash and `state_root` are the
+   last pre-migration state. Record both in the incident log as the audit anchor
+   and note that they were reconstructed, not read from chain
+   ([09 §3.2](../../docs/architecture/09-execution-upgrades-and-rollout.md)).
 4. Reconstruct `UpgradeAuthorized`, `UpgradeApplied`, `UpgradeAborted`, execution,
    migration, and `GuardianAction` events. The spec also mandates
    `MigrationHalted {cursor, failed_step}`. If the deployed runtime does not emit
