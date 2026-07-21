@@ -31,6 +31,11 @@ parity defect.
   suites, benchmark smoke, the 10M-point sweep, supply-chain network probes).
 - Anything about the CI runner image itself — toolchain pins, installed system
   libraries, available memory.
+- A guarded and an unguarded invocation of the same checker *within one script*.
+  Guards are recognised by matching the guard's own source pattern anywhere in
+  the file, so a second, bare call in that same script is indistinguishable from
+  the guarded one. Across different scripts this is handled — see
+  `gate_commands`. Keep one call site per checker per script.
 
 A green run means "no gate depends on state that only your worktree has". It does
 not mean "CI will pass".
@@ -179,16 +184,31 @@ def discover_embedded(root: Path) -> list[Gate]:
 
 
 def gate_commands(root: Path) -> list[Gate]:
-    """Discovered-from-a-script entries come first and win the dedup, so a command
-    that is also listed standalone keeps the script origin that carries its guard
-    context — and is run once, not twice."""
+    """Collect every call site, collapsing only the ones handled identically.
+
+    The dedup key is `(command, guard_reason)` — not the command alone. Two call
+    sites for the same checker collapse only when they carry the same guard
+    handling, so a checker that is guarded in one script and *unguarded* in
+    another is evaluated at both sites and the unguarded one can still fail the
+    run.
+
+    Keying on the command alone was a false negative of exactly the kind this
+    checker exists to catch: `rust-workspace-gates.sh` is scanned first and
+    carries the guarded `check-weight-regression.py`, so an unguarded copy added
+    to a later gate script was discarded before `resolve_guard` was ever
+    consulted, and the run reported the guarded site as handled and passed.
+
+    Script-discovered entries still come first, so a command that is also in
+    STANDALONE_GATES keeps the script origin carrying its guard context.
+    """
     gates: list[Gate] = []
-    seen: set[tuple[str, ...]] = set()
+    seen: set[tuple[tuple[str, ...], str | None]] = set()
     standalone = [Gate(c, "(standalone)") for c in STANDALONE_GATES]
     for gate in (*discover_embedded(root), *standalone):
-        if gate.command in seen:
+        key = (gate.command, gate.guard_reason)
+        if key in seen:
             continue
-        seen.add(gate.command)
+        seen.add(key)
         gates.append(gate)
     return [g for g in gates if not any(part in SKIP for part in g.command)]
 
@@ -292,7 +312,7 @@ def report(results: list[Result]) -> int:
     if diverged:
         print("\nENVIRONMENT-DEPENDENT GATES (pass in your worktree, fail in CI's checkout):")
         for result in diverged:
-            print(f"\n  $ {' '.join(result.command)}")
+            print(f"\n  $ {' '.join(result.command)}   [from {result.gate.origin}]")
             for line in result.clone_output.splitlines()[-6:]:
                 print(f"    {line}")
         print(

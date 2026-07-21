@@ -182,6 +182,62 @@ class DedupTests(unittest.TestCase):
         self.assertEqual(len(matching), 1)
         self.assertEqual(matching[0].origin, "tools/ci/rust-workspace-gates.sh")
 
+    def test_a_guarded_site_does_not_suppress_an_unguarded_one(self) -> None:
+        """A guarded call site must not swallow an unguarded one elsewhere.
+
+        The first draft keyed the dedup on the command alone. Because
+        `rust-workspace-gates.sh` is scanned first and carries the *guarded*
+        `check-weight-regression.py`, an unguarded copy added later to another
+        gate script was discarded before `resolve_guard` was ever consulted — so
+        the run reported the guarded call site as handled and passed, while the
+        genuinely unguarded one would still fail in CI's checkout. That is the
+        exact false negative this checker exists to prevent, rebuilt one level up.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tools" / "ci").mkdir(parents=True)
+            (root / "tools" / "ci" / "rust-workspace-gates.sh").write_text(
+                "if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then\n"
+                "  python3 tools/ci/check-weight-regression.py\n"
+                "fi\n"
+            )
+            (root / "tools" / "ci" / "property-gates.sh").write_text(
+                "python3 tools/ci/check-weight-regression.py\n"
+            )
+            gates = checker.gate_commands(root)
+
+        matching = [
+            g for g in gates if g.checker == "tools/ci/check-weight-regression.py"
+        ]
+        self.assertEqual(
+            len(matching),
+            2,
+            "the unguarded call site was dropped by the dedup and will never be "
+            "evaluated — a new unguarded invocation must still fail the run",
+        )
+        by_origin = {g.origin: g.guard_reason for g in matching}
+        self.assertIsNotNone(by_origin["tools/ci/rust-workspace-gates.sh"])
+        self.assertIsNone(by_origin["tools/ci/property-gates.sh"])
+
+    def test_equivalent_duplicates_still_collapse_in_the_real_tree(self) -> None:
+        """The dedup must keep earning its place.
+
+        Three standalone gates are also embedded in `rust-workspace-gates.sh`;
+        widening the key must not start running them twice.
+        """
+        gates = checker.gate_commands(ROOT)
+        keys = [(g.command, g.guard_reason) for g in gates]
+        self.assertEqual(len(keys), len(set(keys)), "duplicate gate entries")
+        for target in (
+            "tools/limit-coverage/check-limit-coverage.py",
+            "tools/reference-model/check-doc-table.py",
+            "tools/reference-model/generate-vectors.py",
+        ):
+            with self.subTest(target=target):
+                matching = [g for g in gates if g.checker == target]
+                self.assertEqual(len(matching), 1)
+                self.assertEqual(matching[0].origin, "tools/ci/rust-workspace-gates.sh")
+
 
 if __name__ == "__main__":
     unittest.main()
