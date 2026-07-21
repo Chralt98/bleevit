@@ -19,6 +19,7 @@ fi
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+python3 tools/ci/check-weight-regression.py
 
 # B6 release gate (09 §2.1(5)): compile the deployable runtime and its
 # benchmarking surface, then compile and execute the runtime's genesis-state

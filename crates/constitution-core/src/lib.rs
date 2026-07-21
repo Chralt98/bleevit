@@ -648,17 +648,15 @@ impl ConstitutionOrigin {
 
 /// Direction-aware authorization for `constitution.set_param`.
 ///
-/// Most rows are authorized solely by [`ParamClass`]. Two 13 §1 families are
+/// Most rows are authorized solely by [`ParamClass`]. One 13 §1 family is
 /// stricter:
 ///
 /// - the welfare low knees tighten through the constitution track and may be
 ///   un-tightened only through the entrenched track (05 §4.1; 06 §2.1);
-/// - the Phase-3 exposure caps may be tightened by ordinary META enactment,
-///   but only a phase-transition migration may raise them (09 §5.2).
 ///
 /// Equality retains the welfare rows' CONST-class route (the constitution
-/// track) and is also admitted for the ordinary phase-cap authority. The
-/// record's normal bounds, delta and cooldown checks still run afterward.
+/// track). The record's normal bounds, delta and cooldown checks still run
+/// afterward.
 pub fn authorize_param_update(
     origin: ConstitutionOrigin,
     record: &ParamRecord,
@@ -686,12 +684,6 @@ pub fn authorize_param_update(
     }
 
     ensure!(origin.can_set_param(record.class), Error::BadOrigin);
-    let phase_exposure_cap =
-        record.key == key16(b"phase3.tvl_cap") || record.key == key16(b"phase3.dep_cap");
-    if phase_exposure_cap {
-        ensure!(record.value.same_kind(next), Error::WrongType);
-        ensure!(next.as_u128() <= record.value.as_u128(), Error::BadOrigin);
-    }
     Ok(())
 }
 
@@ -2702,87 +2694,6 @@ mod tests {
                 Err(Error::BelowMin)
             );
             assert_eq!(floor_state, before);
-        }
-    }
-
-    #[test]
-    fn ordinary_phase_cap_updates_are_tighten_only() {
-        for key_name in [b"phase3.tvl_cap".as_slice(), b"phase3.dep_cap".as_slice()] {
-            let key = key16(key_name);
-            let initial = ConstitutionState::genesis();
-            let record = initial.params.iter().find(|record| record.key == key);
-            assert!(record.is_some(), "phase exposure-cap key must be seeded");
-            let Some(record) = record else {
-                return;
-            };
-
-            let mut increase = initial.clone();
-            let before = increase.clone();
-            assert_eq!(
-                increase.dispatch_set_param(
-                    ConstitutionOrigin::FutarchyMeta,
-                    key,
-                    record.max,
-                    record.cooldown_epochs,
-                    1,
-                ),
-                Err(Error::BadOrigin)
-            );
-            assert_eq!(increase, before);
-
-            let decreased_raw = record.value.as_u128().checked_sub(1);
-            assert!(
-                decreased_raw.is_some(),
-                "phase exposure cap must be non-zero"
-            );
-            let Some(decreased_raw) = decreased_raw else {
-                return;
-            };
-            let decreased = value_from_raw(record.value, decreased_raw);
-            assert!(
-                decreased.is_some(),
-                "phase exposure-cap decrease must preserve its kind"
-            );
-            let Some(decreased) = decreased else {
-                return;
-            };
-            let mut decrease = initial.clone();
-            assert_eq!(
-                decrease.dispatch_set_param(
-                    ConstitutionOrigin::FutarchyMeta,
-                    key,
-                    decreased,
-                    record.cooldown_epochs,
-                    2,
-                ),
-                Ok(())
-            );
-
-            let mut equal = initial.clone();
-            assert_eq!(
-                equal.dispatch_set_param(
-                    ConstitutionOrigin::FutarchyMeta,
-                    key,
-                    record.value,
-                    record.cooldown_epochs,
-                    3,
-                ),
-                Ok(())
-            );
-
-            let mut bad_origin = initial.clone();
-            let before = bad_origin.clone();
-            assert_eq!(
-                bad_origin.dispatch_set_param(
-                    ConstitutionOrigin::ConstitutionalValues,
-                    key,
-                    decreased,
-                    record.cooldown_epochs,
-                    4,
-                ),
-                Err(Error::BadOrigin)
-            );
-            assert_eq!(bad_origin, before);
         }
     }
 

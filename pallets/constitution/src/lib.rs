@@ -256,8 +256,7 @@ pub mod pallet {
         /// half of the dual consent is the guard's execute-time ratification,
         /// 06 §2.2 — PLAN SQ-6); CONST/entrenched ⇒ values-layer origins. The
         /// welfare low knees are direction-scoped further: constitution raises,
-        /// entrenched lowers (05 §4.1). Ordinary META writes may only lower the
-        /// phase exposure caps (09 §5.2).
+        /// entrenched lowers (05 §4.1).
         /// No Root path — 09 §5.4's bootstrap-sudo scope is exhaustive and
         /// excludes parameter administration (PLAN SQ-11).
         #[pallet::call_index(0)]

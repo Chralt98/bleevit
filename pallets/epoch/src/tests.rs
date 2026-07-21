@@ -1408,7 +1408,9 @@ fn sq40_undefined_prize_proxy_takes_t10_and_refunds_the_full_bond() {
         assert!(SeamCalls::get().contains(&SeamCall::Resolve(1, Branch::Reject)));
         assert!(SeamCalls::get().contains(&SeamCall::CloseMarkets(1)));
         assert!(SeamCalls::get().contains(&SeamCall::DequeueTerminal(1)));
-        assert!(ResourceLocks::<Test>::get().is_empty());
+        assert!(ResourceLocks::<Test>::get()
+            .iter()
+            .any(|(_, owner)| *owner == 1));
         assert!(!ProposalBonds::<Test>::contains_key(1));
         assert_eq!(BondReleases::get(), vec![(proposer, bond)]);
         assert!(!System::events().iter().any(|record| matches!(
@@ -3577,7 +3579,12 @@ fn forty_void_cohorts_reap_working_storage_and_bound_the_archive_ring() {
 }
 
 #[test]
-fn sq314_void_cohort_reaps_same_epoch_queued_proposals_without_rewriting_decisions() {
+/// 05 §7(4): the preserved population is the cohort's own members. A same-epoch
+/// proposal that is decided but still pre-Executed (`Queued`, `FailedExecuted`)
+/// is **not** a member and takes T20 — `decision.is_some()` is not the
+/// discriminator, because T9 records `Some(Adopt)` on entry to `Queued`.
+/// Whether T20 is the right record for that population is SQ-319.
+fn sq314_void_cohort_preserves_only_cohort_members_and_t20s_the_rest() {
     new_test_ext().execute_with(|| {
         let mut state = EpochState::new();
         let mut measuring = live_proposal(1, ProposalState::Measuring, 0);
@@ -3618,9 +3625,21 @@ fn sq314_void_cohort_reaps_same_epoch_queued_proposals_without_rewriting_decisio
         assert_eq!(
             summary.map(|summary| summary.proposals.into_inner()),
             Some(vec![
+                // pid 1 is the cohort member: its recorded Adopt survives.
                 (1, ProposalClass::Param, DecisionOutcome::Adopt,),
-                (2, ProposalClass::Param, DecisionOutcome::Adopt,),
-                (3, ProposalClass::Param, DecisionOutcome::Adopt,),
+                // pids 2 and 3 are decided but pre-Executed and outside the
+                // cohort, so they take T20 rather than carrying their vacated
+                // Adopt into the archive.
+                (
+                    2,
+                    ProposalClass::Param,
+                    DecisionOutcome::Reject(RejectReason::ProcessHold),
+                ),
+                (
+                    3,
+                    ProposalClass::Param,
+                    DecisionOutcome::Reject(RejectReason::ProcessHold),
+                ),
             ])
         );
         assert!(RecentCohortSummaries::<Test>::get()

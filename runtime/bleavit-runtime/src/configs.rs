@@ -1822,12 +1822,11 @@ pub(crate) fn proposal_class_index(class: futarchy_primitives::ProposalClass) ->
 /// every non-TREASURY class) keeps the base `dec.v_min` floor rather than
 /// voiding the grade. The distinction is economic, not cosmetic: a missing
 /// prize is a security-sizing *input* gap, not evidence that the book lacked
-/// coverage or contest depth, and `decide` already fails such a proposal at
-/// the sizing step (`in_cap_prize.ok_or(BadDecisionInput)`) — an error that
-/// leaves the proposal in place, retryable once the prize is backed. Voiding
-/// the grade instead would reach `Reject(NotDecisionGrade)` first and slash
-/// 10% of the proposer's intake bond (06 §4; 08 §7) for an input the chain,
-/// not the proposer, is missing.
+/// coverage or contest depth. At the sizing step, `decide` resolves that gap
+/// through terminal T10 `Reject(SecuritySizing)`, with the intake bond fully
+/// refunded. Voiding the grade instead would reach `Reject(NotDecisionGrade)`
+/// first and slash 10% of the proposer's intake bond (06 §4; 08 §7) for an
+/// input the chain, not the proposer, is missing.
 ///
 /// The `2P` doubling saturates: it can only raise the floor, never wrap it
 /// down into a permissive value.
@@ -2251,10 +2250,6 @@ impl pallet_epoch::MarketAccess<AccountId> for RuntimeMarketAccess {
             gates,
             baseline,
         })
-    }
-
-    fn prune_baseline_market(epoch: EpochId) -> Result<(), DispatchError> {
-        pallet_market::Pallet::<Runtime>::prune_baseline_market(epoch_signed_origin(), epoch)
     }
 
     fn extend_markets(
@@ -5952,7 +5947,6 @@ impl pallet_epoch::BenchmarkHelper<RuntimeOrigin, AccountId> for RuntimeBenchmar
     }
 
     fn void_authority_origin() -> RuntimeOrigin {
-        benchmark_fill_recent_cohort_ring();
         pallet_origins::Origin::EmergencyPlaybook.into()
     }
 
@@ -6024,7 +6018,6 @@ impl pallet_epoch::BenchmarkHelper<RuntimeOrigin, AccountId> for RuntimeBenchmar
     fn prime_guard_enqueue(_: futarchy_primitives::ProposalId) {}
 
     fn prime_settlement(epoch: EpochId) {
-        benchmark_fill_recent_cohort_ring();
         for (pid, proposal) in pallet_epoch::Proposals::<Runtime>::iter() {
             if proposal.epoch == epoch {
                 let _ = ConditionalLedger::resolve(
@@ -6082,29 +6075,6 @@ impl pallet_epoch::BenchmarkHelper<RuntimeOrigin, AccountId> for RuntimeBenchmar
             );
         }
     }
-}
-
-#[cfg(feature = "runtime-benchmarks")]
-fn benchmark_fill_recent_cohort_ring() {
-    let mut recent = Vec::new();
-    for offset in 1..=pallet_epoch::RECENT_COHORTS_BOUND {
-        let epoch = EpochId::from(offset);
-        pallet_market::BaselineMarketOf::<Runtime>::insert(
-            epoch,
-            u64::MAX.saturating_sub(u64::from(offset)),
-        );
-        recent.push(futarchy_primitives::CohortSummary {
-            epoch,
-            s_1e9: FixedU64(0),
-            baseline_twap_1e9: FixedU64(0),
-            proposals: Default::default(),
-            voided: false,
-            settled_at: 0,
-        });
-    }
-    pallet_epoch::RecentCohortSummaries::<Runtime>::put(frame_support::BoundedVec::truncate_from(
-        recent,
-    ));
 }
 
 #[cfg(feature = "runtime-benchmarks")]

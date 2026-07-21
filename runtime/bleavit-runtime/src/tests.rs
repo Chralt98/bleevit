@@ -8948,18 +8948,39 @@ fn void_cohort_releases_a_retained_rerun_pin_and_guard_records() {
                 .any(|(pid, _, decision)| *pid == PID && *decision == DecisionOutcome::Adopt),
             "summary={summary:?}"
         );
+        // 05 §7(4): membership, not `decision.is_some()`, is the discriminator.
+        // QUEUED_PID is decided but never reached `Measuring`, so it is not a
+        // cohort member and takes T20 — its vacated Adopt does not enter the
+        // archive. Whether T20's record is the *truthful* one for this
+        // population is SQ-319.
         assert!(
             summary
                 .proposals
                 .iter()
-                .any(|(pid, _, decision)| *pid == QUEUED_PID && *decision == DecisionOutcome::Adopt),
+                .any(|(pid, _, decision)| *pid == QUEUED_PID
+                    && *decision == DecisionOutcome::Reject(RejectReason::ProcessHold)),
             "summary={summary:?}"
         );
+        // The cohort member emits no per-proposal rejection; the T20'd
+        // same-epoch proposal emits exactly one.
         assert!(!System::events().iter().any(|record| matches!(
             record.event,
             crate::RuntimeEvent::Epoch(pallet_epoch::Event::ProposalForceRejected { pid, .. })
-                if pid == PID || pid == QUEUED_PID
+                if pid == PID
         )));
+        assert_eq!(
+            System::events()
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    crate::RuntimeEvent::Epoch(pallet_epoch::Event::ProposalForceRejected {
+                        pid,
+                        ..
+                    }) if pid == QUEUED_PID
+                ))
+                .count(),
+            1,
+        );
         assert_eq!(
             crate::views::recent_cohorts().as_slice(),
             pallet_epoch::RecentCohortSummaries::<Runtime>::get().as_slice(),
@@ -14028,75 +14049,6 @@ fn sq40_undefined_prize_takes_t10_and_refunds_the_full_runtime_bond() {
                 epoch
             ),
             Some(markets.baseline),
-        );
-    });
-}
-
-#[test]
-fn sq66_runtime_prunes_baseline_mapping_with_fifo_summary_eviction() {
-    development_ext().execute_with(|| {
-        const EVICTING_EPOCH: futarchy_primitives::EpochId = 100;
-        let historical = futarchy_primitives::bounds::RECENT_COHORT_SUMMARIES;
-        let recent = (0..historical)
-            .map(|epoch| futarchy_primitives::CohortSummary {
-                epoch,
-                s_1e9: futarchy_primitives::FixedU64(0),
-                baseline_twap_1e9: futarchy_primitives::FixedU64(0),
-                proposals: futarchy_primitives::BoundedVec::new(),
-                voided: false,
-                settled_at: epoch,
-            })
-            .collect::<Vec<_>>();
-        pallet_epoch::RecentCohortSummaries::<Runtime>::put(BoundedVec::truncate_from(recent));
-        for epoch in 0..historical {
-            pallet_market::BaselineMarketOf::<Runtime>::insert(
-                epoch,
-                100_000_u64.saturating_add(u64::from(epoch)),
-            );
-        }
-        pallet_epoch::EpochOf::<Runtime>::mutate(|current| {
-            current.index = EVICTING_EPOCH.saturating_add(2);
-            current.phase = futarchy_primitives::EpochPhase::Housekeeping;
-        });
-        pallet_epoch::Cohorts::<Runtime>::insert(
-            EVICTING_EPOCH,
-            pallet_epoch::CohortInfo {
-                epoch: EVICTING_EPOCH,
-                proposals: BoundedVec::new(),
-                status: pallet_epoch::CohortStatus::Measuring {
-                    until_epoch: EVICTING_EPOCH.saturating_add(2),
-                },
-            },
-        );
-        let baseline_market = 200_000;
-        assert_ok!(pallet_market::Pallet::<Runtime>::create_market(
-            RuntimeOrigin::signed(crate::configs::epoch_account()),
-            baseline_market,
-            pallet_market::core_market::BookKind::Baseline {
-                epoch: EVICTING_EPOCH,
-            },
-            account(34),
-            account(35),
-            crate::configs::balance_param(b"pol.b_baseline"),
-        ));
-
-        assert_ok!(Epoch::void_cohort(
-            pallet_origins::Origin::EmergencyPlaybook.into(),
-            EVICTING_EPOCH,
-        ));
-
-        let retained = pallet_epoch::RecentCohortSummaries::<Runtime>::get();
-        assert_eq!(retained.len(), historical as usize);
-        assert_eq!(retained.first().map(|summary| summary.epoch), Some(1));
-        assert_eq!(
-            retained.last().map(|summary| summary.epoch),
-            Some(EVICTING_EPOCH),
-        );
-        assert!(!pallet_market::BaselineMarketOf::<Runtime>::contains_key(0));
-        assert!(pallet_market::BaselineMarketOf::<Runtime>::contains_key(1));
-        assert_eq!(
-            pallet_market::BaselineMarketOf::<Runtime>::get(EVICTING_EPOCH),
-            Some(baseline_market),
         );
     });
 }
