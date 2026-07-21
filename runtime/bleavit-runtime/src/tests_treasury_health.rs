@@ -1,0 +1,296 @@
+//! Runtime-level coverage for the treasury health cluster (SQ-205, SQ-207,
+//! SQ-180): the oracle → constitution + treasury reserve-health seam, the
+//! INSURANCE sweep, and the 08 §4.2 minimum-viable-NAV arming gate.
+//!
+//! Kept out of `tests.rs` deliberately — that file is large and concurrently
+//! edited; `tests_s5.rs` / `tests_telemetry.rs` set the precedent.
+
+use crate::configs::insurance_account;
+use crate::tests::development_ext;
+use crate::*;
+use frame_support::traits::fungibles::{Inspect, Mutate};
+use frame_support::{assert_noop, assert_ok};
+use futarchy_primitives::ProposalClass;
+use pallet_oracle::ProbeDispatch as _;
+
+// ---------------------------------------------------------------- SQ-205 ---
+//
+// 07 §8 owns the reserve-health flag `R`; 08 §1.2 makes `spendable_nav` zero
+// exactly while it is set. The seam between them must move both the
+// constitution's 02 §7.3 bit-7 mirror and the treasury haircut, or neither.
+
+/// The runtime sink composes the two sibling writes into one act.
+#[test]
+fn reserve_health_sink_moves_the_constitution_mirror_and_the_treasury_haircut() {
+    development_ext().execute_with(|| {
+        use pallet_oracle::ReserveHealthSink;
+
+        assert!(!FutarchyTreasury::treasury().reserve_impaired);
+        assert_eq!(
+            Constitution::phase_flags() & pallet_constitution::PhaseFlagsValue::RESERVE_HEALTH_FLAG,
+            0
+        );
+
+        assert_ok!(configs::ReserveHealthToConstitutionAndTreasury::reserve_health_changed(true));
+
+        // Both consequences landed together.
+        assert!(FutarchyTreasury::treasury().reserve_impaired);
+        assert_eq!(
+            Constitution::phase_flags() & pallet_constitution::PhaseFlagsValue::RESERVE_HEALTH_FLAG,
+            pallet_constitution::PhaseFlagsValue::RESERVE_HEALTH_FLAG
+        );
+        // 08 §1.2(2): fail-static — spendable NAV is zero for new commitments.
+        assert_eq!(FutarchyTreasury::nav().spendable_nav, 0);
+
+        // And the clearing edge reverses both.
+        assert_ok!(configs::ReserveHealthToConstitutionAndTreasury::reserve_health_changed(false));
+        assert!(!FutarchyTreasury::treasury().reserve_impaired);
+        assert_eq!(
+            Constitution::phase_flags() & pallet_constitution::PhaseFlagsValue::RESERVE_HEALTH_FLAG,
+            0
+        );
+    });
+}
+
+/// 02 §4 requires `nav().haircut_flag` to follow `welfare_current().reserve_flag`
+/// (the authoritative oracle value). With the sink applied they agree; this pins
+/// the agreement the SQ-205 row reported as violated.
+#[test]
+fn nav_haircut_flag_follows_the_authoritative_oracle_reserve_flag() {
+    development_ext().execute_with(|| {
+        use pallet_oracle::ReserveHealthSink;
+
+        assert_eq!(
+            FutarchyTreasury::nav().reserve_impaired,
+            pallet_oracle::Pallet::<Runtime>::reserve_unhealthy()
+        );
+
+        // Drive the oracle's own storage to unhealthy, then apply the seam as
+        // the oracle would inside its transition.
+        pallet_oracle::ReserveHealth::<Runtime>::mutate(|health| health.unhealthy = true);
+        assert_ok!(configs::ReserveHealthToConstitutionAndTreasury::reserve_health_changed(true));
+
+        assert!(pallet_oracle::Pallet::<Runtime>::reserve_unhealthy());
+        assert!(FutarchyTreasury::nav().reserve_impaired);
+        assert_eq!(
+            FutarchyTreasury::nav().reserve_impaired,
+            pallet_oracle::Pallet::<Runtime>::reserve_unhealthy()
+        );
+    });
+}
+
+/// **The reason the sink is not bound in production.** `crank_reserve_probe`
+/// advances the fail-static state machine even though the production
+/// `ProbeDispatch` is `()` and nothing is ever sent, while recovery needs
+/// probe *passes* that only `reserve_probe_result` can deliver — and that has
+/// no production caller (`XcmConfig::ResponseHandler = PolkadotXcm`, not
+/// `ProbeAwareResponseHandler`). So `unhealthy` is a one-way latch, and binding
+/// the seam live would make any keeper able to zero `spendable_nav` forever.
+///
+/// This test pins the trapdoor so the day the probe feed lands (SQ-380) it
+/// fails loudly and this comment gets revisited.
+#[test]
+fn reserve_health_is_a_one_way_latch_while_the_probe_feed_is_unwired() {
+    development_ext().execute_with(|| {
+        // No production route exists to deliver a probe *pass*…
+        assert!(
+            !<Runtime as pallet_oracle::Config>::ProbeDispatch::live(),
+            "production ProbeDispatch went live — re-evaluate binding the \
+             ReserveHealthSink (SQ-205/SQ-380)"
+        );
+
+        // …yet the state machine still latches fails and reaches `unhealthy`.
+        pallet_oracle::ReserveHealth::<Runtime>::mutate(|health| health.unhealthy = true);
+        assert!(pallet_oracle::Pallet::<Runtime>::reserve_unhealthy());
+
+        // With the seam unbound in production, the treasury is untouched — the
+        // SQ-205 defect, deliberately preserved rather than replaced by a worse
+        // permanent halt. `RuntimeReserveHealthSink` is `()` outside `cfg(test)`.
+        assert!(!FutarchyTreasury::treasury().reserve_impaired);
+    });
+}
+
+// ---------------------------------------------------------------- SQ-207 ---
+
+#[test]
+fn sweep_insurance_moves_real_usdc_from_insurance_to_main_and_raises_nav() {
+    development_ext().execute_with(|| {
+        let amount: Balance = 5_000 * futarchy_primitives::currency::USDC;
+        let main = crate::genesis::treasury_account();
+
+        assert_ok!(<ForeignAssets as Mutate<AccountId>>::mint_into(
+            bleavit_xcm::identity::usdc_location(),
+            &insurance_account(),
+            amount * 4,
+        ));
+        let insurance_before = <ForeignAssets as Inspect<AccountId>>::balance(
+            bleavit_xcm::identity::usdc_location(),
+            &insurance_account(),
+        );
+        let main_before = <ForeignAssets as Inspect<AccountId>>::balance(
+            bleavit_xcm::identity::usdc_location(),
+            &main,
+        );
+        let nav_before = FutarchyTreasury::nav().nav;
+
+        assert_ok!(FutarchyTreasury::sweep_insurance(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            amount
+        ));
+
+        // Real custody moved INSURANCE → MAIN, and only there.
+        assert_eq!(
+            <ForeignAssets as Inspect<AccountId>>::balance(
+                bleavit_xcm::identity::usdc_location(),
+                &insurance_account()
+            ),
+            insurance_before - amount
+        );
+        assert_eq!(
+            <ForeignAssets as Inspect<AccountId>>::balance(
+                bleavit_xcm::identity::usdc_location(),
+                &main
+            ),
+            main_before + amount
+        );
+        // 08 §1.2: INSURANCE is outside NAV, so NAV rises by exactly `amount`.
+        assert_eq!(FutarchyTreasury::nav().nav, nav_before + amount);
+    });
+}
+
+#[test]
+fn sweep_insurance_is_refused_to_every_non_treasury_origin() {
+    development_ext().execute_with(|| {
+        let amount: Balance = 1_000 * futarchy_primitives::currency::USDC;
+        for bad in [
+            RuntimeOrigin::signed(crate::genesis::treasury_account()),
+            RuntimeOrigin::root(),
+            RuntimeOrigin::none(),
+            pallet_origins::Origin::FutarchyParam.into(),
+            pallet_origins::Origin::FutarchyCode.into(),
+            pallet_origins::Origin::GuardianHold.into(),
+            pallet_origins::Origin::EmergencyPlaybook.into(),
+        ] {
+            assert_noop!(
+                FutarchyTreasury::sweep_insurance(bad, amount),
+                sp_runtime::DispatchError::BadOrigin
+            );
+        }
+    });
+}
+
+#[test]
+fn sweep_insurance_preserves_the_insurance_account_rather_than_reaping_it() {
+    development_ext().execute_with(|| {
+        // 03 §7 R-4 / 08 §1.4: at most `balance - min_balance` is sweepable and
+        // an over-large request fails whole (G-1) instead of reaping INSURANCE.
+        assert_ok!(<ForeignAssets as Mutate<AccountId>>::mint_into(
+            bleavit_xcm::identity::usdc_location(),
+            &insurance_account(),
+            2_000 * futarchy_primitives::currency::USDC,
+        ));
+        // The account is genesis-endowed, so read the live balance rather than
+        // assuming the mint is all of it.
+        let held = <ForeignAssets as Inspect<AccountId>>::balance(
+            bleavit_xcm::identity::usdc_location(),
+            &insurance_account(),
+        );
+        let nav_before = FutarchyTreasury::nav().nav;
+
+        // Sweeping the *whole* balance would reap the account, so Preserve must
+        // refuse it outright rather than partially satisfying the request.
+        assert!(FutarchyTreasury::sweep_insurance(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            held,
+        )
+        .is_err());
+
+        // Nothing moved and NAV never recorded USDC the treasury did not get.
+        assert_eq!(
+            <ForeignAssets as Inspect<AccountId>>::balance(
+                bleavit_xcm::identity::usdc_location(),
+                &insurance_account()
+            ),
+            held
+        );
+        assert_eq!(FutarchyTreasury::nav().nav, nav_before);
+    });
+}
+
+// ---------------------------------------------------------------- SQ-180 ---
+//
+// 08 §4.2: arming a proposal class REQUIRES published spendable NAV ≥ the class
+// floor of 08 §4.1, and under the 08 §1.2 haircut spendable NAV is 0 so every
+// class fails (fail-static).
+
+#[test]
+fn arming_a_class_below_its_nav_floor_is_refused_and_leaves_flags_unchanged() {
+    development_ext().execute_with(|| {
+        let flags_before = Constitution::phase_flags();
+        // The development genesis is far below the 08 §4.1 PARAM floor.
+        assert!(
+            FutarchyTreasury::nav().spendable_nav < FutarchyTreasury::floor(ProposalClass::Param)
+        );
+
+        assert_noop!(
+            Constitution::set_phase_flag(
+                RuntimeOrigin::root(),
+                pallet_constitution::PhaseFlagsValue::PARAM_ARMED,
+                true
+            ),
+            pallet_futarchy_treasury::Error::<Runtime>::NavFloorUnmet
+        );
+        assert_eq!(Constitution::phase_flags(), flags_before);
+    });
+}
+
+#[test]
+fn arming_is_fail_static_under_the_reserve_health_haircut() {
+    development_ext().execute_with(|| {
+        use pallet_oracle::ReserveHealthSink;
+
+        // Fund MAIN well past every 08 §4.1 floor so only the haircut can bite —
+        // through the real INSURANCE sweep rather than a test-only backdoor.
+        let far_above = FutarchyTreasury::floor(ProposalClass::Meta) * 4;
+        assert_ok!(<ForeignAssets as Mutate<AccountId>>::mint_into(
+            bleavit_xcm::identity::usdc_location(),
+            &insurance_account(),
+            far_above,
+        ));
+        assert_ok!(FutarchyTreasury::sweep_insurance(
+            pallet_origins::Origin::FutarchyTreasury.into(),
+            far_above
+        ));
+        assert!(
+            FutarchyTreasury::nav().spendable_nav >= FutarchyTreasury::floor(ProposalClass::Meta)
+        );
+
+        // Armable now…
+        assert_ok!(Constitution::set_phase_flag(
+            RuntimeOrigin::root(),
+            pallet_constitution::PhaseFlagsValue::PARAM_ARMED,
+            true
+        ));
+
+        // …and refused once the 08 §1.2 flag zeroes spendable NAV.
+        assert_ok!(configs::ReserveHealthToConstitutionAndTreasury::reserve_health_changed(true));
+        assert_eq!(FutarchyTreasury::nav().spendable_nav, 0);
+        let flags_before = Constitution::phase_flags();
+        assert_noop!(
+            Constitution::set_phase_flag(
+                RuntimeOrigin::root(),
+                pallet_constitution::PhaseFlagsValue::TREASURY_ARMED,
+                true
+            ),
+            pallet_futarchy_treasury::Error::<Runtime>::NavFloorUnmet
+        );
+        assert_eq!(Constitution::phase_flags(), flags_before);
+
+        // Disarming stays available so the chain is never stranded armed.
+        assert_ok!(Constitution::set_phase_flag(
+            RuntimeOrigin::root(),
+            pallet_constitution::PhaseFlagsValue::PARAM_ARMED,
+            false
+        ));
+    });
+}

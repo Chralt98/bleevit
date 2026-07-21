@@ -179,6 +179,24 @@ impl<AccountId> PotFunding<AccountId> for () {
     }
 }
 
+/// Runtime custody seam for the 08 §1.2/§1.4 INSURANCE → `MAIN` sweep (SQ-207).
+///
+/// Implementations MUST move the real USDC with `Preservation::Preserve`:
+/// INSURANCE is a genesis-endowed permanent custody account under 03 §7 R-4, so
+/// at most `balance − min_balance` is sweepable and an over-large `amount` MUST
+/// fail whole rather than reap the account (G-1).
+pub trait InsuranceSweep {
+    fn sweep(amount: futarchy_primitives::Balance) -> frame_support::dispatch::DispatchResult;
+}
+
+/// Custody-free test environments may use the unit implementation. Production
+/// binds the real INSURANCE-to-MAIN USDC transfer at the runtime boundary.
+impl InsuranceSweep for () {
+    fn sweep(_: futarchy_primitives::Balance) -> frame_support::dispatch::DispatchResult {
+        Ok(())
+    }
+}
+
 /// B4/B1a seam (09 §4): dispatch the DOT funding transfer for a renewal the
 /// accounting just committed. An `Err` rolls back the whole extrinsic (quote
 /// restored, period not funded) so the keeper can retry — bounded retry via
@@ -279,6 +297,9 @@ pub mod pallet {
         /// Runtime custody adapter which atomically moves real USDC from MAIN
         /// into the KEEPER/ORACLE payout pot when its budget line is funded.
         type PotFunding: PotFunding<Self::AccountId>;
+
+        /// Custody seam for the 08 §1.2/§1.4 INSURANCE → `MAIN` sweep (SQ-207).
+        type InsuranceSweep: InsuranceSweep;
 
         /// Weight information for extrinsics.
         type WeightInfo: WeightInfo;
@@ -426,6 +447,8 @@ pub mod pallet {
             quote_authority: T::AccountId,
             renewal_account: [u8; 32],
         },
+        /// INSURANCE was swept into `MAIN` by a TREASURY decision (08 §1.2/§1.4).
+        InsuranceSwept { amount: Balance },
     }
 
     /// 1:1 with [`CoreError`]; `CoreError::BadOrigin` maps to
@@ -724,6 +747,37 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        /// `treasury.sweep_insurance(amount)` — the sole admissible outflow of
+        /// the INSURANCE account (08 §1.2/§1.4, SQ-207).
+        ///
+        /// Origin: `FutarchyTreasury` only, i.e. a passed TREASURY-class
+        /// decision — no guardian power, playbook or admin origin can reach it.
+        /// Destination: `MAIN`, and only `MAIN`; the sweep never pays a third
+        /// party, so every existing control (budget lines, §1.3 rolling meters,
+        /// stream thresholds, the reserve-health flag) governs the funds
+        /// afterwards. Takes no budget line by design — it is an inbound
+        /// transfer *to* `MAIN`, and 08 §1.2 rejected a `BudgetLine::Insurance`
+        /// outright.
+        ///
+        /// INSURANCE sits outside NAV (08 §1.2), so a sweep raises NAV by
+        /// exactly `amount`. Custody moves under `Preservation::Preserve`: at
+        /// most `balance − min_balance` is sweepable and an over-large request
+        /// fails whole rather than reaping this 03 §7 R-4 permanent account
+        /// (G-1). Accounting is credited first and custody second, so a custody
+        /// refusal rolls the credit back with the dispatch.
+        #[pallet::call_index(11)]
+        #[pallet::weight(T::WeightInfo::sweep_insurance())]
+        pub fn sweep_insurance(origin: OriginFor<T>, amount: Balance) -> DispatchResult {
+            T::TreasuryOrigin::ensure_origin(origin)?;
+            Self::mutate(|t| t.sweep_insurance(Origin::FutarchyTreasury, amount))?;
+            // Zero keeps the core's bookkeeping/event semantics but has no
+            // custody to move; skipping the seam cannot strand value.
+            if amount != 0 {
+                T::InsuranceSweep::sweep(amount)?;
+            }
+            Ok(())
+        }
     }
 
     #[pallet::extra_constants]
@@ -812,14 +866,20 @@ pub mod pallet {
         // ---- runtime-internal (non-extrinsic) entry points -----------------
 
         /// 07 §8 / 08 §1.2: the oracle's reserve-health probe sets/clears the
-        /// haircut flag `R`. Runtime-internal (a sibling-pallet Rust call, wired
-        /// at B1a); emits `NavHaircutFlagged` on every transition.
-        pub fn set_reserve_impaired(flag: bool) {
+        /// haircut flag `R`. Runtime-internal (a sibling-pallet Rust call);
+        /// emits `NavHaircutFlagged` on every transition.
+        ///
+        /// **Fallible on purpose (SQ-205).** It is reached from the oracle's
+        /// `ReserveHealthSink` inside that pallet's storage layer, and 08 §1.2
+        /// ties `spendable_nav = 0` to exactly this flag. Swallowing a persist
+        /// failure here would let the oracle transition and the constitution
+        /// bit-7 mirror commit while NAV kept reporting full backing — the one
+        /// split-brain the seam exists to prevent. Propagating instead unwinds
+        /// all three writes (G-1).
+        pub fn set_reserve_impaired(flag: bool) -> DispatchResult {
             let mut t = Self::load();
             t.set_reserve_impaired(T::CurrentEpoch::get(), flag);
-            // `set_reserve_impaired` only flips the flag / pushes an event; the
-            // conversion cannot exceed a bound, but persist defensively anyway.
-            let _ = Self::persist(t);
+            Self::persist(t)
         }
 
         /// Infallible, fail-soft keeper rebate endpoint (08 §6.3 / 07).
@@ -1152,6 +1212,7 @@ pub mod pallet {
                 CoreEvent::KeeperBudgetExhausted { epoch, spent } => {
                     Event::KeeperBudgetExhausted { epoch, spent }
                 }
+                CoreEvent::InsuranceSwept { amount } => Event::InsuranceSwept { amount },
             };
             Self::deposit_event(fe);
         }

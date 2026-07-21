@@ -4432,7 +4432,7 @@ fn coretime_liveness_calls_dispatch_while_ledger_freeze_playbook_is_active() {
 fn coretime_liveness_calls_dispatch_while_reserve_health_flag_is_set() {
     development_ext().execute_with(|| {
         assert_coretime_liveness_calls_dispatch_during(91, || {
-            FutarchyTreasury::set_reserve_impaired(true);
+            assert_ok!(FutarchyTreasury::set_reserve_impaired(true));
             assert!(FutarchyTreasury::treasury().reserve_impaired);
             assert_eq!(FutarchyTreasury::nav().spendable_nav, 0);
         });

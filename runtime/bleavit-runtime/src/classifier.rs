@@ -666,7 +666,10 @@ fn project_inner(call: &RuntimeCall, budget: &mut ProjectionBudget) -> FilterCal
             | pallet_futarchy_treasury::Call::cancel_stream { .. }
             | pallet_futarchy_treasury::Call::issue_vit { .. }
             | pallet_futarchy_treasury::Call::recover_foreign { .. }
-            | pallet_futarchy_treasury::Call::set_coretime_authority { .. } => {
+            | pallet_futarchy_treasury::Call::set_coretime_authority { .. }
+            // 08 §1.2/§1.4 (SQ-207): `FutarchyTreasury` origin only — a passed
+            // TREASURY decision, never a guardian, playbook or admin path.
+            | pallet_futarchy_treasury::Call::sweep_insurance { .. } => {
                 leaf(CallDomain::Treasury)
             }
             pallet_futarchy_treasury::Call::claim_stream { .. }

@@ -264,5 +264,19 @@ mod benches {
         _(origin as T::RuntimeOrigin, authority, [4u8; 32]);
     }
 
+    /// 08 §1.2/§1.4 (SQ-207): the INSURANCE → `MAIN` sweep. Worst case is a
+    /// non-zero amount, which exercises the custody seam as well as the `State`
+    /// round-trip.
+    #[benchmark]
+    fn sweep_insurance() {
+        let origin = T::BenchmarkHelper::treasury_origin();
+        let mut t = Treasury::default();
+        t.main_usdc = 1_000_000;
+        Pallet::<T>::seed(&t);
+
+        #[extrinsic_call]
+        _(origin as T::RuntimeOrigin, 1_000u128);
+    }
+
     impl_benchmark_test_suite!(Pallet, crate::mock::new_test_ext(), crate::mock::Test);
 }
