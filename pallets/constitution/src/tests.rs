@@ -675,7 +675,11 @@ fn set_release_channel_is_constitutional_values_only() {
             caller
         ));
         let stored = ReleaseChannel::<Test>::get();
-        assert_eq!(stored.updated_at(), 43);
+        // 02 §12: offset 108 is stamped from the current block, so the
+        // caller's 43 is ignored. A lawful writer must not be able to
+        // backdate the freshness a stranded reader depends on.
+        assert_eq!(stored.updated_at(), System::block_number() as u32);
+        assert_ne!(stored.updated_at(), 43);
         assert_eq!(stored.spec_version(), 7);
         assert_eq!(stored.pending_authorized_at(), 11);
         assert_eq!(stored.flags(), 6);
@@ -683,7 +687,7 @@ fn set_release_channel_is_constitutional_values_only() {
             last_event(),
             RuntimeEvent::Constitution(Event::ReleaseChannelSet {
                 spec_version: 7,
-                updated_at: 43,
+                updated_at: System::block_number() as u32,
             })
         );
     });
@@ -936,6 +940,7 @@ fn shell_and_core_agree_on_the_same_operation_sequence() {
         core.dispatch_set_release_channel(
             ConstitutionOrigin::ConstitutionalValues,
             channel_bytes(),
+            System::block_number() as u32,
         )
         .unwrap();
 
@@ -1491,7 +1496,11 @@ fn randomized_differential_covers_errors_origins_and_epochs() {
                     bytes[112..116].copy_from_slice(&((rng.next() % 90) as u32).to_le_bytes());
                     let shell = Constitution::set_release_channel(runtime_origin, bytes);
                     let model = core
-                        .dispatch_set_release_channel(authority, bytes)
+                        .dispatch_set_release_channel(
+                            authority,
+                            bytes,
+                            System::block_number() as u32,
+                        )
                         .map_err(crate::Pallet::<Test>::map_core_error);
                     assert_eq!(shell, model, "set_release_channel diverged at step {step}");
                 }

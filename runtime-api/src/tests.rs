@@ -368,11 +368,10 @@ where
 
 #[test]
 fn api_collections_encode_identically_to_frame_bounded_vec() {
-    // 02 §3 spells the API collection bounds as FRAME's `BoundedVec<T, ConstU32<N>>`,
-    // while the declaration uses the frame-free primitives `BoundedVec<T, const N>`
-    // (rule 9 / 01 §5.2 — the view crate cannot take sp types; SQ-99). This pins the
-    // two spellings to one wire encoding, cross-decoded in both directions, for every
-    // collection on the 02 §3 surface.
+    // 02 §3 freezes the API collection spelling as the frame-free primitives
+    // `BoundedVec<T, N>` (rule 9 / 01 §5.2 — the view crate cannot take sp types;
+    // SQ-99). This additionally pins its wire encoding to FRAME's internal bounded
+    // collection, cross-decoded in both directions for every collection on the surface.
     assert_encodes_like_frame_bounded_vec(&singleton::<_, { bounds::MAX_PROPOSAL_SUMMARIES }>(
         proposal_summary(),
     ));

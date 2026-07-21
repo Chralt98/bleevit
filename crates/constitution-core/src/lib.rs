@@ -533,9 +533,18 @@ impl ReleaseChannel {
     /// execution guard's exclusive fields. The caller owns the release
     /// descriptor, minimum-version/key-revocation tail and flag bits 0–1;
     /// offsets 112–119 and flag bit 2 remain byte-for-byte guard-owned.
-    pub fn merge_writer_b(&self, bytes: [u8; RELEASE_CHANNEL_LEN]) -> Result<Self, Error> {
+    /// `updated_at` is supplied by the dispatch path, never by the caller's
+    /// bytes: 02 §12 makes offset 108 the block of the last write, and a
+    /// caller-chosen value would let a lawful writer backdate or future-date
+    /// the freshness a stranded reader depends on.
+    pub fn merge_writer_b(
+        &self,
+        bytes: [u8; RELEASE_CHANNEL_LEN],
+        updated_at: u32,
+    ) -> Result<Self, Error> {
         let caller = Self::new(bytes)?;
         let mut merged = caller.bytes;
+        merged[RELEASE_CHANNEL_UPDATED_AT].copy_from_slice(&updated_at.to_le_bytes());
         merged[RELEASE_CHANNEL_SPEC_VERSION.start..RELEASE_CHANNEL_PENDING_AUTHORIZED_AT.end]
             .copy_from_slice(
                 &self.bytes
@@ -779,13 +788,16 @@ impl ConstitutionState {
         self.phase_flags.set(flag, enabled)
     }
 
+    /// `updated_at` is supplied by the caller's dispatch context (the current
+    /// block), never read out of `bytes` — see [`ReleaseChannelRecord::merge_writer_b`].
     pub fn dispatch_set_release_channel(
         &mut self,
         origin: ConstitutionOrigin,
         bytes: [u8; RELEASE_CHANNEL_LEN],
+        updated_at: u32,
     ) -> Result<(), Error> {
         ensure!(origin.can_set_release_channel(), Error::BadOrigin);
-        self.release_channel = self.release_channel.merge_writer_b(bytes)?;
+        self.release_channel = self.release_channel.merge_writer_b(bytes, updated_at)?;
         Ok(())
     }
 
@@ -2045,7 +2057,7 @@ pub mod benchmarking {
         let mut state = ConstitutionState::genesis();
         let mut bytes = [0u8; RELEASE_CHANNEL_LEN];
         bytes[0] = 1;
-        state.dispatch_set_release_channel(ConstitutionOrigin::ConstitutionalValues, bytes)
+        state.dispatch_set_release_channel(ConstitutionOrigin::ConstitutionalValues, bytes, 7)
     }
 }
 
@@ -2601,7 +2613,7 @@ mod tests {
         assert!(ReleaseChannel::new(all_defined_flags).is_ok());
         let mut state = ConstitutionState::genesis();
         assert_eq!(
-            state.dispatch_set_release_channel(ConstitutionOrigin::Signed, bad),
+            state.dispatch_set_release_channel(ConstitutionOrigin::Signed, bad, 7),
             Err(Error::BadOrigin)
         );
         let mut good = [0u8; RELEASE_CHANNEL_LEN];
@@ -2615,16 +2627,16 @@ mod tests {
             ConstitutionOrigin::Root,
         ] {
             assert_eq!(
-                state.dispatch_set_release_channel(refused, good),
+                state.dispatch_set_release_channel(refused, good, 7),
                 Err(Error::BadOrigin)
             );
         }
         assert_eq!(
-            state.dispatch_set_release_channel(ConstitutionOrigin::ConstitutionTrack, good),
+            state.dispatch_set_release_channel(ConstitutionOrigin::ConstitutionTrack, good, 7),
             Ok(())
         );
         assert_eq!(
-            state.dispatch_set_release_channel(ConstitutionOrigin::ConstitutionalValues, good),
+            state.dispatch_set_release_channel(ConstitutionOrigin::ConstitutionalValues, good, 7),
             Ok(())
         );
 
@@ -2634,11 +2646,19 @@ mod tests {
         writer_b[112..116].copy_from_slice(&99u32.to_le_bytes());
         writer_b[116..120].copy_from_slice(&0u32.to_le_bytes());
         writer_b[164..168].copy_from_slice(&2u32.to_le_bytes());
+        // 02 §12: offset 108 is the block of the last write, stamped by the
+        // dispatch path. The caller's 43 MUST be ignored — a lawful writer
+        // must not be able to backdate or future-date the freshness a
+        // stranded reader depends on.
         assert_eq!(
-            state.dispatch_set_release_channel(ConstitutionOrigin::ConstitutionalValues, writer_b,),
+            state.dispatch_set_release_channel(
+                ConstitutionOrigin::ConstitutionalValues,
+                writer_b,
+                5_000
+            ),
             Ok(())
         );
-        assert_eq!(state.release_channel.updated_at(), 43);
+        assert_eq!(state.release_channel.updated_at(), 5_000);
         assert_eq!(state.release_channel.spec_version(), 7);
         assert_eq!(state.release_channel.pending_authorized_at(), 11);
         assert_eq!(state.release_channel.flags(), 6);

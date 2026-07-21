@@ -1,7 +1,7 @@
 > **DERIVED COPY for design-tool context — DO NOT EDIT.**
 > Verbatim copy of `docs/architecture/11-frontend-workflows.md` (the frozen source of truth),
-> generated 2026-07-12 at commit `9f250be` for upload to Claude Design. If this copy and the
-> source ever differ, the source wins. Regenerate by re-copying the source file.
+> regenerated 2026-07-21 from integration contract v6 for upload to Claude Design. If this
+> copy and the source ever differ, the source wins. Regenerate by re-copying the source file.
 
 # 11 — Frontend Workflows and Screens
 
@@ -30,9 +30,9 @@ The canonical frontend serves **every** protocol workflow — including the valu
 | # | Screen / workflow | Area | Primary reads | Extrinsics | Spec |
 |---|---|---|---|---|---|
 | S1 | Epoch & phase header, sudo banner | global | `Epoch.EpochOf`, `Constitution.PhaseFlags` | — | §11.10, [10](10-frontend-architecture.md) |
-| S2 | Proposal list / detail (+ ratification status) | core | `Epoch.Proposals`, `proposal_summaries()`, `Preimage.PreimageFor`, `Referenda.ReferendumInfoFor` | — | §11.7.4 |
+| S2 | Proposal list / detail (+ ratification status) | core | `Epoch.Proposals`, `proposal_summaries()`, finalized-only `decision_stats()`, `Preimage.PreimageFor`, `Referenda.ReferendumInfoFor` | — | §11.7.4 |
 | S3 | Market trading (decision, gate, Baseline books) | core | `Market.Markets`, `BaselineMarketOf`, `quote()` + client LMSR cross-check | `market.buy/sell` | §11.5 |
-| S4 | Positions / transfer / redeem (incl. **Voided**) | core | `Positions` prefix / `account_positions()`, `Vaults(pid)`, `BaselineVaults(epoch)` | `ledger.split/merge/split_scalar/merge_scalar/transfer/redeem/redeem_scalar/redeem_scalar_pair/redeem_void` | §11.5, §11.6 |
+| S4 | Positions / transfer / redeem (incl. **Voided**) | core | `Positions` prefix / `account_positions()`, `Vaults(pid)`, `BaselineVaults(epoch)` | `ledger.split/merge/split_scalar/merge_scalar/transfer/redeem/redeem_scalar/redeem_scalar_pair/redeem_void/redeem_baseline/redeem_baseline_pair` | §11.5, §11.6 |
 | S5 | Submit proposal | core | `epoch_status()`, `IntakeQueue`, class bond params, preimage flow | `epoch.submit/withdraw`, `preimage.note_preimage`, `preimage.request_preimage` | §11.5 |
 | S6 | Execution queue + execute | core | `ExecutionGuard.Queue`, `execution_queue()` | `execution_guard.execute` | §11.5 |
 | S7 | Welfare & constitution dashboard | core | `welfare_current()`, `params()`, `Welfare.Snapshots`, `MetricSpecs`, `GateBreachFlags` | — | [05](05-welfare-and-decision-engine.md) |
@@ -51,6 +51,12 @@ The canonical frontend serves **every** protocol workflow — including the valu
 | S20 | Balances & funding status | core | `System.Account`, `ForeignAssets.Account(USDC_LOCATION, who)` | — | [02](02-integration-contract.md) |
 
 USDC balance reads use the `ForeignAssets` instance keyed by the pinned XCM `Location` (D-17, frozen in [02](02-integration-contract.md), incl. the `[VERIFY asset index 1337]` that lives there) — never `Assets.Account`.
+
+**Finalized decision statistics are not a trading preview.** `decision_stats(pid)` is available only after the registered decision windows are sealed and every decision-path input is evaluable ([02](02-integration-contract.md) §3). S2 MAY render it only as finalized decision statistics; while a proposal remains in Trade/Extended and the view returns `None`, S2 and S3 MUST render no projected uplift, projected PASS/REJECT, or other in-Trade preview derived from it.
+
+**Epoch shrink visibility.** The epoch dashboard MUST ingest `SlotsShrunk { epoch, requested, funded, dropped }` and render `requested` and `funded` as proposal-slot counts plus the dropped proposal IDs — never as USDC amounts ([08](08-treasury-and-economics.md) §4.4). A shrink is a visible capacity event, not an absent/zeroed slot.
+
+**Position-state projection.** Proposal positions render `VaultState::ScalarSettled { winner, s }`; `PositionId::Baseline` renders the branch-free `VaultState::BaselineSettled { s }`. The positions and redemption screens MUST NOT fabricate or display a winning branch for a Baseline vault; they route that state to `redeem_baseline` / `redeem_baseline_pair` ([03](03-conditional-ledger.md) §5.3).
 
 **Forecast trading is cut (D-8).** Books close at branch resolution and never reopen. No screen, route, precondition row, or copy in this document refers to post-resolution ("forecast") trading; the residue in FE §17.6/§14.1 is removed. S3 trades only while the owning proposal is in `Trading`/`Extended` (Baseline books: while the epoch trading window is open — see §11.5 row P-2).
 
@@ -101,13 +107,13 @@ Each row = the exact re-reads at B′. `[C]` marks a constants-API read; everyth
 
 | # | Tx | Preconditions re-read at B′ |
 |---|---|---|
-| P-1 | `market.buy/sell` (decision & gate books) | owning proposal state ∈ {`Trading`, `Extended`} — **only**; market phase Open; book `q_L, q_S, b` (recompute cost via client LMSR; recheck `max_cost`/`min_proceeds` still satisfiable); `quote()` vs. client recompute agree within the fixed-point bounds (else `FE-CHAIN-005`, trading blocked); user USDC balance (buy) / position balance (sell); per-trade min/max `[C]`; `Constitution.PhaseFlags` trading-enabled bit set; no PB-LEDGER-FREEZE active ([06](06-governance-and-guardians.md)) |
+| P-1 | `market.buy/sell` (decision & gate books) | owning proposal state ∈ {`Trading`, `Extended`} — **only**; market phase Open; book `q_L, q_S, b` (recompute cost via client LMSR using the frozen `Market::Fee` bps metadata constant; cross-check it against raw `params(mkt.fee)` by floored `Perbill / 100,000`; recheck `max_cost`/`min_proceeds` still satisfiable); `quote()` vs. client recompute agree within the fixed-point bounds (else `FE-CHAIN-005`, trading blocked); user USDC balance (buy) / position balance (sell); per-trade min/max `[C]`; `Constitution.PhaseFlags` trading-enabled bit set; no PB-LEDGER-FREEZE active ([06](06-governance-and-guardians.md)) |
 | P-2 | `market.buy/sell` (**Baseline book**) | `BaselineMarketOf(epoch)` exists (D-2/X-10); epoch trading window open — Trade phase d5–d18 *(normative value: [13](13-parameters.md))* **or** any epoch-e decision pair still in `Extended` (the Baseline book stays open through the last epoch-e decision incl. per-pair extensions, [04](04-markets-and-pricing.md) §8.4); `BaselineVaults(epoch)` open ([03](03-conditional-ledger.md)); book state + slippage recheck as P-1; per-trade min/max `[C]`; PhaseFlags trading-enabled; no PB-LEDGER-FREEZE |
 | P-3 | `ledger.split` / `split_scalar` | vault `Open`; USDC balance ≥ amount + fee headroom (in selected fee asset); `MinSplit` `[C]`; caller position count < `MaxPositionsPerAccount` `[C]` for each newly created position key; no PB-LEDGER-FREEZE |
 | P-4 | `ledger.merge` / `merge_scalar` | vault ∈ {`Open`, `Resolved`, **`Voided`**} (merge is available in every non-`ScalarSettled` state — the D-1 par path, [03](03-conditional-ledger.md) §5.1); user holds ≥ amount of the complete pair being merged (both sides re-read); payout = amount USDC at par, displayed |
 | P-5 | `ledger.redeem` (branch-USDC) | vault `ScalarSettled{winner, s}` **only** — `Resolved` admits no unpaired redemption (outflow monotonicity, [03](03-conditional-ledger.md) §2.3; `merge` is the par path there, row P-4); user holds winning-branch USDC ≥ amount; payout 1:1 displayed. *(Not applicable under `Voided` — see §11.6; the old "winning-position balance" requirement is deleted for VOID.)* |
-| P-6 | `ledger.redeem_scalar` | vault `ScalarSettled`; settlement `s` present; user LONG/SHORT balance ≥ amount; expected payout recomputed and displayed: LONG `floor(a·s)`, unpaired SHORT `floor(a·(1−s))` *(normative values: [13](13-parameters.md))* |
-| P-7 | `ledger.redeem_scalar_pair` | vault `ScalarSettled`; user holds ≥ a of **both** LONG and SHORT (winning branch); payout exactly `a`, displayed ([03](03-conditional-ledger.md), B-5) |
+| P-6 | `ledger.redeem_scalar` / `redeem_baseline` | proposal vault `ScalarSettled { winner, s }`, or Baseline position view `BaselineSettled { s }`; settlement `s` present; user LONG/SHORT balance ≥ amount; expected payout recomputed and displayed: LONG `floor(a·s)`, unpaired SHORT `floor(a·(1−s))` *(normative values: [13](13-parameters.md))*; only the proposal-vault path renders/uses `winner` |
+| P-7 | `ledger.redeem_scalar_pair` / `redeem_baseline_pair` | proposal vault `ScalarSettled`, or Baseline position view `BaselineSettled`; user holds ≥ a of **both** LONG and SHORT (within the proposal's winning branch when applicable); payout exactly `a`, displayed ([03](03-conditional-ledger.md), B-5) |
 | P-8 | `ledger.redeem_void` | see §11.6 table |
 | P-9 | `ledger.transfer` | vault ∈ {`Open`, `Resolved`, `Voided`}; recipient position count < `MaxPositionsPerAccount` `[C]` (protocol accounts exempt); `MinTransfer` `[C]`; per-entry deposit 0.1 USDC headroom *(normative value: [13](13-parameters.md))* |
 | P-10 | `epoch.submit` | `Epoch.EpochOf.phase == Intake`; `IntakeQueue` len < 64 *(normative value: [13](13-parameters.md))*; caller's intake entries this epoch < 4 (rate limit, [06](06-governance-and-guardians.md)); class bond balance; preimage noted with matching hash + len **and pinned via `preimage.request_preimage`** ([06](06-governance-and-guardians.md), B-13); resource-domain validity vs. constitution tables; **warning surfaced**: preimage-missing cancellation slashes 10% of the bond, non-decision-grade outcomes slash 10% (to INSURANCE) — the old "full refund" copy is removed |
@@ -128,7 +134,7 @@ The frontend re-checks **every** check the backend performs at dispatch time ([0
 | 3. Preimage | `Preimage.PreimageFor(payload_hash, len)` present; client re-hashes and compares to the trading-time commitment |
 | 4. Runtime version | `RuntimeVersionConstraint` == live `spec_name`/`spec_version` |
 | 5. **Ratification (CODE/META and ratify-required classes)** | linked `ratify`-track referendum is `Approved` — the single **execute-time deadline** of D-5 ([06](06-governance-and-guardians.md)); missing/unpassed ⇒ the runtime rejects with `RejectReason::NotRatified`, and the FE blocks with the same reason pre-sign |
-| 6. **Attestation presence (CODE/META)** | ≥ 2-of-3 signed attestation records present in the bonded-attestor registry ([06](06-governance-and-guardians.md)/[09](09-execution-upgrades-and-rollout.md)) |
+| 6. **Attestation presence (CODE/META)** | the committed attestation records still exist, unrevoked, with no challenge resolved against them — a **record** check, not a live-registry check; the ≥ 2-of-3 quorum over the bonded registry is a *queue-time* precondition already discharged (mirrors 09 §1.2(5) item-for-item per X-11i; re-sited 2026-07-20, SQ-97) ([06](06-governance-and-guardians.md)/[09](09-execution-upgrades-and-rollout.md)) |
 | 7. **Capability rules** | call domains of the decoded batch ⊆ declared domains; each domain's `CapabilityRule` admits the class origin (`Constitution` capability table) |
 | 8. **Rate meters** | treasury meters (per-proposal ≤ 5% NAV; 30-day ≤ 10%; 180-day ≤ 30% *(normative values: [13](13-parameters.md))*) and issuance meters have headroom for `meters_declared` |
 | 9. **Resource locks** | `Epoch.ResourceLocks` still held by `pid` for every declared domain |
@@ -215,6 +221,8 @@ For every proposal whose class requires values ratification (CODE/META per [06](
 - the **execute-time deadline** (D-5, [06](06-governance-and-guardians.md)): *"must be Approved by the moment `execute()` is dispatched; execution window: maturity → grace_end"* with both block numbers and countdowns;
 - if the referendum cannot mathematically pass before `grace_end` (decision + confirm periods vs. remaining window), an explicit warning: *"ratification can no longer complete inside the execution window — this proposal will reject with `NotRatified`."*
 
+The guard status is not the referendum lifecycle source. `RatificationStatus::NoPassedRecord` means only that the guard has no passed-ratification record; it deliberately does not distinguish never submitted, submitted and ongoing, or submitted and failed. The panel MUST derive those lifecycle states from `pallet-referenda` (`ReferendumInfoFor`, calls and tallies above). `RatificationStatus::Passed { referendum }` supplies the guard's passed-record linkage after approval; it does not replace the referendum read.
+
 ### 11.7.5 OracleResolution ballot and the pre-cohort snapshot rule
 
 Terminal (round-3) oracle disputes escalate to the hardened `oracle` track: 60% approval / 10% support / 7-day *(normative values: [13](13-parameters.md); D-18)*, only admissible call `oracle.adjudicate(round_id, verdict)`. The tally uses a **pre-cohort conviction snapshot**: only VIT conviction-locked **before the subject cohort's creation block** counts; capital that entered after the cohort began is excluded ([06](06-governance-and-guardians.md)).
@@ -290,7 +298,7 @@ Permissionless and load-bearing for liveness; the Advanced area makes it executa
 | `registry.file_incident(...)` / `registry.file_milestone(...)` | filing bond balance (value-scaled per [07](07-oracle-and-disputes.md)); registry bounds not exceeded; evidence hash provided (evidence rules of §11.8.1 apply to display) |
 | `registry.challenge(filing_id)` | filing within its 72 h challenge window (incl. watchtower-quorum extension state, displayed); challenge bond balance |
 
-Registry state (filings, challenge windows, watchtower acknowledgments, slash outcomes) renders in the Advanced area with countdowns; registry sub-games hold settlement, never decisions — the copy states this ([07](07-oracle-and-disputes.md)).
+Registry state (filings, challenge windows, watchtower acknowledgments, slash outcomes) renders in the Advanced area with countdowns; registry sub-games hold settlement, never decisions — the copy states this ([07](07-oracle-and-disputes.md)). The registry-window history and countdown adjustments MUST source `WindowAcknowledged { epoch, filing_id, watchtower }` and `WindowExtended { epoch, filing_id, new_deadline }` from the **registry** event stream frozen in [02 §6](02-integration-contract.md), alongside the filing storage read. They are distinct from the oracle events of the same names, whose fields carry `component`/`round`; the ingest filter MUST bind the pallet as well as the variant name.
 
 ---
 

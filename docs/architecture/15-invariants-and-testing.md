@@ -6,7 +6,7 @@
 
 ---
 
-## 1. Protocol invariants (backend), I-1…I-28
+## 1. Protocol invariants (backend), I-1…I-28 and I-30
 
 I-29 is reserved for the pending oracle-custody invariant; contract v6 appends I-30 below without consuming that identifier.
 

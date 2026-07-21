@@ -5938,7 +5938,12 @@ fn writer_b_cannot_fabricate_a_phantom_pending_upgrade_while_guard_is_idle() {
         ));
         let stored = release_channel_raw().expect("merged release channel exists");
         assert_eq!(stored[1], 0x3c);
-        assert_eq!(raw_u32(&stored, 108), Some(77));
+        // 02 §12: offset 108 is stamped from the current block by the dispatch
+        // path, so writer (b)'s 77 is ignored. The field is last-write
+        // metadata a stranded reader trusts for freshness; a caller-chosen
+        // value would let a lawful writer backdate or future-date it.
+        assert_eq!(raw_u32(&stored, 108), Some(System::block_number()));
+        assert_ne!(raw_u32(&stored, 108), Some(77));
         assert_eq!(raw_u32(&stored, 112), Some(VERSION.spec_version));
         assert_eq!(raw_u32(&stored, 116), Some(0));
         assert!(raw_u32(&stored, 164).is_some_and(|value| value & (1 << 2) == 0));

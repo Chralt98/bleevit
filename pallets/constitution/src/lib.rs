@@ -355,7 +355,11 @@ pub mod pallet {
         /// canonical repoint, `min_supported_version` bump or key revocation;
         /// internal construction may use bare `ConstitutionalValues`.
         /// Offsets 112–119 and `URGENT_UPGRADE` are preserved from storage:
-        /// they are owned exclusively by the execution guard (I-30).
+        /// they are owned exclusively by the execution guard (I-30). Offset
+        /// 108 `updated_at` is stamped from the current block, never taken
+        /// from the caller's bytes — 02 §12 makes it the block of the last
+        /// write, and a caller-chosen value would let a lawful writer
+        /// backdate the freshness a stranded reader depends on.
         /// No other origin — including bootstrap Root — may dispatch this;
         /// writer (a) is the execution guard's [`Pallet::note_release_channel`].
         #[pallet::call_index(3)]
@@ -370,7 +374,10 @@ pub mod pallet {
                 DispatchError::BadOrigin
             );
             let channel = ReleaseChannel::<T>::get()
-                .merge_writer_b(bytes)
+                .merge_writer_b(
+                    bytes,
+                    frame_system::Pallet::<T>::block_number().unique_saturated_into(),
+                )
                 .map_err(Self::map_core_error)?;
             Self::write_release_channel(channel.bytes)
         }
