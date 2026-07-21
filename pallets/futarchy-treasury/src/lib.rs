@@ -976,10 +976,14 @@ pub mod pallet {
 
         /// 08 §4.2 minimum-viable-NAV arming gate — the **hard** variant: returns
         /// `Err(NavFloorUnmet)` when spendable NAV is below the class floor, and
-        /// emits **no** event. A caller that propagates this `Err` fails its
-        /// dispatch, which rolls back any event anyway; so the loud event is the
-        /// caller's job via [`Self::flag_nav_floor`] (Codex review). Under the
-        /// reserve haircut spendable NAV is 0, so every class fails.
+        /// emits **no** event. This `Err` *is* 08 §4.2's loud signal (SQ-381
+        /// resolution): it fails the caller's dispatch — surfaced durably as
+        /// `system::ExtrinsicFailed`, or as the dispatching pallet's captured-`Err`
+        /// result event (bootstrap sudo's `Sudid` on the 09 §5.4 arming path) —
+        /// while leaving the arming bits exactly as they were (fail-static). A
+        /// pallet event cannot also survive the `Err` (FRAME rolls it back), so the
+        /// field-carrying event is [`Self::flag_nav_floor`]'s job on an `Ok` path.
+        /// Under the reserve haircut spendable NAV is 0, so every class fails.
         pub fn ensure_nav_floor(class: ProposalClass) -> DispatchResult {
             ensure!(
                 Self::nav().spendable_nav >= Treasury::floor(class),
@@ -988,20 +992,22 @@ pub mod pallet {
             Ok(())
         }
 
-        /// 08 §4.2/§4.4 minimum-viable-NAV arming gate — the **loud** variant:
-        /// if spendable NAV is below the class floor it deposits the durable
-        /// `NavFloorUnmet { class, nav, floor }` event and returns `true`;
-        /// otherwise returns `false`. It is meant for an **`Ok`-returning**
-        /// caller (08 §4.4's "rejects as deferred" shrink path), where the event
-        /// survives — unlike an `Err`, which FRAME rolls back.
+        /// 08 §4.2/§4.4 minimum-viable-NAV arming gate — the **non-blocking**
+        /// diagnostic variant: if spendable NAV is below the class floor it
+        /// deposits the durable `NavFloorUnmet { class, nav, floor }` event and
+        /// returns `true`; otherwise returns `false`. It is meant for an
+        /// **`Ok`-returning** caller (08 §4.4's "rejects as deferred" shrink path,
+        /// or a FE/keeper pre-check), where the field-carrying event survives —
+        /// unlike an `Err`, which FRAME rolls back.
         ///
-        /// **It still has no production caller** (verified 2026-07-21). SQ-180
-        /// wired the *hard* `ensure_nav_floor` into `constitution.set_phase_flag`
-        /// because that call must leave `PhaseFlags` unchanged on refusal, which
-        /// requires an `Err`; so 08 §4.2's "event **and** extrinsic error" is
-        /// currently satisfied only by the error half. An earlier revision of
-        /// this comment claimed `pallet-epoch`'s A8 arming crank calls this —
-        /// it does not. See PLAN SQ-381.
+        /// **It has no production caller** (verified 2026-07-22), and that is now
+        /// spec-legitimate, not a gap: SQ-381 resolved 08 §4.2 so the *blocking*
+        /// arming path's loud signal is the extrinsic failure of the hard
+        /// [`Self::ensure_nav_floor`] (which `constitution.set_phase_flag` uses,
+        /// because it must leave `PhaseFlags` unchanged on refusal — an `Err`).
+        /// This soft variant emits the richer event but arms nothing and is not on
+        /// the `set_phase_flag` blocking path. An earlier revision of this comment
+        /// wrongly claimed `pallet-epoch`'s A8 arming crank calls it — it does not.
         pub fn flag_nav_floor(class: ProposalClass) -> bool {
             let mut t = Self::load();
             let below = t.ensure_nav_floor(class).is_err();

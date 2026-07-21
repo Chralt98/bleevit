@@ -1160,9 +1160,11 @@ fn nav_floor_gate_is_loud() {
             crate::Pallet::<Test>::ensure_nav_floor(ProposalClass::Code),
             Error::<Test>::NavFloorUnmet
         );
-        // Loud variant: below the floor ⇒ deposits the DURABLE NavFloorUnmet
-        // (08 §4.2/§4.4 "reject as deferred") and returns true; A8's arming
-        // crank calls this on its Ok path so the event survives.
+        // Non-blocking diagnostic variant: below the floor ⇒ deposits the DURABLE
+        // NavFloorUnmet (08 §4.2/§4.4 "reject as deferred") and returns true. This
+        // is an Ok path, so the field-carrying event survives — unlike the hard
+        // ensure_nav_floor Err above, which is the blocking arming path's loud
+        // signal (SQ-381). flag_nav_floor has no production caller yet.
         assert!(crate::Pallet::<Test>::flag_nav_floor(ProposalClass::Code));
         System::assert_last_event(RuntimeEvent::Treasury(Event::NavFloorUnmet {
             class: ProposalClass::Code,

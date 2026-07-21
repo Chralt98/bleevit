@@ -302,6 +302,78 @@ fn arming_is_fail_static_under_the_reserve_health_haircut() {
     });
 }
 
+// --- SQ-381: the loud signal is the durable extrinsic failure, not an event ---
+//
+// 08 §4.2 (as amended, Option A / SQ-381): a below-floor arming attempt is
+// refused with the module error `NavFloorUnmet`, leaving the arming bits
+// unchanged (fail-static). FRAME cannot both return that `Err` and deposit a
+// pallet event — the `Err` rolls any in-dispatch event back — and the
+// unchanged-flags requirement is what mandates the `Err`. So on the *blocking*
+// path the loud signal is the extrinsic failure itself, surfaced durably by the
+// runtime. This drives the real production arming caller — bootstrap sudo
+// (09 §5.4) — and pins all three properties at once: the durable, operator/FE-
+// observable `Sudid { Err(NavFloorUnmet) }`; the untouched flags; and the
+// absence of any pallet `NavFloorUnmet` event on this blocking path. It would
+// fail against any regression that swallowed the error (returned `Ok`) or that
+// switched to the Option-B "emit an event and return `Ok` without arming" shape.
+
+#[test]
+fn arming_below_floor_surfaces_the_module_error_durably_via_sudo_with_no_pallet_event() {
+    development_ext().execute_with(|| {
+        // frame_system records events from block 1 onwards.
+        System::set_block_number(1);
+
+        // The dev preset installs Alice as the bootstrap sudo key (09 §5.4).
+        let sudo_key = AccountId::new(crate::genesis::ALICE_PUBLIC);
+        assert_eq!(pallet_sudo::Key::<Runtime>::get(), Some(sudo_key.clone()));
+
+        // Dev genesis NAV is far below the 08 §4.1 PARAM floor, so arming refuses.
+        assert!(
+            FutarchyTreasury::nav().spendable_nav < FutarchyTreasury::floor(ProposalClass::Param)
+        );
+        let flags_before = Constitution::phase_flags();
+
+        let arm = RuntimeCall::Constitution(pallet_constitution::Call::set_phase_flag {
+            flag: pallet_constitution::PhaseFlagsValue::PARAM_ARMED,
+            enabled: true,
+        });
+        // The OUTER sudo extrinsic SUCCEEDS: sudo dispatches the inner call with
+        // Root, captures its `Err` in the `Sudid` event, and returns `Ok`, so the
+        // event is committed (not rolled back with the failed inner dispatch).
+        assert_ok!(Sudo::sudo(RuntimeOrigin::signed(sudo_key), Box::new(arm)));
+
+        // The module error is durably observable: `Sudid` carries exactly it.
+        // (`ModuleError`'s PartialEq ignores the codec-skipped `message`, so this
+        // holds across the event's SCALE round-trip through storage.)
+        let expected: sp_runtime::DispatchResult =
+            Err(pallet_constitution::Error::<Runtime>::NavFloorUnmet.into());
+        assert!(
+            System::events().iter().any(|record| matches!(
+                &record.event,
+                RuntimeEvent::Sudo(pallet_sudo::Event::Sudid { sudo_result })
+                    if sudo_result == &expected
+            )),
+            "a below-floor arming must surface NavFloorUnmet durably as Sudid {{ Err(..) }}"
+        );
+
+        // Fail-static: the arming bits are exactly as they were.
+        assert_eq!(Constitution::phase_flags(), flags_before);
+
+        // The loud signal is the extrinsic failure, NOT a pallet event: nothing on
+        // this blocking path deposits the field-carrying treasury `NavFloorUnmet`
+        // event (that event is the non-blocking `flag_nav_floor` variant's job).
+        assert!(
+            !System::events().iter().any(|record| matches!(
+                record.event,
+                RuntimeEvent::FutarchyTreasury(
+                    pallet_futarchy_treasury::Event::NavFloorUnmet { .. }
+                )
+            )),
+            "the blocking arming path must not deposit a pallet NavFloorUnmet event"
+        );
+    });
+}
+
 // ------------------- SQ-207: the real screening path (spec-review fix) ------
 //
 // The first cut of this file only ever constructed `Origin::FutarchyTreasury`

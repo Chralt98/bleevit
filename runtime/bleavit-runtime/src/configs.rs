@@ -1234,13 +1234,15 @@ impl frame_support::traits::EnsureOrigin<RuntimeOrigin> for ConstitutionGovernan
 }
 /// 08 §4.2 minimum-viable-NAV admission for the 02 §7.3 arming bits (SQ-180).
 ///
-/// The hard `ensure_nav_floor` variant is the right one here: 08 §4.2 specifies
-/// the refusal as "event + extrinsic error", but an `Err` rolls a FRAME dispatch
-/// back — including any event deposited inside it — so the two cannot both
-/// survive one call. The error plus an unchanged `PhaseFlags` is the fail-static
-/// half, and it is the half that governs behavior; `flag_nav_floor` remains the
-/// loud, `Ok`-returning variant `pallet-epoch`'s shrink-to-fit path uses, where
-/// the event *can* survive (08 §4.4).
+/// The hard `ensure_nav_floor` variant is the right one here (SQ-381 resolution):
+/// on a below-floor arming attempt 08 §4.2's loud signal *is* the extrinsic
+/// failure carrying `NavFloorUnmet` — the `Err` fails the dispatch (surfaced
+/// durably as `system::ExtrinsicFailed`, or bootstrap sudo's `Sudid { Err(..) }`
+/// on the 09 §5.4 arming path) while leaving `PhaseFlags` unchanged (fail-static).
+/// A pallet event cannot also survive the `Err` (FRAME rolls it back), and the
+/// unchanged-flags requirement is exactly what mandates the `Err`. The
+/// field-carrying `NavFloorUnmet { class, nav, floor }` event stays available on
+/// the non-blocking, `Ok`-returning `flag_nav_floor` diagnostic variant (08 §4.4).
 pub struct TreasuryPhaseArmingGate;
 impl pallet_constitution::PhaseArmingGate for TreasuryPhaseArmingGate {
     fn ensure_armable(

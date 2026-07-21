@@ -385,9 +385,13 @@ pub mod pallet {
             );
             // 08 §4.2 (SQ-180): arming a proposal class REQUIRES spendable NAV
             // at or above its 08 §4.1 floor. Checked before any write, so a
-            // refusal leaves `PhaseFlags` exactly as it was (G-1). Disarming is
-            // never gated — clearing a bit only ever removes capability, and
-            // blocking it would strand the chain armed below its own floor.
+            // refusal leaves `PhaseFlags` exactly as it was (G-1). The returned
+            // `Err` is 08 §4.2's loud signal (SQ-381 resolution): FRAME surfaces
+            // it durably as `system::ExtrinsicFailed` (or bootstrap sudo's
+            // `Sudid { Err(..) }`), so a below-floor arming is loud, never silent
+            // — a pallet event cannot also survive the `Err`. Disarming is never
+            // gated — clearing a bit only ever removes capability, and blocking
+            // it would strand the chain armed below its own floor.
             if enabled {
                 for (bit, class) in Self::armed_bit_classes() {
                     if flag & bit != 0 {
