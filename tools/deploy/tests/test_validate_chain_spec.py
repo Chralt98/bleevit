@@ -162,6 +162,14 @@ def synthetic_dev_spec() -> dict[str, object]:
         for address, amount in validator.PROTOCOL_POTS.values()
     ]
     schedule = list(validator.TEAM_VESTING_SCHEDULE)
+    foreign_asset_accounts = [
+        [
+            copy.deepcopy(validator.USDC_LOCATION),
+            address,
+            validator.USDC_MIN_BALANCE,
+        ]
+        for address in validator.USDC_ENDOWED_ACCOUNTS.values()
+    ]
     return {
         "para_id": 4242,
         "genesis": {
@@ -169,6 +177,17 @@ def synthetic_dev_spec() -> dict[str, object]:
                 "patch": {
                     "balances": {"balances": balances},
                     "vesting": {"vesting": [[CHARLIE, *schedule], [DAVE, *schedule]]},
+                    "foreignAssets": {
+                        "assets": [
+                            [
+                                copy.deepcopy(validator.USDC_LOCATION),
+                                ALICE,
+                                True,
+                                validator.USDC_MIN_BALANCE,
+                            ]
+                        ],
+                        "accounts": foreign_asset_accounts,
+                    },
                     "parachainInfo": {"parachainId": 4242},
                 }
             }
@@ -204,6 +223,208 @@ class ValidateGenesisTests(unittest.TestCase):
 
     def test_synthetic_dev_genesis_passes(self) -> None:
         self.assertEqual(self.validate(copy.deepcopy(self.valid_spec)), [])
+
+    def test_pallet_account_constants_match_account_id_conversion(self) -> None:
+        ledger_sub_accounts = {
+            "ledger_sovereign": None,
+            "ledger_insurance": b"INSURANC",
+            "ledger_book": b"BOOK____",
+            "ledger_pol": b"POL_____",
+            "ledger_pol_baseline": b"POL_BASE",
+            "ledger_fees": b"FEES____",
+            "ledger_treasury": b"TREASRY_",
+        }
+        treasury_sub_accounts = {
+            "treasury_main": None,
+            "treasury_keeper": b"KEEPER__",
+            "treasury_oracle": b"ORACLE__",
+        }
+        for label, sub in ledger_sub_accounts.items():
+            with self.subTest(label=label):
+                self.assertEqual(
+                    validator.ss58_account_id(
+                        validator.USDC_ENDOWED_ACCOUNTS[label]
+                    ),
+                    validator.pallet_sub_account(b"bl/ledgr", sub),
+                )
+        for label, sub in treasury_sub_accounts.items():
+            with self.subTest(label=label):
+                self.assertEqual(
+                    validator.ss58_account_id(
+                        validator.USDC_ENDOWED_ACCOUNTS[label]
+                    ),
+                    validator.pallet_sub_account(b"bl/trsry", sub),
+                )
+
+        protocol_pot_controls = {
+            "treasury MAIN": None,
+            "community": b"communty",
+            "incentives": b"incentiv",
+        }
+        for label, sub in protocol_pot_controls.items():
+            with self.subTest(control=label):
+                address, _amount = validator.PROTOCOL_POTS[label]
+                self.assertEqual(
+                    validator.ss58_account_id(address),
+                    validator.pallet_sub_account(b"bl/trsry", sub),
+                )
+
+    def test_missing_foreign_assets_section_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        del spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("foreignAssets section" in failure for failure in failures), failures
+        )
+
+    def test_missing_foreign_assets_accounts_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        del spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]["accounts"]
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("foreignAssets.accounts must be an array" in failure for failure in failures),
+            failures,
+        )
+
+    def test_missing_required_usdc_endowment_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        accounts = spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]["accounts"]
+        accounts.pop()
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("endowment is absent" in failure for failure in failures), failures
+        )
+
+    def test_usdc_endowment_below_minimum_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        accounts = spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]["accounts"]
+        accounts[0][2] = validator.USDC_MIN_BALANCE - 1
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("must receive exactly" in failure for failure in failures), failures
+        )
+
+    def test_usdc_endowment_above_minimum_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        accounts = spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]["accounts"]
+        accounts[0][2] = validator.USDC_MIN_BALANCE + 1
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("must receive exactly" in failure for failure in failures), failures
+        )
+
+    def test_non_required_usdc_endowment_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        accounts = spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]["accounts"]
+        accounts.append(
+            [copy.deepcopy(validator.USDC_LOCATION), ALICE, validator.USDC_MIN_BALANCE]
+        )
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("non-required account" in failure for failure in failures), failures
+        )
+
+    def test_duplicate_usdc_endowment_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        accounts = spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]["accounts"]
+        accounts.append(copy.deepcopy(accounts[0]))
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("duplicate row" in failure for failure in failures), failures
+        )
+
+    def test_structurally_wrong_usdc_location_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        accounts = spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]["accounts"]
+        accounts[0][0] = {"parents": 0, "interior": "Here"}
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("wrong asset Location" in failure for failure in failures), failures
+        )
+
+    def test_malformed_foreign_asset_account_row_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        accounts = spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]["accounts"]
+        accounts.append([copy.deepcopy(validator.USDC_LOCATION), ALICE])
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("must be [Location object" in failure for failure in failures), failures
+        )
+
+    def test_foreign_assets_must_declare_usdc(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        spec["genesis"]["runtimeGenesis"]["patch"]["foreignAssets"]["assets"] = []
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("assets must declare" in failure for failure in failures), failures
+        )
+
+    def test_usdc_endowments_do_not_leak_into_native_balances(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        patch = spec["genesis"]["runtimeGenesis"]["patch"]
+        required_accounts = {
+            validator.ss58_account_id(address)
+            for address in validator.USDC_ENDOWED_ACCOUNTS.values()
+        }
+        self.assertFalse(
+            any(
+                validator.ss58_account_id(address) in required_accounts
+                and amount == validator.USDC_MIN_BALANCE
+                for address, amount in patch["balances"]["balances"]
+            )
+        )
+
+    def test_usdc_protocol_account_in_native_balances_fails(self) -> None:
+        spec = copy.deepcopy(self.valid_spec)
+        balances = spec["genesis"]["runtimeGenesis"]["patch"]["balances"]["balances"]
+        balances[0][1] -= 1
+        balances.append(
+            [validator.USDC_ENDOWED_ACCOUNTS["ledger_sovereign"], 1]
+        )
+
+        failures = self.validate(spec)
+
+        self.assertTrue(
+            any("native balances.balances" in failure for failure in failures), failures
+        )
+
+    def test_allocations_template_usdc_section_matches_validator(self) -> None:
+        template = json.loads(ALLOCATIONS_TEMPLATE.read_text(encoding="utf-8"))
+        section = template["usdc_genesis_endowments"]
+        self.assertFalse(validator.contains_todo(section))
+
+        rows = section["accounts"]
+        self.assertEqual(len(rows), len(validator.USDC_ENDOWED_ACCOUNTS))
+        by_label = {row["label"]: row for row in rows}
+        self.assertEqual(set(by_label), set(validator.USDC_ENDOWED_ACCOUNTS))
+        for label, address in validator.USDC_ENDOWED_ACCOUNTS.items():
+            with self.subTest(label=label):
+                self.assertEqual(by_label[label]["account"], address)
+                self.assertEqual(
+                    int(by_label[label]["amount_base_units"]),
+                    validator.USDC_MIN_BALANCE,
+                )
+                self.assertIn("PalletId", by_label[label]["_derivation"])
 
     @unittest.skipUnless(
         GENERATED_DEV_SPEC.exists(),
