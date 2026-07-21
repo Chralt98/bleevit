@@ -45,9 +45,13 @@ PROTOCOL_POTS = {
         100_000_000 * VIT,
     ),
 }
+# Each seat carries the genesis encoding the runtime actually decodes: the quote
+# authority is an `Option<AccountId>` (SS58 string), the renewal account an
+# `Option<[u8; 32]>` (32-byte array). A seat that is present but malformed would
+# otherwise clear this release gate and only fail at genesis build.
 CORETIME_OPS_SEATS = (
-    ("coretimeQuoteAuthority", "operations quote authority"),
-    ("coretimeRenewalAccount", "Coretime-side renewal account"),
+    ("coretimeQuoteAuthority", "operations quote authority", "ss58"),
+    ("coretimeRenewalAccount", "Coretime-side renewal account", "bytes32"),
 )
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 BASE58_VALUES = {character: index for index, character in enumerate(BASE58_ALPHABET)}
@@ -197,7 +201,7 @@ def validate_genesis(
                 "(coretimeQuoteAuthority, coretimeRenewalAccount)"
             )
             treasury_config = {}
-        for key, label in CORETIME_OPS_SEATS:
+        for key, label, encoding in CORETIME_OPS_SEATS:
             seat = treasury_config.get(key)
             if seat is None:
                 failures.append(
@@ -209,6 +213,26 @@ def validate_genesis(
                 failures.append(
                     f"09 §4: genesis patch futarchyTreasury.{key} must seat the "
                     f"real {label}; found an unfilled \"TODO\" seat"
+                )
+            elif encoding == "ss58":
+                if not isinstance(seat, str) or ss58_account_id(seat) is None:
+                    failures.append(
+                        f"09 §4: genesis patch futarchyTreasury.{key} must seat the "
+                        f"{label} as a valid 32-byte SS58 account"
+                    )
+            elif not (
+                isinstance(seat, list)
+                and len(seat) == 32
+                and all(
+                    isinstance(byte, int)
+                    and not isinstance(byte, bool)
+                    and 0 <= byte <= 255
+                    for byte in seat
+                )
+            ):
+                failures.append(
+                    f"09 §4: genesis patch futarchyTreasury.{key} must seat the "
+                    f"{label} as a 32-byte array"
                 )
 
     balances_config = patch.get("balances")

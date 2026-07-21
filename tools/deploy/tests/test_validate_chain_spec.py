@@ -347,6 +347,33 @@ class ValidateGenesisTests(unittest.TestCase):
                     failures,
                 )
 
+    def test_malformed_coretime_seat_fails_production(self) -> None:
+        """A seated-but-malformed ceremony output must not clear the release gate.
+
+        Presence alone is not enough: the runtime decodes the quote authority as
+        an SS58 `AccountId` and the renewal account as `[u8; 32]`, so a wrong
+        shape would otherwise pass validation and fail only at genesis build.
+        """
+        cases = [
+            ("coretimeQuoteAuthority", "not an account"),
+            ("coretimeQuoteAuthority", ALICE[:-1] + ("X" if ALICE[-1] != "X" else "Y")),
+            ("coretimeQuoteAuthority", list(ALICE_PUBLIC)),
+            ("coretimeRenewalAccount", [1, 2, 3]),
+            ("coretimeRenewalAccount", ALICE),
+            ("coretimeRenewalAccount", [256] + list(ALICE_PUBLIC[1:])),
+        ]
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                spec = copy.deepcopy(self.valid_production_spec)
+                spec["genesis"]["runtimeGenesis"]["patch"]["futarchyTreasury"][key] = value
+
+                failures = self.validate(spec, "polkadot")
+
+                self.assertTrue(
+                    any("09 §4" in failure and key in failure for failure in failures),
+                    failures,
+                )
+
     def test_dev_and_local_presets_are_exempt_from_coretime_seats(self) -> None:
         # Development/test presets seat stand-ins (09 §4), and the fast-timing
         # drill specs are validated with --profile local without seating them at
