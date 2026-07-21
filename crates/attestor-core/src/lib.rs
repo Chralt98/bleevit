@@ -687,4 +687,84 @@ mod tests {
         // registry is below MIN_MEMBERS ⇒ the CODE/META gate has no quorum.
         assert!(!r.has_quorum(9, [7; 32], CHALLENGE_WINDOW_BLOCKS + 1));
     }
+
+    #[test]
+    fn worst_case_liability_scan_stays_within_bound() {
+        // Mirrors the `pallet-attestor` `set_members` worst-case benchmark
+        // (Finding 1). `set_members` runs one `has_unsettled_liability` scan
+        // per departing member over the whole flat ledger, so the cost is
+        // O(members × attestations). This pins the top of that envelope — a full
+        // 16-member roster, a full 256-record ledger, the sole unsettled record
+        // owned by a departing member and placed LAST so its scan traverses the
+        // entire ledger (no early `any()` exit) — and asserts the seating still
+        // completes, retains exactly the liable member (SQ-262), and stays
+        // within the 16-member storage bound the pallet enforces.
+        const ROSTER_BOUND: usize = 16; // pallet `MAX_ATTESTORS`
+        const LEDGER_BOUND: u32 = 256; // pallet `MAX_ATTESTATIONS`
+        const SENTINEL: AccountId = [180; 32]; // never a member
+
+        let previous: Vec<AttestorInfo> = (1..=ROSTER_BOUND as u8)
+            .map(|i| AttestorInfo {
+                account: acct(i),
+                bond: ATTESTOR_BOND,
+                false_count: 0,
+                active: true,
+            })
+            .collect();
+        let mut attestations = Vec::new();
+        for id in 0..LEDGER_BOUND - 1 {
+            // Sentinel-owned: matches no departing member, so every member's
+            // scan runs to the end of the ledger.
+            attestations.push(Attestation {
+                id,
+                pid: id as ProposalId,
+                artifact_hash: [id as u8; 32],
+                statement_hash: [7; 32],
+                attestor: SENTINEL,
+                submitted_at: 0,
+                challenge_deadline: CHALLENGE_WINDOW_BLOCKS,
+                challenge: None,
+            });
+        }
+        attestations.push(Attestation {
+            id: LEDGER_BOUND - 1,
+            pid: (LEDGER_BOUND - 1) as ProposalId,
+            artifact_hash: [255; 32],
+            statement_hash: [7; 32],
+            attestor: acct(1),
+            submitted_at: 0,
+            challenge_deadline: CHALLENGE_WINDOW_BLOCKS,
+            challenge: Some(ChallengeStatus::Open {
+                challenger: acct(250),
+                evidence_hash: [9; 32],
+                bond: CHALLENGE_BOND,
+            }),
+        });
+        let mut r = AttestorRegistry {
+            members: previous,
+            attestations,
+            next_attestation_id: LEDGER_BOUND,
+            events: Vec::new(),
+        };
+
+        // New roster disjoint from [1..=16], so all 16 are departing and rescanned.
+        let fresh: Vec<AccountId> = (17u8..=31).map(acct).collect();
+        assert_eq!(fresh.len(), ROSTER_BOUND - 1);
+        r.set_members(AttestorOrigin::ConstitutionalValues, fresh, 0, params())
+            .unwrap();
+
+        // 15 new + exactly the one liable departing member, retained inactive.
+        assert_eq!(r.members.len(), ROSTER_BOUND);
+        let retained = r
+            .members
+            .iter()
+            .find(|m| m.account == acct(1))
+            .expect("liable departing member is retained");
+        assert!(!retained.active);
+        // A liability-free departing member is dropped, not retained.
+        assert!(!r.members.iter().any(|m| m.account == acct(2)));
+        // Bounded and valid: retention keeps the open challenge resolvable.
+        assert!(r.members.len() <= ROSTER_BOUND);
+        assert!(r.try_state().is_ok());
+    }
 }
