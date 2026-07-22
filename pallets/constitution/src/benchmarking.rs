@@ -90,6 +90,7 @@ mod benches {
         // arms CODE *and* META, so it runs the `PhaseArmingGate` twice, and each
         // call is a full treasury `State` read. Benchmarking bit 4 would enter
         // the gate zero times and understate both time and PoV.
+        assert!(T::BenchmarkHelper::prime_phase_arming().is_ok());
         #[extrinsic_call]
         _(
             origin as T::RuntimeOrigin,
