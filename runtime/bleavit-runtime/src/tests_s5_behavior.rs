@@ -1667,3 +1667,72 @@ fn hash_only_multisig_approval_remains_public_and_dispatches_no_inner_call() {
         );
     });
 }
+
+/// SQ-295. Both `pallet-registry` instances gate `resolve_challenge` on
+/// `EnsureOracleResolution` (`configs.rs`, `registry_config!`), exactly as
+/// `pallet-oracle` gates `adjudicate`. The classifier must reflect that configured
+/// origin even while open SQ-295 tracks the normative authority-matrix
+/// reconciliation: a call classified `Public` is admitted for every origin and,
+/// being non-privileged, is also carried by the proxy/multisig wrapper set. The
+/// pallet-level `EnsureOrigin` is what binds today, which is why this is a
+/// hardening, not a live escalation.
+#[test]
+fn registry_resolve_challenge_carries_its_real_oracle_resolution_authority() {
+    let registry_calls = [
+        RuntimeCall::IncidentRegistry(pallet_registry::Call::resolve_challenge {
+            epoch: 1,
+            filing_id: 0,
+            uphold: true,
+        }),
+        RuntimeCall::MilestoneRegistry(pallet_registry::Call::resolve_challenge {
+            epoch: 1,
+            filing_id: 0,
+            uphold: true,
+        }),
+    ];
+    let adjudicate = RuntimeCall::Oracle(pallet_oracle::Call::adjudicate {
+        component: 0,
+        epoch: 1,
+        spec_version: 0,
+        value: futarchy_primitives::FixedU64(0),
+        reporter_wrong: false,
+    });
+
+    for call in registry_calls.iter() {
+        // Same configured origin/classifier domain as the oracle's terminal call:
+        // OracleResolution only; SQ-295 tracks the matrix reconciliation.
+        for origin in all_class_origins() {
+            let expected = matches!(origin, ClassOrigin::OracleResolution);
+            assert_eq!(
+                RuntimeBaseCallFilter::contains_for(origin, call),
+                expected,
+                "registry resolve_challenge must be admissible for {origin:?} iff \
+                 it is the configured OracleResolution authority"
+            );
+            assert_eq!(
+                RuntimeBaseCallFilter::contains_for(origin, &adjudicate),
+                expected,
+                "oracle.adjudicate is the parity reference for {origin:?}"
+            );
+        }
+        // Privileged, therefore denied inside the closed wrapper set, exactly as
+        // `oracle.adjudicate` is (I-10/I-11).
+        let wrapped = RuntimeCall::Utility(pallet_utility::Call::batch {
+            calls: vec![call.clone()],
+        });
+        assert!(
+            !<RuntimeBaseCallFilter as frame_support::traits::Contains<RuntimeCall>>::contains(
+                &wrapped
+            ),
+            "a wrapper carrying registry resolve_challenge must be denied"
+        );
+        // The values-enactment path stays reachable: the scheduler dispatches a
+        // passed track-5 referendum through the origin-blind base filter, so the
+        // bare leaf must be admitted there (the SQ-32 accommodation).
+        assert!(
+            crate::classifier::is_values_enactment_leaf(call),
+            "the bare registry resolve_challenge leaf must clear the origin-blind \
+             base filter or the configured OracleResolution path is unreachable"
+        );
+    }
+}
