@@ -5157,7 +5157,6 @@ impl pallet_attestor::AttestorProposalStatus for RuntimeAttestorProposalStatus {
             matches!(
                 proposal.state,
                 futarchy_primitives::ProposalState::Executed
-                    | futarchy_primitives::ProposalState::FailedExecuted
                     | futarchy_primitives::ProposalState::Measuring
                     | futarchy_primitives::ProposalState::Settled
             )
@@ -5169,7 +5168,6 @@ impl pallet_attestor::AttestorProposalStatus for RuntimeAttestorProposalStatus {
             matches!(
                 proposal.state,
                 futarchy_primitives::ProposalState::Executed
-                    | futarchy_primitives::ProposalState::FailedExecuted
                     | futarchy_primitives::ProposalState::Measuring
                     | futarchy_primitives::ProposalState::Settled
                     | futarchy_primitives::ProposalState::Cancelled

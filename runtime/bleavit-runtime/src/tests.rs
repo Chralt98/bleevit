@@ -6784,6 +6784,50 @@ fn code_execution_after_cause_revocation_is_a_storage_noop() {
 }
 
 #[test]
+fn failed_execution_remains_reap_protected_during_retry_window() {
+    upgrade_ext().execute_with(|| {
+        const PID: futarchy_primitives::ProposalId = 6_003;
+        let candidate = b"bleavit-b19-retryable-failed-execution-v2".to_vec();
+        let _ = match enqueue_attested_code_upgrade(PID, &candidate, 73) {
+            Some(setup) => setup,
+            None => {
+                assert!(false, "attested upgrade fixture must be constructible");
+                return;
+            }
+        };
+        let account_91: [u8; 32] = account(91).into();
+        let record_id = match pallet_attestor::Attestations::<Runtime>::get()
+            .into_iter()
+            .find(|record| record.pid == PID && record.attestor == account_91)
+        {
+            Some(record) => record.id,
+            None => {
+                assert!(false, "fixture must include account 91's attestation");
+                return;
+            }
+        };
+        pallet_epoch::Proposals::<Runtime>::mutate(PID, |proposal| {
+            proposal.as_mut().expect("queued fixture proposal").state =
+                ProposalState::FailedExecuted;
+        });
+
+        // FailedExecuted is retryable until the retry window expires. A
+        // cause-aware departure must still revoke its record, but a signed
+        // reap must not remove it before the retry path has been exhausted.
+        assert_ok!(Attestor::remove_for_cause(
+            pallet_origins::Origin::ConstitutionalValues.into(),
+            account(91),
+            [0x94; 32],
+        ));
+        assert!(pallet_attestor::Pallet::<Runtime>::is_revoked(record_id));
+        assert_noop!(
+            Attestor::reap_attestation(RuntimeOrigin::signed(account(78)), record_id),
+            pallet_attestor::Error::<Runtime>::ProposalNotTerminal
+        );
+    });
+}
+
+#[test]
 fn live_code_capability_disables_and_reenables_upgrade_authorization() {
     upgrade_ext().execute_with(|| {
         const PID: futarchy_primitives::ProposalId = 6_005;
