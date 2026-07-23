@@ -74,10 +74,12 @@ rewrite, or a rollback to old bytes ([12 §6.3](../../docs/architecture/12-relea
    the first machine-trigger halt; a later halt source does not emit it again. If
    that first event is absent, preserve the raw cursor/failed-step proof and record
    a compliance gap; absence of the event is not evidence that no halt exists.
-5. Confirm halt-at-fault behavior: blocks finalize and unaffected calls remain
-   usable, while the affected transaction surface, execution queue, and new
-   ledger/market inflows fail-stop. Any half-migrated layout exposed to user calls
-   is a separate invariant breach.
+5. Confirm halt-at-fault behavior. With a genuine live/retired migration
+   cursor, blocks and inherents continue and finalized reads/monitoring remain
+   available, but `OnlyInherents` pauses **every ordinary extrinsic** until
+   terminal recovery; no user call is "unaffected." A source-less staged halt
+   has no half-migrated layout and freezes only the execution queue. Any user
+   call admitted against a genuine half-migrated layout is an invariant breach.
 6. Read the committed recovery descriptor, qualification cache/queue transfer,
    preimage request, paired build records, and both boot-extracted runtime
    identities. Require one source commit/base/spec name and recovery version
@@ -93,10 +95,13 @@ rewrite, or a rollback to old bytes ([12 §6.3](../../docs/architecture/12-relea
 
 ### Safe / permissionless
 
-1. Preserve block production and unaffected services; stop automated execution,
-   inflow, and migration-control submissions against the affected surface. Publish
-   the cursor, failed step, reconstructed anchor, and impact boundary for operators.
-2. Keep ordinary finalized reads, alerting, and release preparation live. Do not
+1. Preserve block production, inherents, finalized reads, monitoring and release
+   preparation. Under a genuine cursor, stop all ordinary transaction
+   submission—the runtime rejects it globally—and publish the cursor, failed
+   step, reconstructed anchor and impact boundary for operators. Under a
+   source-less staged halt, stop automated execution submissions against the
+   gated surface.
+2. Keep alerting and artifact verification live. Do not
    call `Migrations.force_set_cursor`, `force_set_active_cursor`,
    `force_onboard_mbms`, or `clear_historic`; the runtime classifier denies these
    calls and [09 §3.2](../../docs/architecture/09-execution-upgrades-and-rollout.md)

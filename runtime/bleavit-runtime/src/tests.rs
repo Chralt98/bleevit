@@ -1930,7 +1930,7 @@ fn identity_and_version_pins_match_the_integration_contract() {
     // makes a future re-coupling fail here.
     assert_eq!(VERSION.transaction_version, TRANSACTION_VERSION);
     assert_eq!(VERSION.transaction_version, 1);
-    assert_eq!(futarchy_primitives::INTEGRATION_CONTRACT_VERSION, 8);
+    assert_eq!(futarchy_primitives::INTEGRATION_CONTRACT_VERSION, 9);
     assert_eq!(usdc_location().encode(), USDC_LOCATION_ENCODED);
 }
 

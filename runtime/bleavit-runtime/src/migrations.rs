@@ -153,14 +153,22 @@ fn sudo_key_storage_key() -> [u8; 32] {
 
 #[allow(dead_code)]
 pub(crate) fn phase_four_transition_weight() -> Weight {
-    Weight::from_parts(600_000_000, 512_000)
-        .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads_writes(40, 30))
+    // `authorize_phase_four` benchmarks the same maximal bridge/queue,
+    // preimage, attestation, parameter and release-channel footprint. Its
+    // generated artifact is regression-gated; use that conservative envelope
+    // for the one-shot mandatory transition too.
+    <crate::weights::pallet_execution_guard::WeightInfo<Runtime> as pallet_execution_guard::WeightInfo>::authorize_phase_four()
 }
 
 #[allow(dead_code)]
 pub(crate) fn terminal_recovery_transition_weight() -> Weight {
-    Weight::from_parts(900_000_000, 768_000)
-        .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads_writes(64, 48))
+    // Terminal recovery consumes the phase bridge plus the committed recovery
+    // record. Both components are generated from executable benchmarks and
+    // regression-gated; their sum is the conservative mandatory envelope.
+    <crate::weights::pallet_execution_guard::WeightInfo<Runtime> as pallet_execution_guard::WeightInfo>::authorize_phase_four()
+        .saturating_add(
+            <crate::weights::pallet_execution_guard::WeightInfo<Runtime> as pallet_execution_guard::WeightInfo>::commit_recovery_image(),
+        )
 }
 
 #[cfg(feature = "phase-four")]

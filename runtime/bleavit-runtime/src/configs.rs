@@ -703,7 +703,7 @@ fn track_migration_progress() {
     }
 }
 
-fn migration_validation_hook_weight() -> Weight {
+pub(crate) fn migration_validation_hook_weight() -> Weight {
     // `remark_with_event` is the stable2606 benchmarked linear hash-of-bytes
     // path. Charge it at CursorMaxLen plus the hook's bounded worst-case
     // storage/proof work; this remains conservative until B5 benchmarking.
@@ -719,7 +719,7 @@ fn migration_validation_hook_weight() -> Weight {
     ))
 }
 
-fn dead_man_detector_hook_weight() -> Weight {
+pub(crate) fn dead_man_detector_hook_weight() -> Weight {
     // Worst case includes the one-time bounded MetricSpecs scan that seeds the
     // first schedule-derived deadline, plus the fixed relay/cause/flag writes.
     Weight::from_parts(50_000_000, 60_000)
@@ -5981,8 +5981,12 @@ fn recovery_trigger() -> Option<RecoveryTrigger> {
 }
 
 pub(crate) fn recovery_hook_weight(bytes: u32) -> Weight {
-    Weight::from_parts(250_000_000, u64::from(bytes).saturating_add(128_000))
-        .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads_writes(24, 16))
+    // The recovery path performs the same bounded full-Wasm read, version
+    // inspection, hash and preimage bookkeeping as the generated recovery
+    // qualifier. Reuse that measured worst-case envelope so this mandatory
+    // hook moves with the committed benchmark artifact and its >10% regression
+    // gate instead of carrying an unmeasured runtime-local constant.
+    <crate::weights::pallet_execution_guard::WeightInfo<Runtime> as pallet_execution_guard::WeightInfo>::qualify_recovery_image(bytes)
 }
 
 fn schedule_committed_recovery_image() -> DispatchResult {

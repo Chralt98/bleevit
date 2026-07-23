@@ -271,8 +271,19 @@ fn recovery_qualifier_and_mandatory_hooks_fit_absolute_class_budgets() {
     let mandatory = RuntimeBlockWeights::get().max_block;
     for (name, weight) in [
         (
-            "recovery validation-data hook",
-            crate::configs::recovery_hook_weight(RUNTIME_CODE_BYTES_BOUND),
+            "combined recovery validation-data mandatory path",
+            crate::configs::migration_validation_hook_weight()
+                .saturating_add(crate::configs::dead_man_detector_hook_weight())
+                .saturating_add(crate::configs::recovery_hook_weight(
+                    RUNTIME_CODE_BYTES_BOUND,
+                ))
+                // Cumulus may call `on_validation_code_applied` and then
+                // `on_validation_data` in one inherent. A still-live recovery
+                // trigger can therefore register the full bounded Wasm path
+                // twice in the same mandatory block.
+                .saturating_add(crate::configs::recovery_hook_weight(
+                    RUNTIME_CODE_BYTES_BOUND,
+                )),
         ),
         (
             "phase-four transition",
