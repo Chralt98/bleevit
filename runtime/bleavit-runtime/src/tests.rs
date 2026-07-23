@@ -687,10 +687,9 @@ fn enqueue_attested_code_upgrade_pending_ratification(
         }
     }
     let attestations = pallet_attestor::Attestations::<Runtime>::get();
-    let first = attestations
+    let first = *attestations
         .iter()
-        .find(|record| record.pid == pid && record.artifact_hash == artifact.0)?
-        .clone();
+        .find(|record| record.pid == pid && record.artifact_hash == artifact.0)?;
     let recovery_attestation = attestations
         .into_iter()
         .find(|record| record.pid == pid && record.artifact_hash == recovery_hash.0)?;

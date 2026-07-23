@@ -158,14 +158,15 @@ fn phase_three_predicate_accepts_only_exact_shadow_plus_live_sudo() {
 fn phase_four_bridge_origin_is_only_the_signed_current_sudo_key() {
     tests::development_ext().execute_with(|| {
         let sudo = pallet_sudo::Key::<Runtime>::get().expect("bootstrap preset has sudo");
-        let admitted = match crate::configs::EnsureCurrentSudoKey::try_origin(
+        let admitted = crate::configs::EnsureCurrentSudoKey::try_origin(
             crate::RuntimeOrigin::signed(sudo.clone()),
-        ) {
-            Ok(who) => who,
-            Err(_) => {
-                assert!(false, "the signed current sudo key must be admitted");
-                return;
-            }
+        );
+        assert!(
+            admitted.is_ok(),
+            "the signed current sudo key must be admitted"
+        );
+        let Ok(admitted) = admitted else {
+            return;
         };
         assert_eq!(admitted, sudo);
         assert!(
@@ -291,21 +292,18 @@ fn exact_phase_four_meta_payload_queues_and_commits_both_cap_raises() {
             }
         }
         let records = pallet_attestor::Attestations::<Runtime>::get();
-        let primary_attestation = records
+        let primary_attestation = *records
             .iter()
             .find(|record| record.pid == PID && record.artifact_hash == candidate_hash)
-            .expect("primary attestation is stored")
-            .clone();
-        let recovery_attestation = records
+            .expect("primary attestation is stored");
+        let recovery_attestation = *records
             .iter()
             .find(|record| record.pid == PID && record.artifact_hash == recovery_hash)
-            .expect("recovery attestation is stored")
-            .clone();
-        let wrong_name_recovery_attestation = records
+            .expect("recovery attestation is stored");
+        let wrong_name_recovery_attestation = *records
             .iter()
             .find(|record| record.pid == PID && record.artifact_hash == wrong_name_recovery_hash)
-            .expect("wrong-name recovery attestation is stored")
-            .clone();
+            .expect("wrong-name recovery attestation is stored");
         System::set_block_number(
             primary_attestation
                 .challenge_deadline
