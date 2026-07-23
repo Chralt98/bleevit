@@ -119,6 +119,37 @@ pub trait OracleParamsProvider {
     fn get() -> OracleParams;
 }
 
+/// Economic custody for the oracle's USDC registration stakes (07 §§3–4,
+/// §13).  The frame-free core remains amount-only; this adapter owns the actual
+/// asset movement and lets pallet tests use a deterministic no-op sink. Round
+/// bond custody is deliberately a follow-on kernel slice: the current core
+/// still auto-escalates without a signed `counter_report` owner.
+pub trait OracleCustody<AccountId> {
+    fn hold(who: &AccountId, amount: futarchy_primitives::Balance) -> DispatchResult;
+    fn release(who: &AccountId, amount: futarchy_primitives::Balance) -> DispatchResult;
+    fn pay(who: &AccountId, amount: futarchy_primitives::Balance) -> DispatchResult;
+    fn slash_insurance(amount: futarchy_primitives::Balance) -> DispatchResult;
+    fn balance() -> futarchy_primitives::Balance;
+}
+
+impl<AccountId> OracleCustody<AccountId> for () {
+    fn hold(_: &AccountId, _: futarchy_primitives::Balance) -> DispatchResult {
+        Ok(())
+    }
+    fn release(_: &AccountId, _: futarchy_primitives::Balance) -> DispatchResult {
+        Ok(())
+    }
+    fn pay(_: &AccountId, _: futarchy_primitives::Balance) -> DispatchResult {
+        Ok(())
+    }
+    fn slash_insurance(_: futarchy_primitives::Balance) -> DispatchResult {
+        Ok(())
+    }
+    fn balance() -> futarchy_primitives::Balance {
+        futarchy_primitives::Balance::MAX
+    }
+}
+
 /// The three cross-pallet inputs `report` derives rather than trusting the caller
 /// (07 §5.1 window, §2(4) frozen version, §6.1 `StakeAtRisk`). The runtime wires
 /// this over `pallet-epoch` (schedule/escrow) and `pallet-welfare` (MetricSpec
@@ -268,6 +299,10 @@ pub mod pallet {
 
         /// Live constitution-backed oracle and reserve-probe tunables.
         type Params: OracleParamsProvider;
+
+        /// Real USDC custody adapter for reporter/watchtower registration
+        /// stakes. A refused transfer leaves status quo (G-1).
+        type Custody: OracleCustody<Self::AccountId>;
 
         /// Upper bound on rounds closed per `crank_round_close` call — a
         /// keeper-batch cap that bounds the crank's PoV (07 §13 "bounded
@@ -1126,6 +1161,7 @@ pub mod pallet {
                             | CoreEvent::WindowExtended { .. }
                     )
                 });
+                Self::apply_custody(&before, &oracle)?;
                 Self::persist(&before, &oracle);
                 // 08 §1.2 makes `spendable_nav` zero exactly while `R` is set, so
                 // the constitution mirror and the treasury haircut must move with
@@ -1137,6 +1173,54 @@ pub mod pallet {
                 Self::deposit_core_events(core::mem::take(&mut oracle.events));
                 Ok(rebate_progress)
             })
+        }
+
+        /// Reconcile registration-stake liabilities with real USDC movement.
+        /// Round-bond reconciliation remains disabled until the signed,
+        /// consenting escalation kernel lands; publishing a partial ladder would
+        /// let a keeper create an unowned liability.
+        fn apply_custody(before: &Oracle, after: &Oracle) -> DispatchResult {
+            for (who, info) in &after.reporters {
+                match before.reporters.iter().find(|(a, _)| a == who) {
+                    None => T::Custody::hold(&T::AccountId::from(*who), info.stake)?,
+                    Some((_, old)) if info.stake < old.stake => {
+                        T::Custody::slash_insurance(old.stake - info.stake)?
+                    }
+                    _ => {}
+                }
+            }
+            for (who, info) in &before.reporters {
+                if !after.reporters.iter().any(|(a, _)| a == who) {
+                    let account = T::AccountId::from(*who);
+                    let ejected = after.events.iter().any(|event| {
+                        matches!(event, CoreEvent::ReporterEjected { who: ev } if ev == who)
+                    });
+                    if ejected {
+                        T::Custody::slash_insurance(info.stake)?;
+                    } else {
+                        T::Custody::release(&account, info.stake)?;
+                    }
+                }
+            }
+
+            for (who, info) in &after.watchtowers {
+                match before.watchtowers.iter().find(|(a, _)| a == who) {
+                    None => T::Custody::hold(&T::AccountId::from(*who), info.stake)?,
+                    Some((_, old)) if info.stake < old.stake => {
+                        T::Custody::slash_insurance(old.stake - info.stake)?
+                    }
+                    _ => {}
+                }
+            }
+            for (who, info) in &before.watchtowers {
+                if !after.watchtowers.iter().any(|(a, _)| a == who) {
+                    // A watchtower is removed only by the two-epoch liveness
+                    // slash, so its remaining stake is forfeited as well.
+                    T::Custody::slash_insurance(info.stake)?;
+                }
+            }
+
+            Ok(())
         }
 
         /// Write only what changed between `before` and `after` (minimal storage
@@ -1495,6 +1579,22 @@ pub mod pallet {
             if ReserveProbeArmed::<T>::get() && oracle.reserve_health.last_query_id == 0 {
                 return Err(TryRuntimeError::Other(
                     "ReserveProbeArmed requires an opened v1 probe id",
+                ));
+            }
+            let mut liability = 0_u128;
+            for (_, info) in &oracle.reporters {
+                liability = liability
+                    .checked_add(info.stake)
+                    .ok_or(TryRuntimeError::Other("oracle custody liability overflow"))?;
+            }
+            for (_, info) in &oracle.watchtowers {
+                liability = liability
+                    .checked_add(info.stake)
+                    .ok_or(TryRuntimeError::Other("oracle custody liability overflow"))?;
+            }
+            if T::Custody::balance() < liability {
+                return Err(TryRuntimeError::Other(
+                    "oracle custody is under-collateralized (I-29)",
                 ));
             }
             oracle

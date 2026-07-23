@@ -656,10 +656,10 @@ impl Oracle {
             if info.inactive_epochs >= 2 {
                 // 07 §4: two consecutive inactive epochs ⇒ slash 10% of the
                 // watchtower stake and eject.
-                self.events.push(Event::WatchtowerSlashed {
-                    who: *who,
-                    amount: ceil_div(info.stake, 10),
-                });
+                let amount = ceil_div(info.stake, 10);
+                info.stake = info.stake.saturating_sub(amount);
+                self.events
+                    .push(Event::WatchtowerSlashed { who: *who, amount });
                 ejected.push(*who);
             }
         }
@@ -1230,6 +1230,7 @@ impl Oracle {
         // further slash) — Codex F19. The §5.5 round-bond-stack forfeiture and
         // its 40/60 routing are economic custody, wired at B-track (decision #3).
         if offense == 2 {
+            info.stake = info.stake.saturating_sub(slash_amount);
             self.events.push(Event::ReporterSlashed {
                 who,
                 amount: slash_amount,

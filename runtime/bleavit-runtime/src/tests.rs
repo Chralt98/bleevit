@@ -35,7 +35,7 @@ use sp_inherents::InherentData;
 use sp_keyring::Sr25519Keyring;
 use sp_runtime::{
     generic::{Era, SignedPayload},
-    traits::{Block as BlockT, Dispatchable, Header as HeaderT},
+    traits::{AccountIdConversion, Block as BlockT, Dispatchable, Header as HeaderT},
     transaction_validity::{InvalidTransaction, TransactionValidityError},
     BuildStorage, DispatchError, MultiAddress, MultiSignature,
 };
@@ -2112,12 +2112,40 @@ fn oracle_registration_reads_live_constitution_stake() {
         ));
 
         let reporter = account(48);
+        assert_ok!(ForeignAssets::mint_into(
+            usdc_location(),
+            &reporter,
+            amended_stake.saturating_add(ForeignAssets::minimum_balance(usdc_location())),
+        ));
         assert_ok!(Oracle::register_reporter(RuntimeOrigin::signed(
             reporter.clone()
         )));
         assert_eq!(
             pallet_oracle::Reporters::<Runtime>::get(reporter).map(|info| info.stake),
             Some(amended_stake),
+        );
+        assert_eq!(
+            ForeignAssets::balance(
+                usdc_location(),
+                &crate::configs::OraclePalletId::get().into_account_truncating()
+            ),
+            amended_stake,
+        );
+    });
+}
+
+#[test]
+fn oracle_registration_refuses_an_unfunded_reporter_atomically() {
+    development_ext().execute_with(|| {
+        let reporter = account(49);
+        assert!(Oracle::register_reporter(RuntimeOrigin::signed(reporter.clone())).is_err());
+        assert!(!pallet_oracle::Reporters::<Runtime>::contains_key(reporter));
+        assert_eq!(
+            ForeignAssets::balance(
+                usdc_location(),
+                &crate::configs::OraclePalletId::get().into_account_truncating()
+            ),
+            0,
         );
     });
 }

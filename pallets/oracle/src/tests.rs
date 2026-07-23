@@ -1673,6 +1673,7 @@ mod probe_dispatch_seam {
         type AdjudicationOrigin = frame_system::EnsureRoot<AccountId32>;
         type Reporting = DispatchReporting;
         type Params = DispatchParams;
+        type Custody = ();
         type MaxRoundCloseBatch = MaxRoundCloseBatch;
         type ProbeDispatch = RecordingProbeDispatch;
         type ProbeTimeoutSink = RecordingProbeTimeoutSink;
@@ -1954,6 +1955,7 @@ mod probe_dispatch_seam {
             type AdjudicationOrigin = frame_system::EnsureRoot<AccountId32>;
             type Reporting = DispatchReporting;
             type Params = DispatchParams;
+            type Custody = ();
             type MaxRoundCloseBatch = MaxRoundCloseBatch;
             type ProbeDispatch = ();
             type ProbeTimeoutSink = ();
