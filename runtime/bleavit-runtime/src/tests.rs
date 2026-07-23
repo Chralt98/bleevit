@@ -76,6 +76,18 @@ pub(crate) fn account(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
 
+/// Runtime fixtures seat arbitrary accounts, so explicitly endow the native
+/// attestor bond before exercising the production pallet's custody path.
+pub(crate) fn fund_attestor_members(members: &[AccountId]) {
+    for member in members {
+        assert_ok!(Balances::force_set_balance(
+            RuntimeOrigin::root(),
+            member.clone().into(),
+            pallet_attestor::ATTESTOR_BOND.saturating_add(Balances::minimum_balance()),
+        ));
+    }
+}
+
 fn xcm_holding_amount(holding: &AssetsInHolding, id: &staging_xcm::latest::Location) -> u128 {
     holding
         .fungible_assets_iter()
@@ -683,6 +695,7 @@ fn enqueue_attested_code_upgrade_pending_ratification(
     candidate: &[u8],
 ) -> Option<(BlockNumber, H256)> {
     let members = [account(90), account(91), account(92)];
+    fund_attestor_members(&members);
     assert_ok!(Attestor::set_members(
         pallet_origins::Origin::ConstitutionalValues.into(),
         members.to_vec(),
@@ -1947,7 +1960,7 @@ fn identity_and_version_pins_match_the_integration_contract() {
     // makes a future re-coupling fail here.
     assert_eq!(VERSION.transaction_version, TRANSACTION_VERSION);
     assert_eq!(VERSION.transaction_version, 1);
-    assert_eq!(futarchy_primitives::INTEGRATION_CONTRACT_VERSION, 9);
+    assert_eq!(futarchy_primitives::INTEGRATION_CONTRACT_VERSION, 10);
     assert_eq!(usdc_location().encode(), USDC_LOCATION_ENCODED);
 }
 
@@ -2472,6 +2485,7 @@ fn attestation_creation_snapshots_the_live_constitution_window() {
         ));
 
         let members = [account(51), account(52), account(53)];
+        fund_attestor_members(&members);
         assert_ok!(Attestor::set_members(
             pallet_origins::Origin::ConstitutionalValues.into(),
             members.to_vec(),
@@ -6601,6 +6615,7 @@ fn code_queue_rejects_real_under_quorum_attestation_without_storage_changes() {
         const PID: futarchy_primitives::ProposalId = 6_004;
         let candidate = b"bleavit-b6-under-quorum-candidate".to_vec();
         let members = [account(94), account(95), account(96)];
+        fund_attestor_members(&members);
         assert_ok!(Attestor::set_members(
             pallet_origins::Origin::ConstitutionalValues.into(),
             members.to_vec(),
@@ -6724,7 +6739,7 @@ fn code_queue_rejects_real_under_quorum_attestation_without_storage_changes() {
 }
 
 #[test]
-fn code_execution_losing_live_attestor_quorum_is_a_storage_noop() {
+fn code_execution_after_cause_revocation_is_a_storage_noop() {
     upgrade_ext().execute_with(|| {
         const PID: futarchy_primitives::ProposalId = 6_002;
         let candidate = b"bleavit-b6-unattested-runtime-v2".to_vec();
@@ -6735,13 +6750,14 @@ fn code_execution_losing_live_attestor_quorum_is_a_storage_noop() {
                 return;
             }
         };
-        // Member 91 supplied one of the two attestations. Replacing it makes
-        // the still-present record live-below-quorum before execution.
-        assert_ok!(Attestor::set_members(
+        // Routine roster rotation no longer invalidates a committed record;
+        // an explicit cause revocation is the fail-closed adverse path.
+        assert_ok!(Attestor::remove_for_cause(
             pallet_origins::Origin::ConstitutionalValues.into(),
-            vec![account(90), account(92), account(93)],
+            account(91),
+            [0x93; 32],
         ));
-        assert!(!Attestor::has_quorum(
+        assert!(!Attestor::has_record_quorum(
             PID,
             sp_io::hashing::blake2_256(&candidate),
         ));

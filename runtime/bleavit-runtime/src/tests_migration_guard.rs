@@ -368,6 +368,7 @@ fn exact_phase_four_meta_payload_queues_and_commits_both_cap_raises() {
             tests::account(0xd1),
             tests::account(0xd2),
         ];
+        tests::fund_attestor_members(&members);
         assert!(crate::Attestor::set_members(
             pallet_origins::Origin::ConstitutionalValues.into(),
             members.to_vec(),

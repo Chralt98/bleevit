@@ -80,7 +80,7 @@ mod benches {
         // The sole unsettled record is placed LAST and owned by a departing
         // member: `has_unsettled_liability` therefore traverses the entire 256
         // for that member before returning (no early `any()` exit), and the
-        // member is retained as an inactive row (SQ-262). The other 255 records
+        // member is moved to an independent liability row. The other 255 records
         // are owned by a non-member sentinel, so every member's scan runs to the
         // end. Attributing the unsettled record early, or spreading it across
         // members, would let `any()` short-circuit and measure a *smaller* scan
@@ -121,7 +121,7 @@ mod benches {
         NextAttestationId::<T>::put(MAX_ATTESTATIONS);
 
         // 15 fresh members disjoint from the previous roster and the sentinel;
-        // with the one retained liable member this refills the 16-member bound.
+        // with the one independent liability this refills the 16-member bound.
         let members = (0..MAX_ATTESTORS - 1)
             .map(|i| member::<T>((i + 16) as u8))
             .collect::<Vec<_>>();
@@ -129,7 +129,7 @@ mod benches {
         #[extrinsic_call]
         _(T::BenchmarkHelper::values() as T::RuntimeOrigin, members);
 
-        // 15 new + 1 retained (inactive, liable) departing member = full bound.
+        // 15 new + 1 liable departing member = full bound.
         assert_eq!(Members::<T>::get().len(), MAX_ATTESTORS as usize);
     }
 

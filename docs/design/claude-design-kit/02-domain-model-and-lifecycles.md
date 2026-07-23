@@ -183,7 +183,11 @@ guard's `ratify` call. Missing/unfinished ratification ⇒ proposal stays Queued
   trigger + expiry countdown.
 - **Attestors**: ≥ 3 bonded members (25k VIT); CODE/META upgrades need a 2-of-N signed
   attestation (reproducible build + kernel invariants preserved), challengeable for 72 h.
-  UI: "2 of 3 attested" progress on upgrade proposals.
+  Routine rotation affects queue admission only; committed records use matured record
+  quorum plus durable cause revocations. `remove_for_cause` moves the held basis into
+  a bounded liability row and emits per-record revocations; permissionless
+  `reap_attestation` removes terminal records and releases the last liability hold.
+  UI: "2 of 3 attested" progress on upgrade proposals, with cause/revocation status.
 
 ## 8. Oracle game & registries (07)
 

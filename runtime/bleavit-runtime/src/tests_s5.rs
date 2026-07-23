@@ -250,8 +250,8 @@ inventory! {
         leaf public => ["propose_action", "approve_action"];
     }
     "Attestor" {
-        leaf values => ["set_members", "resolve_challenge"];
-        leaf public => ["attest", "challenge_attestation"];
+        leaf values => ["set_members", "resolve_challenge", "remove_for_cause"];
+        leaf public => ["attest", "challenge_attestation", "reap_attestation"];
     }
     "Epoch" {
         leaf public => ["submit", "withdraw", "tick", "decide", "settle_cohort", "finalize_epoch_baseline", "bind_ratification", "mark_executed", "mark_failed_executed", "retry_exhausted_to_measurement", "expire_or_stale_queue"];

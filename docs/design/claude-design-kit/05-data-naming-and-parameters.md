@@ -275,7 +275,7 @@ live. For mock data these are the correct realistic values.
 | `StaleEpochBound` | 7 days ⇒ force-reject in-flight | explains `StaleQueue` |
 | Dead-man switch | no finalized block ~8 h or snapshot > 4 d overdue ⇒ freeze | `dead_man_armed` banner |
 | PB-LEDGER-FREEZE | ≤ 14 days, one renewal | `ledger_frozen` banner |
-| Attestation | 25k VIT bond; ≥ 3 attestors; 2-of-N quorum; 72 h challenge window | "2 of 3 attested" progress |
+| Attestation | 25k VIT held bond; ≥ 3 attestors; 2-of-N queue/record quorum; 72 h challenge window; cause revocation + terminal reap | "2 of 3 attested" progress, liability/revocation status |
 | `grd.bond` / `grd.review_deadline` | 50k VIT / 2 epochs | guardian roster, review countdown |
 
 ### B6. Treasury & economics (13 §1, §3.4–§3.5)

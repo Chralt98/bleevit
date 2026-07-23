@@ -5149,6 +5149,36 @@ impl pallet_guardian::GuardianProposalStatus for RuntimeGuardianStatus {
         )
     }
 }
+
+pub struct RuntimeAttestorProposalStatus;
+impl pallet_attestor::AttestorProposalStatus for RuntimeAttestorProposalStatus {
+    fn has_executed(pid: futarchy_primitives::ProposalId) -> bool {
+        pallet_epoch::Proposals::<Runtime>::get(pid).is_some_and(|proposal| {
+            matches!(
+                proposal.state,
+                futarchy_primitives::ProposalState::Executed
+                    | futarchy_primitives::ProposalState::FailedExecuted
+                    | futarchy_primitives::ProposalState::Measuring
+                    | futarchy_primitives::ProposalState::Settled
+            )
+        })
+    }
+
+    fn is_terminal(pid: futarchy_primitives::ProposalId) -> bool {
+        pallet_epoch::Proposals::<Runtime>::get(pid).is_some_and(|proposal| {
+            matches!(
+                proposal.state,
+                futarchy_primitives::ProposalState::Executed
+                    | futarchy_primitives::ProposalState::FailedExecuted
+                    | futarchy_primitives::ProposalState::Measuring
+                    | futarchy_primitives::ProposalState::Settled
+                    | futarchy_primitives::ProposalState::Cancelled
+                    | futarchy_primitives::ProposalState::Expired
+                    | futarchy_primitives::ProposalState::Rejected(_)
+            )
+        })
+    }
+}
 pub struct RuntimeGuardianTriggers;
 impl pallet_guardian::GuardianTriggers for RuntimeGuardianTriggers {
     fn current() -> pallet_guardian::TriggerState {
@@ -5619,6 +5649,10 @@ impl pallet_attestor::Config for Runtime {
     type ValuesOrigin = EnsureValuesScoped<GuardianTrack>;
     type RatifyOrigin = EnsureValuesScoped<RatifyTrack>;
     type Params = RuntimeAttestorParams;
+    type Currency = Balances;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    type InsuranceAccount = InsuranceAccount;
+    type ProposalStatus = RuntimeAttestorProposalStatus;
     type WeightInfo = crate::weights::pallet_attestor::WeightInfo<Runtime>;
     #[cfg(feature = "runtime-benchmarks")]
     type BenchmarkHelper = RuntimeBenchmarkHelper;
@@ -5940,9 +5974,7 @@ impl pallet_execution_guard::Attestations for RuntimeAttestations {
             matches!(
                 record.challenge,
                 None | Some(pallet_attestor::ChallengeStatus::Upheld)
-            ) && pallet_attestor::Members::<Runtime>::get()
-                .iter()
-                .any(|member| member.account == record.attestor && member.active)
+            ) && !pallet_attestor::Pallet::<Runtime>::is_revoked(record.id)
         })
     }
     fn has_quorum(
@@ -5950,6 +5982,12 @@ impl pallet_execution_guard::Attestations for RuntimeAttestations {
         artifact_hash: futarchy_primitives::H256,
     ) -> bool {
         crate::Attestor::has_quorum(pid, artifact_hash)
+    }
+    fn has_record_quorum(
+        pid: futarchy_primitives::ProposalId,
+        artifact_hash: futarchy_primitives::H256,
+    ) -> bool {
+        crate::Attestor::has_record_quorum(pid, artifact_hash)
     }
 }
 

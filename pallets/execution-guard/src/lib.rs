@@ -21,13 +21,11 @@
 //! - 09 §1.4 lists `utility.batch`/`force_batch` among recursively inspected
 //!   wrappers, but their best-effort semantics contradict 09 §1.2(12)'s atomic
 //!   dispatch requirement; B1a must reject them and admit only `batch_all`.
-//! - 09 §1.2(5) once read as narrowing the dispatch-time attestation check to
-//!   the committed record alone, against I-19 and 06 §7's live-quorum reading;
-//!   this implementation fails closed by rechecking both presence and quorum.
-//!   No longer a conflict: 06 §7 and 09 §1.2(5)/§2.4 now state that the SQ-97
-//!   relaxation is NOT in force until a cause-carrying removal surface exists
-//!   (02 §7.5 provides none), so the live-registry check this pallet performs
-//!   *is* the normative behaviour. See PLAN.md SQ-97/SQ-312.
+//! - 09 §1.2(5) now splits the attestation read at the queue/execute boundary:
+//!   queue admission uses the live roster, while execute-time reads the
+//!   committed record quorum and v10 revocation surface. Routine rotation is
+//!   therefore liveness-safe; cause-aware removal and adverse challenge remain
+//!   fail-closed. See 06 §7 and PLAN.md SQ-97/SQ-312.
 
 extern crate alloc;
 
@@ -205,6 +203,12 @@ pub trait Attestations {
     fn artifact_hash(attestation_id: u32) -> Option<H256>;
     fn present_unrevoked_unchallenged(attestation_id: u32) -> bool;
     fn has_quorum(pid: ProposalId, artifact_hash: H256) -> bool;
+    /// Execute-time quorum over the committed record set. Implementations
+    /// that predate contract v10 may conservatively fall back to the live
+    /// roster read.
+    fn has_record_quorum(pid: ProposalId, artifact_hash: H256) -> bool {
+        Self::has_quorum(pid, artifact_hash)
+    }
 }
 
 /// Guardian/playbook projection used at ordered checks 9 and 10.
@@ -1818,7 +1822,7 @@ pub mod pallet {
                     AttestationBindings::<T>::get(pid).is_some_and(|(bound_id, artifact)| {
                         id == bound_id
                             && T::Attestations::present_unrevoked_unchallenged(id)
-                            && T::Attestations::has_quorum(pid, artifact)
+                            && T::Attestations::has_record_quorum(pid, artifact)
                     })
                 });
                 if !valid {
@@ -1827,7 +1831,7 @@ pub mod pallet {
                 if QueuedRecoveryImages::<T>::get(pid).is_some_and(|recovery| {
                     T::Attestations::artifact_hash(recovery.attestation_id) != Some(recovery.hash)
                         || !T::Attestations::present_unrevoked_unchallenged(recovery.attestation_id)
-                        || !T::Attestations::has_quorum(pid, recovery.hash)
+                        || !T::Attestations::has_record_quorum(pid, recovery.hash)
                 }) {
                     return Some(RejectReason::AttestationMissing);
                 }
@@ -1920,7 +1924,7 @@ pub mod pallet {
                     ensure!(
                         bound_id == id
                             && T::Attestations::present_unrevoked_unchallenged(id)
-                            && T::Attestations::has_quorum(pid, artifact),
+                            && T::Attestations::has_record_quorum(pid, artifact),
                         Error::<T>::AttestationMissing
                     );
                     if let Some(recovery) = QueuedRecoveryImages::<T>::get(pid) {
@@ -1930,7 +1934,7 @@ pub mod pallet {
                                 && T::Attestations::present_unrevoked_unchallenged(
                                     recovery.attestation_id,
                                 )
-                                && T::Attestations::has_quorum(pid, recovery.hash),
+                                && T::Attestations::has_record_quorum(pid, recovery.hash),
                             Error::<T>::AttestationMissing
                         );
                     }
@@ -2251,7 +2255,7 @@ pub mod pallet {
             ensure!(
                 T::Attestations::artifact_hash(attestation_id) == Some(hash)
                     && T::Attestations::present_unrevoked_unchallenged(attestation_id)
-                    && T::Attestations::has_quorum(context.pid, hash),
+                    && T::Attestations::has_record_quorum(context.pid, hash),
                 Error::<T>::AttestationMissing
             );
             QueuedRecoveryImages::<T>::remove(context.pid);
