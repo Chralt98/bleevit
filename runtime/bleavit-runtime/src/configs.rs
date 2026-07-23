@@ -2350,6 +2350,58 @@ pub(crate) fn proposal_class_index(class: futarchy_primitives::ProposalClass) ->
     }
 }
 
+/// 08 §5.4's P_ref, using the same maker-loss floor as the market books. All
+/// arithmetic is checked; an unrepresentable certificate is unavailable and
+/// therefore cannot seed or adopt a proposal.
+fn proposal_p_ref(class: futarchy_primitives::ProposalClass, b_floor: Balance) -> Option<Balance> {
+    let index = proposal_class_index(class);
+    if index >= 4 {
+        return None;
+    }
+    let depth = pallet_market::core_market::maker_loss_floor(b_floor.checked_mul(2)?)?;
+    depth
+        .checked_add(<RuntimeEpochParams as pallet_epoch::EpochParamsProvider>::get().v_min[index])
+        .and_then(|value| value.checked_div(2))
+}
+
+fn ceil_mul_div(value: Balance, numerator: Balance, denominator: Balance) -> Option<Balance> {
+    if denominator == 0 {
+        return None;
+    }
+    value
+        .checked_mul(numerator)?
+        .checked_add(denominator.saturating_sub(1))
+        .and_then(|product| product.checked_div(denominator))
+}
+
+fn scaled_pol_floor(
+    class: futarchy_primitives::ProposalClass,
+    floor: Balance,
+    prize: Balance,
+) -> Option<Balance> {
+    let p_ref = proposal_p_ref(class, floor)?;
+    if prize <= p_ref {
+        Some(floor)
+    } else {
+        ceil_mul_div(floor, prize, p_ref)
+    }
+}
+
+fn scaled_decision_delta(class: futarchy_primitives::ProposalClass, prize: Balance) -> Option<u64> {
+    let index = proposal_class_index(class);
+    if index >= 4 {
+        return None;
+    }
+    let floor = u128::from(kernel::DECISION_DELTA_FLOORS[index].0);
+    let p_ref = proposal_p_ref(class, class_pol_floor(class))?;
+    let scaled = if prize <= p_ref {
+        floor
+    } else {
+        ceil_mul_div(floor, prize, p_ref)?
+    };
+    u64::try_from(scaled.min(100_000_000_u128)).ok()
+}
+
 /// Exact Ask-scaled contest floor enforced per decision book (05 §5.2; 08
 /// §5.3; 13 `dec.v_min`): `max(dec.v_min(class), 2P)`. Both the grade adapter
 /// and `FutarchyApi::decision_stats` call this helper, so the view can never
@@ -4058,6 +4110,16 @@ impl pallet_epoch::ConstitutionAccess<AccountId> for RuntimeConstitutionAccess {
         }
     }
 
+    fn security_terms(
+        proposal: &futarchy_primitives::Proposal<AccountId>,
+    ) -> Option<pallet_epoch::ProposalSecurityTerms> {
+        let prize = Self::in_cap_prize(proposal);
+        Some(pallet_epoch::ProposalSecurityTerms {
+            in_cap_prize: prize,
+            decision_delta: prize.and_then(|value| scaled_decision_delta(proposal.class, value)),
+        })
+    }
+
     fn auxiliary_preimage(
         _proposal: &futarchy_primitives::Proposal<AccountId>,
     ) -> Option<futarchy_primitives::H256> {
@@ -4129,7 +4191,7 @@ impl pallet_epoch::PolBudget<AccountId> for RuntimePolBudget {
     fn proposal_seed_plan(
         proposal: &futarchy_primitives::Proposal<AccountId>,
     ) -> Option<pallet_epoch::PolSeedPlan> {
-        let b = match proposal.class {
+        let floor = match proposal.class {
             futarchy_primitives::ProposalClass::Param => {
                 balance_param_or(b"pol.b.param", pallet_constitution::POL_B_DEFAULTS[0])
             }
@@ -4143,6 +4205,16 @@ impl pallet_epoch::PolBudget<AccountId> for RuntimePolBudget {
                 balance_param_or(b"pol.b.meta", pallet_constitution::POL_B_DEFAULTS[3])
             }
             futarchy_primitives::ProposalClass::Constitutional => return None,
+        };
+        let b = match pallet_epoch::Pallet::<Runtime>::proposal_security_terms(proposal.id) {
+            Some(terms) => terms
+                .in_cap_prize
+                .and_then(|prize| scaled_pol_floor(proposal.class, floor, prize))
+                .unwrap_or(floor),
+            // Standalone benchmark/view fixtures may begin at Seed without a
+            // qualification transition. Preserve their flat-floor behavior;
+            // live qualified proposals always carry the map entry.
+            None => floor,
         };
         let decision = pallet_market::core_market::seed_headroom(b)
             .ok()?
