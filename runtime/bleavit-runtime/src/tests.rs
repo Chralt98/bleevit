@@ -4343,6 +4343,40 @@ fn development_allocations_match_the_genesis_economics_exactly() {
 }
 
 #[test]
+fn community_schedule_uses_the_real_vesting_adapter_after_phase_four_arming() {
+    use crate::genesis::{community_account, COMMUNITY_DISTRIBUTION};
+
+    development_ext().execute_with(|| {
+        let beneficiary = account(98);
+        let amount = 10 * currency::VIT;
+        let source_before = Balances::free_balance(community_account());
+        assert_eq!(source_before, COMMUNITY_DISTRIBUTION);
+
+        System::set_block_number(123);
+        FutarchyTreasury::note_phase_four_arming();
+        assert_ok!(FutarchyTreasury::create_community_schedule(
+            pallet_origins::Origin::FutarchyParam.into(),
+            beneficiary.clone(),
+            amount,
+        ));
+
+        assert_eq!(
+            Balances::free_balance(community_account()),
+            source_before - amount
+        );
+        assert_eq!(Vesting::vesting_balance(&beneficiary), Some(amount));
+        assert_eq!(
+            pallet_futarchy_treasury::CommunityScheduleCount::<Runtime>::get(),
+            1
+        );
+        assert_eq!(
+            pallet_futarchy_treasury::CommunityDistributionArmedAt::<Runtime>::get(),
+            Some(123)
+        );
+    });
+}
+
+#[test]
 fn treasury_rebate_payout_moves_real_usdc_from_the_selected_pot() {
     use crate::configs::{treasury_keeper_account, treasury_oracle_account, TreasuryRebatePayout};
     use pallet_futarchy_treasury::{PayoutLine, RebatePayout, TreasuryParams as _};
@@ -13435,6 +13469,28 @@ fn treasury_spend_resource_key_is_0x07_plus_beneficiary_digest() {
 }
 
 #[test]
+fn community_schedule_resource_is_a_singleton_across_beneficiaries() {
+    development_ext().execute_with(|| {
+        let first = RuntimeCall::FutarchyTreasury(
+            pallet_futarchy_treasury::Call::create_community_schedule {
+                beneficiary: account(240),
+                amount: currency::VIT,
+            },
+        );
+        let second = RuntimeCall::FutarchyTreasury(
+            pallet_futarchy_treasury::Call::create_community_schedule {
+                beneficiary: account(241),
+                amount: currency::VIT,
+            },
+        );
+        let first = derived_single_resource(first).expect("community schedule must classify");
+        let second = derived_single_resource(second).expect("community schedule must classify");
+        assert_eq!(first, second, "the finite allocation uses one global lock");
+        assert_eq!(first, expected_resource_key(0x0C, None));
+    });
+}
+
+#[test]
 fn canonical_resource_footprint_enforces_call_and_nesting_bounds() {
     development_ext().execute_with(|| {
         let record = match pallet_constitution::Params::<Runtime>::get(pallet_constitution::key16(
@@ -13556,7 +13612,7 @@ fn canonical_resource_key_universe_has_no_semantic_collisions() {
             }
         }
 
-        for singleton in [0x03, 0x04, 0x05, 0x0A, 0x0B] {
+        for singleton in [0x03, 0x04, 0x05, 0x0A, 0x0B, 0x0C] {
             insert_distinct(&mut keys, expected_resource_key(singleton, None));
         }
         for instance in [0_u8, 1_u8] {

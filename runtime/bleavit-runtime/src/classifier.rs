@@ -138,6 +138,15 @@ fn derive_resource_inner(
             recipient,
             ..
         }) => keyed_resource(0x07, &recipient.encode()),
+        RuntimeCall::FutarchyTreasury(
+            pallet_futarchy_treasury::Call::create_community_schedule { beneficiary: _, .. },
+        ) => {
+            // 05 §1.4: every community schedule mutates the singleton
+            // allocation/count pool, regardless of beneficiary.  A keyed
+            // beneficiary lock would let two proposals pass T5 concurrently
+            // and make the second one fail after adoption.
+            singleton_resource(0x0C)
+        }
         RuntimeCall::FutarchyTreasury(pallet_futarchy_treasury::Call::cancel_stream { id }) => {
             keyed_resource(0x08, &id.encode())
         }
@@ -701,6 +710,9 @@ fn project_inner(call: &RuntimeCall, budget: &mut ProjectionBudget) -> FilterCal
             // TREASURY decision, never a guardian, playbook or admin path.
             | pallet_futarchy_treasury::Call::sweep_insurance { .. } => {
                 leaf(CallDomain::Treasury)
+            }
+            pallet_futarchy_treasury::Call::create_community_schedule { .. } => {
+                leaf(CallDomain::Param)
             }
             pallet_futarchy_treasury::Call::claim_stream { .. }
             | pallet_futarchy_treasury::Call::execute_coretime_renewal { .. }
