@@ -8049,6 +8049,35 @@ impl pallet_epoch::BenchmarkHelper<RuntimeOrigin, AccountId> for RuntimeBenchmar
         RuntimeOrigin::signed(execution_guard_account())
     }
 
+    fn prime_ratification(pid: futarchy_primitives::ProposalId, referendum_index: u32) {
+        let guardian = guardian_account();
+        let _ = Balances::force_set_balance(
+            RuntimeOrigin::root(),
+            sp_runtime::MultiAddress::Id(guardian.clone()),
+            20_000 * currency::VIT,
+        );
+        pallet_referenda::ReferendumCount::<Runtime>::put(referendum_index);
+        let call = RuntimeCall::ExecutionGuard(pallet_execution_guard::Call::ratify {
+            pid,
+            referendum_index,
+        });
+        let Ok(proposal) = <Preimage as StorePreimage>::bound(call) else {
+            return;
+        };
+        let ratify_origin: RuntimeOrigin = crate::track_origins::Origin::Ratify.into();
+        let submit_result = Referenda::submit(
+            RuntimeOrigin::signed(guardian.clone()),
+            Box::new(ratify_origin.caller().clone()),
+            proposal,
+            frame_support::traits::schedule::DispatchTime::After(0),
+        );
+        if submit_result.is_err() {
+            return;
+        }
+        let _ =
+            Referenda::place_decision_deposit(RuntimeOrigin::signed(guardian), referendum_index);
+    }
+
     fn void_authority_origin() -> RuntimeOrigin {
         pallet_origins::Origin::EmergencyPlaybook.into()
     }
