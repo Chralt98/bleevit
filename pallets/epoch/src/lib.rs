@@ -250,6 +250,17 @@ pub trait PreimageAccess {
     fn unrequest(hash: H256);
 }
 
+/// Housekeeping callback for bounded authored-share compensation. The sink is
+/// deliberately infallible: an unfunded or failed custody payout must remain
+/// pending and never make the permissionless epoch crank fail.
+pub trait CollatorCompensation {
+    fn pay();
+}
+
+impl CollatorCompensation for () {
+    fn pay() {}
+}
+
 /// A8 → A11 producer seam. Only an adopted decision invokes this endpoint.
 pub trait ExecutionGuardAccess {
     /// Freeze a CODE/META referendum identity before queue admission. The
@@ -389,6 +400,8 @@ pub mod pallet {
         type Ledger: LedgerResolution;
         /// Fail-soft keeper rebate sink (08 §6). It must never affect a crank.
         type KeeperRebate: KeeperRebateSink<Self::AccountId>;
+        /// Fail-soft Housekeeping payout for authored collator shares (08 §2.4).
+        type CollatorCompensation: CollatorCompensation;
         type GuardianOrigin: EnsureOrigin<Self::RuntimeOrigin>;
         type ExecutionGuardOrigin: EnsureOrigin<Self::RuntimeOrigin>;
         type VoidAuthority: EnsureOrigin<Self::RuntimeOrigin>;
@@ -994,6 +1007,7 @@ pub mod pallet {
             let params = Self::live_params()?;
             let now = Self::now();
             let mut advanced = false;
+            let mut crossed_epoch = false;
             let result = frame_support::storage::with_storage_layer(|| {
                 Self::mutate(|state, ledger| {
                     state.horizon_k = params.horizon_k;
@@ -1006,6 +1020,7 @@ pub mod pallet {
                         state.epoch.length,
                     );
                     Self::sync_clock(state, now)?;
+                    crossed_epoch = clock_before.0 != state.epoch.index;
                     let entered_seed =
                         clock_before.1 != EpochPhase::Seed && state.epoch.phase == EpochPhase::Seed;
                     if entered_seed {
@@ -1261,6 +1276,13 @@ pub mod pallet {
                     .map_err(|_| Error::<T>::Welfare)?;
                 Ok(())
             });
+            // The Housekeeping phase belongs to the epoch that just ended. Pay
+            // only after the clock crossing has persisted `EpochOf`, so the
+            // compensation sink observes `CurrentEpoch = completed + 1` and
+            // its completed-epoch guard cannot suppress the payout.
+            if result.is_ok() && crossed_epoch {
+                T::CollatorCompensation::pay();
+            }
             if result.is_ok() && advanced {
                 // B5 recalibrates this weight for the rebate sink's treasury writes.
                 T::KeeperRebate::rebate(&who, CrankClass::DecisionCritical);
