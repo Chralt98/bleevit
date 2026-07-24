@@ -4,10 +4,7 @@
 //! differential (Python M3 ≡ Rust core ≡ this pallet at default parameters).
 
 use crate::mock::*;
-use crate::{
-    CollatorAuthoredBlocks, CollatorAuthoredEpoch, CommunityDistributionRemaining, Error, Event,
-    PayoutLine,
-};
+use crate::{CollatorAuthoredBlocks, CollatorAuthoredEpoch, Error, Event, PayoutLine};
 use frame_support::{
     assert_err, assert_noop, assert_ok,
     traits::{Hooks, StorageVersion},
@@ -352,7 +349,7 @@ fn storage_v3_try_runtime_preserves_existing_v1_bootstrap_latch() {
 
         assert!(!crate::BootstrapOpsFundingClosed::<Test>::get());
         assert_eq!(
-            CommunityDistributionRemaining::<Test>::get(),
+            crate::CommunityDistributionRemaining::<Test>::get(),
             CommunityDistributionAmount::get()
         );
         assert_eq!(StorageVersion::get::<Treasury>(), StorageVersion::new(3));
