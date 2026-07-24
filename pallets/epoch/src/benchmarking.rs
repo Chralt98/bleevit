@@ -902,6 +902,7 @@ mod benches {
             MAX_NON_TERMINAL_COHORTS,
         );
         Pallet::<T>::seed(state)?;
+        T::BenchmarkHelper::prime_ratification(1, 77);
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller), 1, 77);
