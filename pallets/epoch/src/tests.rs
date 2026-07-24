@@ -1425,6 +1425,7 @@ fn sq40_undefined_prize_proxy_takes_t10_and_refunds_the_full_bond() {
         let state = decision_state(1, ProposalClass::Param);
         let proposer = state.proposals[0].proposer.clone();
         let bond = state.proposals[0].bond;
+        InCapPrize::set(None);
         assert_ok!(Epoch::seed(state));
         ProposalBonds::<Test>::insert(
             1,
@@ -1433,8 +1434,6 @@ fn sq40_undefined_prize_proxy_takes_t10_and_refunds_the_full_bond() {
                 held: bond,
             },
         );
-        InCapPrize::set(None);
-
         assert_ok!(Epoch::decide(RuntimeOrigin::signed(keeper()), 1));
 
         let decided = Proposals::<Test>::get(1).expect("rejection enters measurement");

@@ -28,6 +28,8 @@ use futarchy_primitives::{
     Balance, BlockNumber, EpochId, EpochPhase, FixedU64, MarketId, MarketSet, MetricSpecVersion,
     Proposal, ProposalClass, ProposalId, RejectReason, RuntimeVersionConstraint, H256,
 };
+use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+use scale_info::TypeInfo;
 
 pub use epoch_core::{
     attack_cost_hat, decision_converged, effective_baseline_twaps, effective_reject_1e9,
@@ -76,6 +78,31 @@ pub struct DecisionInputSnapshot<AccountId> {
     pub params: CoreEpochParams,
     pub inputs: DecisionInputs,
     pub backing_complete: bool,
+}
+
+/// Qualification-frozen security sizing inputs (05 §5.2; 08 §5.3).
+///
+/// The value is intentionally kept in epoch-owned storage rather than added to
+/// the frozen `Proposal` view.  It therefore does not change the v11 contract,
+/// while still preventing a later Params or NAV change from changing the
+/// security certificate used by an admitted proposal.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
+pub struct ProposalSecurityTerms {
+    pub in_cap_prize: Option<Balance>,
+    /// Prize-scaled decision hurdle, in the kernel's 1e9 fixed grid.  `None`
+    /// means the certified prize proxy was unavailable at qualification.
+    pub decision_delta: Option<u64>,
 }
 
 /// Decision-book reads and Seed/rerun market deployment (A3 → A8).
@@ -168,6 +195,14 @@ pub trait ConstitutionAccess<AccountId> {
     fn static_check(proposal: &Proposal<AccountId>) -> StaticCheckDisposition;
     fn queue_time_check(proposal: &Proposal<AccountId>) -> bool;
     fn in_cap_prize(proposal: &Proposal<AccountId>) -> Option<Balance>;
+    /// Return the complete, qualification-time security certificate.  A
+    /// missing value is fail-closed and leaves the proposal unseedable.
+    fn security_terms(proposal: &Proposal<AccountId>) -> Option<ProposalSecurityTerms> {
+        Some(ProposalSecurityTerms {
+            in_cap_prize: Self::in_cap_prize(proposal),
+            decision_delta: None,
+        })
+    }
     fn ledger_frozen() -> bool;
     fn phase_flags() -> u32;
     /// Epoch-owned writer for the dead-man machinery bit. The detector only
@@ -637,6 +672,12 @@ pub mod pallet {
     #[pallet::storage]
     pub type QualificationAuxiliaryPreimageRequests<T: Config> =
         CountedStorageMap<_, Blake2_128Concat, ProposalId, H256, OptionQuery>;
+
+    /// Security sizing certificate frozen when a proposal qualifies.  This is
+    /// an internal map: the public proposal view remains contract-stable.
+    #[pallet::storage]
+    pub type ProposalSecurityTermsOf<T: Config> =
+        CountedStorageMap<_, Blake2_128Concat, ProposalId, ProposalSecurityTerms, OptionQuery>;
 
     /// Internal bounded USDC escrow liabilities, one per admitted proposal.
     #[pallet::storage]
@@ -1117,6 +1158,16 @@ pub mod pallet {
                         if proposal.state != ProposalState::Qualified
                             && state_after == ProposalState::Qualified
                         {
+                            let terms = T::Constitution::security_terms(&proposal)
+                                .ok_or(CoreError::BadDecisionInput)?;
+                            if ProposalSecurityTermsOf::<T>::contains_key(pid) {
+                                return Err(CoreError::TryStateViolation);
+                            }
+                            ensure!(
+                                ProposalSecurityTermsOf::<T>::count() < MAX_LIVE_PROPOSALS_BOUND,
+                                CoreError::TooManyLiveProposals
+                            );
+                            ProposalSecurityTermsOf::<T>::insert(pid, terms);
                             Self::request_qualification_preimage(
                                 pid,
                                 proposal.payload_hash,
@@ -1236,10 +1287,12 @@ pub mod pallet {
                     .proposal_view(pid)
                     .map_err(Self::map_core_error)?
                     .clone();
+                let decision_params = Self::params_for_proposal(pid, &proposal, params);
                 let decision_was_recorded = proposal.decision.is_some();
                 let extension_was_recorded = proposal.extended;
                 T::Market::seal_decision_window(&proposal)?;
-                let input = Self::assemble_decision_input_snapshot(&state, pid, params)?.inputs;
+                let input =
+                    Self::assemble_decision_input_snapshot(&state, pid, decision_params)?.inputs;
                 let guards = DecisionGuards {
                     preimage_ok: proposal.payload_len <= futarchy_primitives::kernel::MAX_BYTES
                         && T::Preimage::len(proposal.payload_hash) == Some(proposal.payload_len),
@@ -1258,7 +1311,7 @@ pub mod pallet {
                         now,
                         input,
                         guards,
-                        &params,
+                        &decision_params,
                     )
                     .map_err(Self::map_core_error)?;
                 if outcome == DecisionOutcome::Extend {
@@ -1918,6 +1971,12 @@ pub mod pallet {
             Self::assemble_decision_input_snapshot(&state, pid, params).ok()
         }
 
+        /// Read the qualification-frozen certificate used by the runtime's
+        /// POL and decision-hurdle adapters.
+        pub fn proposal_security_terms(pid: ProposalId) -> Option<ProposalSecurityTerms> {
+            ProposalSecurityTermsOf::<T>::get(pid)
+        }
+
         pub fn epoch_timing(index: EpochId) -> Option<EpochTiming> {
             let current = EpochOf::<T>::get();
             let schedule = Schedule::<T>::get();
@@ -2126,6 +2185,27 @@ pub mod pallet {
             Ok(params)
         }
 
+        fn params_for_proposal(
+            pid: ProposalId,
+            proposal: &Proposal<T::AccountId>,
+            mut params: CoreEpochParams,
+        ) -> CoreEpochParams {
+            let Some(delta) =
+                ProposalSecurityTermsOf::<T>::get(pid).and_then(|terms| terms.decision_delta)
+            else {
+                return params;
+            };
+            let index = match proposal.class {
+                ProposalClass::Param => 0,
+                ProposalClass::Treasury => 1,
+                ProposalClass::Code => 2,
+                ProposalClass::Meta => 3,
+                ProposalClass::Constitutional => 4,
+            };
+            params.delta[index] = FixedU64(delta);
+            params
+        }
+
         /// Single assembly point for the values consumed by `decide_with` and
         /// exposed by `decision_input_snapshot` (02 §3; 05 §5.2-§5.6).
         /// The core's historical zero sentinels remain in `inputs` so a missing
@@ -2141,6 +2221,7 @@ pub mod pallet {
                 .proposal_view(pid)
                 .map_err(Self::map_core_error)?
                 .clone();
+            let params = Self::params_for_proposal(pid, &proposal, params);
             let markets = proposal.markets.ok_or(Error::<T>::BadDecisionInput)?;
             let end = proposal.decide_at;
 
@@ -2212,7 +2293,9 @@ pub mod pallet {
             // the same constitution prize proxy feed both security sizing and
             // the Ask-scaled per-book contest floor in the runtime adapter.
             let measured_depth = T::Market::measured_depth(pid);
-            let in_cap_prize = T::Constitution::in_cap_prize(&proposal);
+            let in_cap_prize = ProposalSecurityTermsOf::<T>::get(pid)
+                .map(|terms| terms.in_cap_prize)
+                .unwrap_or_else(|| T::Constitution::in_cap_prize(&proposal));
             let backing_complete = [
                 accept_full,
                 reject_full,
@@ -2394,6 +2477,49 @@ pub mod pallet {
             state.try_state().map_err(Self::map_core_error)?;
             let checked = Self::checked_state(&state)?;
             Self::update_frozen_schedules(&state)?;
+
+            // Genesis/benchmark callers may persist an already-qualified
+            // state without traversing the normal screening crank.  Backfill
+            // the same certificate at that boundary; live production
+            // qualification inserts it before this point.
+            for proposal in state.proposals.iter().filter(|proposal| {
+                matches!(
+                    proposal.state,
+                    ProposalState::Qualified
+                        | ProposalState::Trading
+                        | ProposalState::Extended
+                        | ProposalState::Queued
+                        | ProposalState::Suspended
+                        | ProposalState::Rerun
+                        | ProposalState::Measuring
+                )
+            }) {
+                if !ProposalSecurityTermsOf::<T>::contains_key(proposal.id) {
+                    let terms = T::Constitution::security_terms(proposal)
+                        .ok_or(Error::<T>::BadDecisionInput)?;
+                    ensure!(
+                        ProposalSecurityTermsOf::<T>::count() < MAX_LIVE_PROPOSALS_BOUND,
+                        Error::<T>::TooManyLiveProposals
+                    );
+                    ProposalSecurityTermsOf::<T>::insert(proposal.id, terms);
+                }
+            }
+
+            // Security certificates live exactly as long as the epoch-owned
+            // proposal record.  Terminal transitions are removed in the same
+            // storage layer as the proposal itself, so no stale prize can be
+            // reused by a later proposal id.
+            let retained_terms = state
+                .proposals
+                .iter()
+                .filter(|proposal| !Self::is_terminal(proposal.state))
+                .map(|proposal| proposal.id)
+                .collect::<Vec<_>>();
+            for pid in ProposalSecurityTermsOf::<T>::iter_keys().collect::<Vec<_>>() {
+                if !retained_terms.contains(&pid) {
+                    ProposalSecurityTermsOf::<T>::remove(pid);
+                }
+            }
 
             let old_intake = IntakeProposals::<T>::iter_keys().collect::<Vec<_>>();
             let old_live = Proposals::<T>::iter_keys().collect::<Vec<_>>();
@@ -2938,6 +3064,30 @@ pub mod pallet {
                     "epoch qualification preimage-request bound exceeded",
                 ));
             }
+            if ProposalSecurityTermsOf::<T>::count() > MAX_LIVE_PROPOSALS_BOUND {
+                return Err(TryRuntimeError::Other("epoch security-term bound exceeded"));
+            }
+            for (pid, terms) in ProposalSecurityTermsOf::<T>::iter() {
+                if !Proposals::<T>::get(pid).is_some_and(|proposal| {
+                    matches!(
+                        proposal.state,
+                        ProposalState::Qualified
+                            | ProposalState::Trading
+                            | ProposalState::Extended
+                            | ProposalState::Queued
+                            | ProposalState::Suspended
+                            | ProposalState::Rerun
+                            | ProposalState::Measuring
+                    )
+                }) || terms
+                    .decision_delta
+                    .is_some_and(|delta| delta > epoch_core::ONE)
+                {
+                    return Err(TryRuntimeError::Other(
+                        "epoch security-term certificate is orphaned or invalid",
+                    ));
+                }
+            }
             for (pid, hash) in QualificationPreimageRequests::<T>::iter() {
                 if Proposals::<T>::get(pid).is_none_or(|proposal| {
                     proposal.payload_hash != hash
@@ -3040,6 +3190,21 @@ pub mod pallet {
                 }
             }
             for (pid, proposal) in Proposals::<T>::iter() {
+                if matches!(
+                    proposal.state,
+                    ProposalState::Qualified
+                        | ProposalState::Trading
+                        | ProposalState::Extended
+                        | ProposalState::Queued
+                        | ProposalState::Suspended
+                        | ProposalState::Rerun
+                        | ProposalState::Measuring
+                ) && !ProposalSecurityTermsOf::<T>::contains_key(pid)
+                {
+                    return Err(TryRuntimeError::Other(
+                        "epoch live proposal has no frozen security terms",
+                    ));
+                }
                 if pid != proposal.id {
                     return Err(TryRuntimeError::Other(
                         "epoch proposal map key does not match value",
