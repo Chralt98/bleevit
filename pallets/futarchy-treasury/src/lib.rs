@@ -384,6 +384,11 @@ pub mod pallet {
         /// share accumulator.
         type MaxCollatorCompensationEntries: Get<u32>;
 
+        /// Number of collators registered in the active session. The stipend
+        /// is per registered collator, including collators with zero authored
+        /// blocks, rather than per author present in the accumulator.
+        type RegisteredCollatorCount: Get<u32>;
+
         /// Live 13 §1 treasury tunables, read from `pallet-constitution::Params`
         /// (rule 4). See [`TreasuryParams`].
         type Params: TreasuryParams;
@@ -1255,9 +1260,6 @@ pub mod pallet {
         /// and defers the reward rather than growing state or panicking.
         pub fn note_collator_block(author: T::AccountId) {
             let epoch = T::CurrentEpoch::get();
-            if CollatorCompensationPaidEpoch::<T>::get() == Some(epoch) {
-                return;
-            }
             if let Some(tracked) = CollatorAuthoredEpoch::<T>::get() {
                 if tracked != epoch {
                     return;
@@ -1284,7 +1286,11 @@ pub mod pallet {
             let Some(tracked_epoch) = CollatorAuthoredEpoch::<T>::get() else {
                 return;
             };
-            if tracked_epoch > T::CurrentEpoch::get() {
+            // Housekeeping is the payout boundary for the epoch that just
+            // completed. Keep the current epoch's accumulator open so blocks
+            // authored after the boundary are not silently discarded and are
+            // paid at the following Housekeeping boundary.
+            if tracked_epoch >= T::CurrentEpoch::get() {
                 return;
             }
             let shares = CollatorAuthoredBlocks::<T>::get();
@@ -1295,6 +1301,7 @@ pub mod pallet {
                     .map(|(who, blocks)| (Self::to_core_account(who.clone()), *blocks))
                     .collect::<Vec<_>>(),
                 T::Params::collator_comp_epoch(),
+                T::RegisteredCollatorCount::get(),
             ) else {
                 return;
             };
@@ -1771,13 +1778,6 @@ pub mod pallet {
             if authored.is_empty() != CollatorAuthoredEpoch::<T>::get().is_none() {
                 return Err(TryRuntimeError::Other(
                     "treasury: collator authored-share epoch is not joined to its accumulator",
-                ));
-            }
-            if CollatorCompensationPaidEpoch::<T>::get() == CollatorAuthoredEpoch::<T>::get()
-                && CollatorAuthoredEpoch::<T>::get().is_some()
-            {
-                return Err(TryRuntimeError::Other(
-                    "treasury: collator compensation is both paid and pending",
                 ));
             }
             let community_remaining = CommunityDistributionRemaining::<T>::get();
