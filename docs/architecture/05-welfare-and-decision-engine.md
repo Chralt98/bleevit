@@ -527,6 +527,10 @@ fn decide(pid: ProposalId, now: BlockNumber) -> DecisionOutcome {
         // artifact hash, challenge window clean — registry mechanics in docs 06/09).
         ensure!(Attestation::present_and_quorate(&p), Reject(AttestationMissing));
     }
+    // This live check includes re-deriving the committed call domains and
+    // applying the class capability table, including the queue-time exclusion
+    // of InternalRootApplyUpgrade (09 §1.1(5)); the one-shot Phase-3→4
+    // recovery-image exception is bounded separately by 09 §7.2.
     ensure!(Constitution::queue_time_check(&p).is_ok(), Reject(RateLimited));
     // NOTE: values ratification (D-5) is deliberately NOT checked here — the referendum may be
     // submitted any time after the artifact commitment and must be Passed at execute() dispatch (docs 06/09);
